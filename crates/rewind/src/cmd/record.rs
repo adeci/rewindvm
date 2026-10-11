@@ -17,6 +17,7 @@ use rewind_init::{Job, Output, Root};
 use rewind_trace::compare::Comparison;
 use rewind_trace::located::Located;
 
+use crate::property::{Judge, Property, Violation};
 use crate::{
     RUN_HELP, RUN_LONG_HELP, STEP_HELP, STEP_LONG_HELP, Terminal, clear_status, json, locate, show,
     status,
@@ -137,6 +138,22 @@ pub struct CheckArgs {
     /// How many perturbed schedules to try besides the unperturbed one.
     #[arg(long, default_value_t = 64)]
     pub(crate) schedules: u64,
+    /// What a correct run is. The search looks for a schedule that
+    /// violates a property schedule 0 holds, or that holds every property
+    /// where schedule 0 violates one, and narrows it to the step that
+    /// decides it. Repeat for several.
+    ///
+    /// same-outcome: the run ends as schedule 0 did, with the same exit
+    /// status and outputs; the default. exit-zero: the job exits 0 having
+    /// made every output. script=PATH: a program on this machine judges
+    /// each run, exiting 0 when the property holds and 1 when it is
+    /// violated, with the reason on its first line, which may start with
+    /// `step N:`. It finds the run in $REWIND_RUN, schedule 0 in
+    /// $REWIND_BASE and the step the job exited at in $REWIND_END, and
+    /// can read the run with `rewind cat`, `rewind events` and `rewind
+    /// log`.
+    #[arg(long = "property", value_name = "PROPERTY")]
+    pub(crate) properties: Vec<Property>,
     /// Try every schedule and report how many end differently, instead
     /// of stopping at the first.
     #[arg(long)]
@@ -288,6 +305,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         image,
         run,
         schedules,
+        properties,
         all,
         no_narrow,
         jobs,
@@ -368,12 +386,21 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             (base, subject, "schedule 0".to_string())
         }
     };
-    say(format!("schedule   0: {}", show::outcome_line(&base)?));
+    // What each run is judged by, and schedule 0's verdict, which the
+    // search looks for a schedule to differ from.
+    let judge = Judge::new(home, &base, properties)?;
+    let base_violations = judge.violations(&base)?;
+    say(format!(
+        "schedule   0: {}{}",
+        show::outcome_line(&base)?,
+        verdict_words(&judge, &base_violations)
+    ));
     if !json {
         print_timeout(home, 0, &base);
+        print_violations(&judge, &base_violations);
     }
-    let base_key = show::outcome_key(&base)?;
-    let mut tried_runs = vec![schedule_json(&base, &base_key)?];
+    let base_key = judge.base_key().clone();
+    let mut tried_runs = vec![schedule_json(&base, false, &base_violations)?];
 
     // A schedule can make a program loop forever where schedule 0
     // did not, so unless told otherwise each other run gets a
@@ -398,7 +425,20 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     let base_failed = !base.manifest.outcome.as_ref().is_some_and(|o| {
         rewind_trace::ending::Ending::of(&o.stop, base_key.status, &base_missing).passed()
     });
-    let differs = |run: &Run| -> Result<bool> { Ok(show::outcome_key(run)? != base_key) };
+
+    // A run the search is after is one whose verdict differs from
+    // schedule 0's. With the default property, schedule 0 always holds it
+    // and the words stay those of a run that ends differently; with
+    // properties given, schedule 0 is the bad run when it violates one.
+    let base_holds = base_violations.is_empty();
+    let same_outcome_only = judge.same_outcome_only();
+    let base_bad = if same_outcome_only {
+        base_failed
+    } else {
+        !base_holds
+    };
+    let differs_by = |violations: &[Violation]| violations.is_empty() != base_holds;
+    let differs = |run: &Run| -> Result<bool> { Ok(differs_by(&judge.violations(run)?)) };
 
     // Perturbed schedules, a machine per job at a time, in order.
     let mut failing: Option<Run> = None;
@@ -422,14 +462,17 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         let runs = subject.try_all(home, &machine, &windows);
         clear_status();
         for run in runs? {
+            let violations = judge.violations(&run)?;
+            let differs = differs_by(&violations);
             say(format!(
-                "schedule {:>3}: {}",
+                "schedule {:>3}: {}{}",
                 run.manifest.spec.schedule,
-                show::outcome_line(&run)?
+                show::outcome_line(&run)?,
+                verdict_words(&judge, &violations)
             ));
-            tried_runs.push(schedule_json(&run, &base_key)?);
+            tried_runs.push(schedule_json(&run, differs, &violations)?);
             tried += 1;
-            if differs(&run)? {
+            if differs {
                 differing += 1;
                 if failing.is_none() {
                     failing = Some(run);
@@ -440,17 +483,26 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             break;
         }
     }
-    if all && base_failed {
+    if all && same_outcome_only && base_failed {
         say(format!(
             "{base_words} failed; {differing} of {tried} perturbed schedules ended differently"
         ));
-    } else if all {
+    } else if all && same_outcome_only {
         say(format!(
             "{differing} of {tried} perturbed schedules ended differently"
+        ));
+    } else if all && base_holds {
+        say(format!(
+            "{differing} of {tried} perturbed schedules violated a property"
+        ));
+    } else if all {
+        say(format!(
+            "{base_words} violated a property; {differing} of {tried} perturbed schedules held every one"
         ));
     }
     let search = |narrowed: serde_json::Value| {
         serde_json::json!({
+            "properties": judge.properties().iter().map(ToString::to_string).collect::<Vec<_>>(),
             "schedules": tried_runs,
             "tried": tried,
             "differing": differing,
@@ -459,9 +511,27 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         })
     };
     let Some(worst) = failing else {
-        say(format!("same result under all {} schedules", tried + 1));
+        if same_outcome_only {
+            say(format!("same result under all {} schedules", tried + 1));
+        } else if base_holds {
+            say(format!("every property held under all {} schedules", tried + 1));
+        } else {
+            say(format!(
+                "every schedule violated a property, as {base_words} did"
+            ));
+            // Schedule 0's violation is the bug, at the step it names.
+            if let Some(step) = base_violations.iter().find_map(|v| v.step)
+                && !json
+            {
+                let open = open_line(&base.manifest.id, Some(step), None);
+                println!("open it at the step: {open}");
+            }
+        }
         if json {
             println!("{}", search(serde_json::Value::Null));
+        }
+        if !base_holds {
+            return Ok(ExitCode::FAILURE);
         }
         return Ok(ExitCode::SUCCESS);
     };
@@ -481,13 +551,27 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         .as_ref()
         .map_or(start, |o| o.step)
         .min(user_until);
-    if base_failed {
+    let worst_violations = judge.violations(&worst)?;
+    let violated = violated_names(if base_holds {
+        &worst_violations
+    } else {
+        &base_violations
+    });
+    if same_outcome_only && base_failed {
         say(format!(
             "\nschedule {seed} passes where {base_words} fails; narrowing the steps it perturbs"
         ));
-    } else {
+    } else if same_outcome_only {
         say(format!(
             "\nschedule {seed} ends differently; narrowing the steps it perturbs"
+        ));
+    } else if base_holds {
+        say(format!(
+            "\nschedule {seed} violates {violated}; narrowing the steps it perturbs"
+        ));
+    } else {
+        say(format!(
+            "\nschedule {seed} holds every property where {base_words} violates {violated}; narrowing the steps it perturbs"
         ));
     }
     if !json {
@@ -515,10 +599,21 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     // it is the run to compare with; a window of one step leaves schedule
     // 0 itself.
     let deciding = until - 1;
-    let makes = if base_failed { "pass" } else { "fail" };
-    say(format!(
-        "perturbing only steps {lo}..{until} still ends differently"
-    ));
+    let makes = match (same_outcome_only, base_bad) {
+        (true, true) => "pass".to_string(),
+        (true, false) => "fail".to_string(),
+        (false, true) => "hold every property".to_string(),
+        (false, false) => format!("violate {violated}"),
+    };
+    if same_outcome_only {
+        say(format!(
+            "perturbing only steps {lo}..{until} still ends differently"
+        ));
+    } else {
+        say(format!(
+            "perturbing only steps {lo}..{until} still makes the run {makes}"
+        ));
+    }
     let partner = narrowed.without_last.unwrap_or(base);
     let (worst, partner) = std::thread::scope(|scope| {
         let worst = scope.spawn(|| worst.add_keyframes(home));
@@ -534,10 +629,17 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     say(format!(
         "step {deciding} decides it: {words} there makes the run {makes}\n"
     ));
-    let (passing, failing) = if base_failed {
+    let (passing, failing) = if base_bad {
         (worst, partner)
     } else {
         (partner, worst)
+    };
+    // What the failing run violates, and where, when properties were
+    // given.
+    let failing_violations = if same_outcome_only {
+        Vec::new()
+    } else {
+        judge.violations(&failing)?
     };
     // Where the failing run first behaves differently from the
     // passing one, as the app shows it.
@@ -582,6 +684,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             "deciding_step": deciding,
             "passing": json::run(&passing)?,
             "failing": json::run(&failing)?,
+            "violations": violations_json(&failing_violations),
             "program": comparison.program,
             "divergence": json::comparison(ft, pt, &comparison),
             "threads": threads.iter().map(|(involved, step, answer)| thread_json(*involved, *step, answer)).collect::<Vec<_>>(),
@@ -600,6 +703,9 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         show::schedule_words(&failing.manifest.spec)
     );
     println!("the two are the same run until step {deciding}");
+    for v in &failing_violations {
+        println!("failing run violates {}: {v}", v.property);
+    }
 
     // Where they part, in words, and the failing run's step there,
     // where the app opens it beside the passing one.
@@ -1209,14 +1315,56 @@ fn execute_all(
     })
 }
 
-/// A run `rewind check` tried, for its JSON: the run, its schedule, and
-/// whether it ended differently from the unperturbed run, which ended as
-/// `base` says.
-fn schedule_json(run: &Run, base: &show::OutcomeKey) -> Result<serde_json::Value> {
+/// A run `rewind check` tried, for its JSON: the run, its schedule,
+/// whether its verdict differs from the unperturbed run's, and the
+/// properties it violates.
+fn schedule_json(run: &Run, differs: bool, violations: &[Violation]) -> Result<serde_json::Value> {
     let mut value = json::run(run)?;
     value["schedule"] = run.manifest.spec.schedule.into();
-    value["differs"] = (show::outcome_key(run)? != *base).into();
+    value["differs"] = differs.into();
+    value["violations"] = violations_json(violations);
     Ok(value)
+}
+
+/// Violations for JSON: each property, its step when known, and why.
+fn violations_json(violations: &[Violation]) -> serde_json::Value {
+    violations
+        .iter()
+        .map(|v| serde_json::json!({ "property": v.property, "step": v.step, "why": v.why }))
+        .collect()
+}
+
+/// The end of a schedule's line when properties were given: whether the
+/// run holds them all or which it violates. Nothing for the default,
+/// whose line already says how the run ended.
+fn verdict_words(judge: &Judge, violations: &[Violation]) -> String {
+    if judge.same_outcome_only() {
+        return String::new();
+    }
+    if violations.is_empty() {
+        return "  holds".to_string();
+    }
+    format!("  violates {}", violated_names(violations))
+}
+
+/// The properties `violations` name, as a report lists them.
+fn violated_names(violations: &[Violation]) -> String {
+    violations
+        .iter()
+        .map(|v| v.property.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Each violation of an unperturbed run on a line of its own, under its
+/// line, when properties were given.
+fn print_violations(judge: &Judge, violations: &[Violation]) {
+    if judge.same_outcome_only() {
+        return;
+    }
+    for v in violations {
+        println!("  {}: {v}", v.property);
+    }
 }
 
 /// For a schedule of `rewind check` that hit its time limit, how and where:

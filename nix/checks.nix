@@ -1229,6 +1229,86 @@ in
         touch $out
       '';
 
+  # checks.check-property: `rewind check --property` judges each schedule
+  # by what a correct run is instead of by schedule 0's outcome. A script
+  # that reads race's total from its log finds a schedule that loses an
+  # add and narrows it, naming the property and the reason; exit-zero
+  # counts the same schedules; a script that reads a file at the job's
+  # exit with `rewind cat` sees the root's own file; a property schedule
+  # 0 violates too is reported at its step; and a script that fails
+  # stops the search. Boots the VM, so it needs /dev/kvm.
+  check-property =
+    pkgs.runCommand "rewind-check-property"
+      {
+        nativeBuildInputs = [
+          rewind
+          pkgs.jq
+        ];
+        requiredSystemFeatures = [ "kvm" ];
+      }
+      ''
+        export REWIND_HOME=$TMPDIR/rewind
+        check() { rewind check -j 4 --clock exits "$@" --root ${raceRoot} -- /bin/race; }
+
+        # race's total, from its log, against the adds its threads made.
+        cat > total.sh <<'EOF'
+        #!/bin/sh
+        total=$(rewind log "$REWIND_RUN" | sed -n 's/^total //p')
+        [ "$total" = 20 ] && exit 0
+        echo "total $total, expected 20"
+        exit 1
+        EOF
+        chmod +x total.sh
+
+        # The search: a schedule that violates the property, narrowed.
+        ! check --property script=./total.sh > found
+        cat found
+        grep -q '^schedule   0: .*  holds$' found
+        grep -qE '^schedule +[0-9]+ violates total; narrowing' found
+        grep -q ' decides it: .* makes the run violate total$' found
+        grep -qE '^failing run violates total: total [0-9]+, expected 20$' found
+        ! check --property script=./total.sh --json > found.json
+        jq -e '.properties == ["script=./total.sh"]' found.json
+        jq -e '.narrowed.violations | length == 1 and .[0].property == "total"' found.json
+
+        # exit-zero fails the same schedules race's own exit status does.
+        check --property exit-zero --schedules 8 --all --no-narrow --json > swept.json || true
+        jq -e '([.schedules[] | select(.differs)] | length) == .differing' swept.json
+        jq -e 'all(.schedules[]; (.violations | length > 0) == (.ending != "exited:0"))' swept.json
+
+        # A file read at the job's exit is the root's own.
+        cat > binary.sh <<'EOF'
+        #!/bin/sh
+        rewind cat "$REWIND_RUN" "$REWIND_END" /bin/race | cmp -s - ${raceRoot}/bin/race
+        EOF
+        chmod +x binary.sh
+        check --property script=./binary.sh --schedules 2 --all > read
+        cat read
+        test "$(grep -c '  holds$' read)" = 3
+        grep -q '^every property held under all 3 schedules$' read
+
+        # A property schedule 0 violates as well: the bug is at its step.
+        printf '#!/bin/sh\necho "step 7: always wrong"\nexit 1\n' > wrong.sh
+        chmod +x wrong.sh
+        ! check --property script=./wrong.sh --schedules 2 > wrong
+        cat wrong
+        grep -q '^  wrong: step 7: always wrong$' wrong
+        grep -q '^every schedule violated a property, as schedule 0 did$' wrong
+        grep -qE '^open it at the step: rewind open [0-9a-f]+ 7$' wrong
+
+        # A script that fails stops the search and says why.
+        printf '#!/bin/sh\necho broken >&2\nexit 3\n' > broken.sh
+        chmod +x broken.sh
+        ! check --property script=./broken.sh --schedules 2 2> stderr
+        cat stderr
+        grep -q 'property script ./broken.sh failed on run .*: broken' stderr
+
+        # A misspelled property is refused before anything boots.
+        ! rewind check --property exit-0 --root ${raceRoot} -- /bin/race 2> refused
+        grep -q 'no property exit-0' refused
+        touch $out
+      '';
+
   # checks.threads: `rewind threads` says what held the CPU at each step
   # of a window, one slice a line: the thread of every event in the window
   # held it at the event's step, both of race's workers show up, the

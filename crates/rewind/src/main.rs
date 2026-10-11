@@ -7,6 +7,7 @@ mod gdb;
 mod json;
 mod list;
 mod locate;
+mod property;
 mod reproduce;
 mod show;
 mod terminal;
