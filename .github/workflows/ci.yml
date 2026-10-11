@@ -75,11 +75,15 @@ jobs:
       # debug output among them, for `rewind gdb` on runs made with them.
       # Releases pin theirs for good (release.yml). The debuginfod server
       # is nixpkgs' own, which cache.nixos.org keeps, and Cachix pins only
-      # what its own cache holds, so it is not pinned here.
+      # what its own cache holds, so it is not pinned here. cachix-action
+      # pushes what the job builds in the background and waits for the
+      # pushes only when the job ends, and a pin needs its whole closure
+      # in the cache, so each package is pushed before its pin.
       - name: Pin main's packages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           for attr in rewind app kernel kernel-debug; do
-            cachix pin rewindvm "main-$attr" \
-              "$(nix build --no-link --print-out-paths ".#$attr")" --keep-revisions 5
+            path=$(nix build --no-link --print-out-paths ".#$attr")
+            cachix push rewindvm "$path"
+            cachix pin rewindvm "main-$attr" "$path" --keep-revisions 5
           done
