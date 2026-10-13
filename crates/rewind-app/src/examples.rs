@@ -169,10 +169,10 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "The two runs are the same until step 5,139, where only this run has a reschedule.",
-                "test_pool_shutdown did the same things in the same order in both runs until step 5,153.",
+                "The two runs are the same until step 5,080, where only this run has a 1280 µs stall.",
+                "test_pool_shutdown did the same things in the same order in both runs until step 5,105.",
                 "Then in this run, thread 9 of test_pool_shutdown gets SIGSEGV at 0x108.",
-                "In the passing run, thread 9 of test_pool_shutdown writes \"worker picked job 18\" to stdout.",
+                "In the passing run, thread 9 of test_pool_shutdown writes \"worker picked job 30\" to stdout.",
             ]
         );
     }
