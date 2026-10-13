@@ -1235,8 +1235,9 @@ in
   # add and narrows it, naming the property and the reason; exit-zero
   # counts the same schedules; a script that reads a file at the job's
   # exit with `rewind cat` sees the root's own file; a property schedule
-  # 0 violates too is reported at its step; and a script that fails
-  # stops the search. Boots the VM, so it needs /dev/kvm.
+  # 0 violates too is reported at its step; a script that fails stops
+  # the search; and --seeds finds a job decided by the kernel's
+  # randomness alone. Boots the VM, so it needs /dev/kvm.
   check-property =
     pkgs.runCommand "rewind-check-property"
       {
@@ -1302,6 +1303,22 @@ in
         ! check --property script=./broken.sh --schedules 2 2> stderr
         cat stderr
         grep -q 'property script ./broken.sh failed on run .*: broken' stderr
+
+        # Seeds: a job that fails when the first byte it reads from the
+        # kernel's randomness is odd. Some seed of six decides it with no
+        # schedule perturbed, and every run says its seed.
+        coin='b=$(od -An -tu1 -N1 /dev/urandom); test $((b % 2)) = 0'
+        ! rewind check -j 4 --clock exits --seeds 6 --schedules 1 --root ${busyboxRoot} -- sh -c "$coin" > seeds
+        cat seeds
+        grep -qE '^seed  0 schedule   0: ' seeds
+        grep -qE '^seed [0-9]+ decides it: unperturbed, seed [0-9]+ passes and seed [0-9]+ fails$' seeds
+        ! rewind check -j 4 --clock exits --seeds 6 --schedules 1 --all --no-narrow --json \
+          --root ${busyboxRoot} -- sh -c "$coin" > seeds.json
+        jq -e '.seeds == 6 and ([.schedules[].seed] | unique) == [0, 1, 2, 3, 4, 5]' seeds.json
+        jq -e '.differing > 0 and ([.schedules[] | select(.differs)] | length) == .differing' seeds.json
+        # A recorded run keeps its seed.
+        ! rewind check --run "$(rewind ls --json -n 1 | jq -r .id)" --seeds 2 2> refused
+        grep -q -- '--seeds' refused
 
         # A misspelled property is refused before anything boots.
         ! rewind check --property exit-0 --root ${raceRoot} -- /bin/race 2> refused

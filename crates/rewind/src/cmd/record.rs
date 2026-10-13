@@ -138,6 +138,19 @@ pub struct CheckArgs {
     /// How many perturbed schedules to try besides the unperturbed one.
     #[arg(long, default_value_t = 64)]
     pub(crate) schedules: u64,
+    /// How many seeds of the VM's randomness to try, from --seed on. Each
+    /// seed runs unperturbed and under every perturbed schedule, so the
+    /// search makes seeds times (schedules + 1) runs.
+    ///
+    /// The seed decides everything programs draw from the kernel's
+    /// randomness: hash map order, which branch a select tries first,
+    /// temporary names, and the inputs a property-testing library
+    /// generates when it seeds itself from the system. A seed whose
+    /// unperturbed run already differs from the first seed's is not
+    /// perturbed further. A run recorded already keeps its seed, so --run
+    /// tries one.
+    #[arg(long, default_value_t = 1, conflicts_with = "run")]
+    pub(crate) seeds: u64,
     /// What a correct run is. The search looks for a schedule that
     /// violates a property schedule 0 holds, or that holds every property
     /// where schedule 0 violates one, and narrows it to the step that
@@ -319,6 +332,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         image,
         run,
         schedules,
+        seeds,
         mut properties,
         properties_file,
         all,
@@ -337,6 +351,9 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             println!("{line}");
         }
     };
+    if seeds == 0 {
+        bail!("--seeds needs at least one seed");
+    }
     if let Some(file) = &properties_file {
         properties.extend(Property::read_file(file)?);
     }
@@ -348,12 +365,15 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     machine.no_keyframes = true;
     machine.quiet = true;
     let (user_from, user_until) = (machine.schedule_from, machine.schedule_until);
+    let first_seed = machine.seed;
+    let label = |seed: u64, schedule: u64| run_label(seeds, seed, schedule);
+    let name = |seed: u64, schedule: u64| run_name(seeds, seed, schedule);
 
     // The unperturbed run, and how every other run is made. A recorded
     // run is the unperturbed run, and each schedule forks it.
     let guest;
     let prepared;
-    let (base, subject, base_words) = match run {
+    let (base, subject, inputs) = match run {
         Some(what) => {
             let base = Run::find(home, &what)?;
             if base.manifest.outcome.is_none() {
@@ -362,9 +382,8 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             if user_from > 0 {
                 base.check_step(user_from)?;
             }
-            let words = format!("run {}", base.manifest.id);
             let subject = Subject::Run(Box::new(Run::open(&base.dir)?));
-            (base, subject, words)
+            (base, subject, None)
         }
         None => {
             guest = Guest::from_env()?;
@@ -378,16 +397,18 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             prepared = prepare(home, &guest, &workload, &mut machine)?;
             machine.schedule = 0;
             machine.schedule_from = 0;
-            let with_keyframes = MachineArgs {
-                no_keyframes: false,
-                progress: Progress::Shown,
-                ..machine.clone()
-            };
+            if seeds > 1 {
+                let plural = if schedules == 1 { "" } else { "s" };
+                say(format!(
+                    "rewind: {seeds} seeds, each unperturbed and under {schedules} perturbed schedule{plural}: {} runs",
+                    seeds * (schedules + 1)
+                ));
+            }
             let base = execute(
                 home,
                 &guest,
                 &prepared,
-                &with_keyframes,
+                &with_keyframes(&machine),
                 Start::Boot,
                 Announce::No,
             )?;
@@ -401,15 +422,21 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                 prepared: &prepared,
                 start: Start::After(base.manifest.id.clone()),
             };
-            (base, subject, "schedule 0".to_string())
+            (base, subject, Some((&guest, &prepared)))
         }
     };
+    let base_words = match &subject {
+        Subject::Run(_) => format!("run {}", base.manifest.id),
+        Subject::Job { .. } => name(first_seed, 0),
+    };
+
     // What each run is judged by, and schedule 0's verdict, which the
-    // search looks for a schedule to differ from.
+    // search looks for a run to differ from.
     let judge = Judge::new(home, &base, properties)?;
     let base_violations = judge.violations(&base)?;
     say(format!(
-        "schedule   0: {}{}",
+        "{}: {}{}",
+        label(first_seed, 0),
         show::outcome_line(&base)?,
         verdict_words(&judge, &base_violations)
     ));
@@ -429,12 +456,6 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         let limit = Duration::from_millis(base_wall * CHECK_TIMEOUT_FACTOR).max(CHECK_TIMEOUT_MIN);
         machine.timeout = Some(limit.as_secs());
     }
-
-    // The step the job started on: everything before that is boot, and
-    // perturbing it would only make every run differ from the first
-    // kernel thread on. The window the user gave narrows that further.
-    let base_trace = base.trace()?;
-    let start = show::start_step(base_trace).max(user_from);
 
     // When the unperturbed run is the one that fails, the schedules
     // that end differently are the ones that pass. A job that exits
@@ -458,69 +479,139 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     let differs_by = |violations: &[Violation]| violations.is_empty() != base_holds;
     let differs = |run: &Run| -> Result<bool> { Ok(differs_by(&judge.violations(run)?)) };
 
-    // Perturbed schedules, a machine per job at a time, in order.
-    let mut failing: Option<Run> = None;
+    // Each seed's unperturbed run and how its perturbed schedules are
+    // made, the first seed's being the unperturbed run itself.
+    let first = Seeded::new(base, subject, machine.clone(), user_from)?;
+    let mut seeded = vec![first];
+    let mut found: Option<Found> = None;
     let mut differing = 0;
     let mut tried = 0;
-    let seeds: Vec<u64> = (1..=schedules).collect();
-    for batch in seeds.chunks(jobs) {
-        let windows: Vec<Window> = batch
-            .iter()
-            .map(|&seed| Window {
+    for i in 0..seeds {
+        let seed = first_seed + i;
+
+        // Another seed's unperturbed run, from boot, judged as any other
+        // run: a seed alone can decide how a run ends.
+        if i > 0 {
+            let Some((guest, prepared)) = inputs else {
+                bail!("--seeds needs a job to record, not a run");
+            };
+            let seed_machine = MachineArgs {
                 seed,
-                from: start,
-                until: user_until,
-            })
-            .collect();
-        status(&format!(
-            "rewind: schedules {}..{} executing",
-            batch[0],
-            batch[batch.len() - 1]
-        ));
-        let runs = subject.try_all(home, &machine, &windows);
-        clear_status();
-        for run in runs? {
-            let violations = judge.violations(&run)?;
+                ..machine.clone()
+            };
+            status(&format!("rewind: seed {seed} executing"));
+            let started = if schedules > 0 {
+                with_keyframes(&seed_machine)
+            } else {
+                seed_machine.clone()
+            };
+            let seed_base = execute(home, guest, prepared, &started, Start::Boot, Announce::No);
+            clear_status();
+            let seed_base = seed_base?;
+            let violations = judge.violations(&seed_base)?;
             let differs = differs_by(&violations);
             say(format!(
-                "schedule {:>3}: {}{}",
-                run.manifest.spec.schedule,
-                show::outcome_line(&run)?,
+                "{}: {}{}",
+                label(seed, 0),
+                show::outcome_line(&seed_base)?,
                 verdict_words(&judge, &violations)
             ));
-            tried_runs.push(schedule_json(&run, differs, &violations)?);
+            tried_runs.push(schedule_json(&seed_base, differs, &violations)?);
             tried += 1;
+            let subject = Subject::Job {
+                guest,
+                prepared,
+                start: Start::After(seed_base.manifest.id.clone()),
+            };
+            seeded.push(Seeded::new(seed_base, subject, seed_machine, user_from)?);
             if differs {
                 differing += 1;
-                if failing.is_none() {
-                    failing = Some(run);
+                if found.is_none() {
+                    found = Some(Found::Seed(i as usize));
                 }
+                if !all {
+                    break;
+                }
+                continue;
             }
         }
-        if failing.is_some() && !all {
+
+        // Perturbed schedules, a machine per job at a time, in order.
+        let s = &seeded[i as usize];
+        let numbers: Vec<u64> = (1..=schedules).collect();
+        for batch in numbers.chunks(jobs) {
+            let windows: Vec<Window> = batch
+                .iter()
+                .map(|&schedule| Window {
+                    seed: schedule,
+                    from: s.start,
+                    until: user_until,
+                })
+                .collect();
+            let seed_words = if seeds > 1 {
+                format!("seed {seed}, ")
+            } else {
+                String::new()
+            };
+            status(&format!(
+                "rewind: {seed_words}schedules {}..{} executing",
+                batch[0],
+                batch[batch.len() - 1]
+            ));
+            let runs = s.subject.try_all(home, &s.machine, &windows);
+            clear_status();
+            for run in runs? {
+                let violations = judge.violations(&run)?;
+                let differs = differs_by(&violations);
+                say(format!(
+                    "{}: {}{}",
+                    label(seed, run.manifest.spec.schedule),
+                    show::outcome_line(&run)?,
+                    verdict_words(&judge, &violations)
+                ));
+                tried_runs.push(schedule_json(&run, differs, &violations)?);
+                tried += 1;
+                if differs {
+                    differing += 1;
+                    if found.is_none() {
+                        found = Some(Found::Schedule(i as usize, Box::new(run)));
+                    }
+                }
+            }
+            if found.is_some() && !all {
+                break;
+            }
+        }
+        if found.is_some() && !all {
             break;
         }
     }
+    let tried_words = if seeds > 1 {
+        "other runs"
+    } else {
+        "perturbed schedules"
+    };
     if all && same_outcome_only && base_failed {
         say(format!(
-            "{base_words} failed; {differing} of {tried} perturbed schedules ended differently"
+            "{base_words} failed; {differing} of {tried} {tried_words} ended differently"
         ));
     } else if all && same_outcome_only {
         say(format!(
-            "{differing} of {tried} perturbed schedules ended differently"
+            "{differing} of {tried} {tried_words} ended differently"
         ));
     } else if all && base_holds {
         say(format!(
-            "{differing} of {tried} perturbed schedules violated a property"
+            "{differing} of {tried} {tried_words} violated a property"
         ));
     } else if all {
         say(format!(
-            "{base_words} violated a property; {differing} of {tried} perturbed schedules held every one"
+            "{base_words} violated a property; {differing} of {tried} {tried_words} held every one"
         ));
     }
     let search = |narrowed: serde_json::Value| {
         serde_json::json!({
             "properties": judge.properties().iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "seeds": seeds,
             "schedules": tried_runs,
             "tried": tried,
             "differing": differing,
@@ -528,25 +619,30 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             "narrowed": narrowed,
         })
     };
-    let Some(worst) = failing else {
+    let (one_run, all_runs) = if seeds > 1 {
+        ("run", "runs")
+    } else {
+        ("schedule", "schedules")
+    };
+    let Some(found) = found else {
         if same_outcome_only {
-            say(format!("same result under all {} schedules", tried + 1));
+            say(format!("same result under all {} {all_runs}", tried + 1));
         } else if base_holds {
             say(format!(
-                "every property held under all {} schedules",
+                "every property held under all {} {all_runs}",
                 tried + 1
             ));
         } else {
             if !all {
                 say(format!(
-                    "every schedule violated a property, as {base_words} did"
+                    "every {one_run} violated a property, as {base_words} did"
                 ));
             }
             // Schedule 0's violation is the bug, at the step it names.
             if let Some(step) = base_violations.iter().find_map(|v| v.step)
                 && !json
             {
-                let open = open_line(&base.manifest.id, Some(step), None);
+                let open = open_line(&seeded[0].base.manifest.id, Some(step), None);
                 println!("open it at the step: {open}");
             }
         }
@@ -565,79 +661,134 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         return Ok(ExitCode::FAILURE);
     }
 
-    // Narrow it to a short window of steps its perturbation still ends
-    // differently from (see rewind_core::check).
-    let seed = worst.manifest.spec.schedule;
-    let end = worst
-        .manifest
-        .outcome
-        .as_ref()
-        .map_or(start, |o| o.step)
-        .min(user_until);
-    let worst_violations = judge.violations(&worst)?;
-    let violated = violated_names(if base_holds {
-        &worst_violations
-    } else {
-        &base_violations
-    });
-    if same_outcome_only && base_failed {
-        say(format!(
-            "\nschedule {seed} passes where {base_words} fails; narrowing the steps it perturbs"
-        ));
-    } else if same_outcome_only {
-        say(format!(
-            "\nschedule {seed} ends differently; narrowing the steps it perturbs"
-        ));
-    } else if base_holds {
-        say(format!(
-            "\nschedule {seed} violates {violated}; narrowing the steps it perturbs"
-        ));
-    } else {
-        say(format!(
-            "\nschedule {seed} holds every property where {base_words} violates {violated}; narrowing the steps it perturbs"
-        ));
-    }
-    if !json {
-        print_timeout(home, seed, &worst);
-    }
-    let probe_all = |windows: Vec<(u64, u64)>| -> Result<Vec<Run>> {
-        let lo = windows.iter().map(|w| w.0).min().unwrap_or(0);
-        let hi = windows.iter().map(|w| w.1).max().unwrap_or(0);
-        status(&format!(
-            "rewind: narrowing, {} windows within steps {lo}..{hi}",
-            windows.len()
-        ));
-        let windows: Vec<Window> = windows
-            .into_iter()
-            .map(|(from, until)| Window { seed, from, until })
-            .collect();
-        subject.try_all(home, &machine, &windows)
+    // What the run found violates, or the unperturbed run does when the
+    // run found is the one that holds.
+    let violated = |found_run: &Run| -> Result<String> {
+        if base_holds {
+            Ok(violated_names(&judge.violations(found_run)?))
+        } else {
+            Ok(violated_names(&base_violations))
+        }
     };
-    let narrowed = rewind_core::check::narrow((start, end), jobs, worst, probe_all, differs)?;
-    let (lo, until, worst) = (narrowed.from, narrowed.until, narrowed.run);
-    clear_status();
-
-    // The window's last step decides how the run ends. The window one step
-    // shorter ends like schedule 0 and is the same run until that step, so
-    // it is the run to compare with; a window of one step leaves schedule
-    // 0 itself.
-    let deciding = until - 1;
-    let makes = match (same_outcome_only, base_bad) {
+    let makes = |violated: &str| match (same_outcome_only, base_bad) {
         (true, true) => "pass".to_string(),
         (true, false) => "fail".to_string(),
         (false, true) => "hold every property".to_string(),
         (false, false) => format!("violate {violated}"),
     };
-    if same_outcome_only {
-        say(format!(
-            "perturbing only steps {lo}..{until} still ends differently"
-        ));
-    } else {
-        say(format!(
-            "perturbing only steps {lo}..{until} still makes the run {makes}"
-        ));
-    }
-    let partner = narrowed.without_last.unwrap_or(base);
+
+    // The two runs to report, the step that decides it when a schedule
+    // does, and the window narrowed to.
+    let (worst, partner, found_seed, decided) = match found {
+        // A seed: its unperturbed run against the first seed's, with no
+        // step to narrow to, since the seed is in the run from boot.
+        Found::Seed(i) => {
+            let chosen = seeded.swap_remove(i);
+            let first = seeded.swap_remove(0);
+            let violated = violated(&chosen.base)?;
+            let (good, bad) = if base_bad {
+                (chosen.seed, first.seed)
+            } else {
+                (first.seed, chosen.seed)
+            };
+            let words = match (same_outcome_only, base_bad) {
+                (true, _) => format!("seed {good} passes and seed {bad} fails"),
+                (false, _) => {
+                    format!("seed {good} holds every property and seed {bad} violates {violated}")
+                }
+            };
+            say(format!(
+                "\nseed {} decides it: unperturbed, {words}\n",
+                chosen.seed
+            ));
+            let seed = chosen.seed;
+            (chosen.base, first.base, seed, None)
+        }
+
+        // A schedule: narrowed within its seed to a short window of steps
+        // its perturbation still decides it in (see rewind_core::check).
+        Found::Schedule(i, worst) => {
+            let worst = *worst;
+            let s = seeded.swap_remove(i);
+            let schedule = worst.manifest.spec.schedule;
+            let found_name = name(s.seed, schedule);
+            let end = worst
+                .manifest
+                .outcome
+                .as_ref()
+                .map_or(s.start, |o| o.step)
+                .min(user_until);
+            let violated = violated(&worst)?;
+            let seed_words = if s.seed == first_seed {
+                base_words.clone()
+            } else {
+                name(s.seed, 0)
+            };
+            if same_outcome_only && base_failed {
+                say(format!(
+                    "\n{found_name} passes where {seed_words} fails; narrowing the steps it perturbs"
+                ));
+            } else if same_outcome_only {
+                say(format!(
+                    "\n{found_name} ends differently; narrowing the steps it perturbs"
+                ));
+            } else if base_holds {
+                say(format!(
+                    "\n{found_name} violates {violated}; narrowing the steps it perturbs"
+                ));
+            } else {
+                say(format!(
+                    "\n{found_name} holds every property where {seed_words} violates {violated}; narrowing the steps it perturbs"
+                ));
+            }
+            if !json {
+                print_timeout(home, schedule, &worst);
+            }
+            let probe_all = |windows: Vec<(u64, u64)>| -> Result<Vec<Run>> {
+                let lo = windows.iter().map(|w| w.0).min().unwrap_or(0);
+                let hi = windows.iter().map(|w| w.1).max().unwrap_or(0);
+                status(&format!(
+                    "rewind: narrowing, {} windows within steps {lo}..{hi}",
+                    windows.len()
+                ));
+                let windows: Vec<Window> = windows
+                    .into_iter()
+                    .map(|(from, until)| Window {
+                        seed: schedule,
+                        from,
+                        until,
+                    })
+                    .collect();
+                s.subject.try_all(home, &s.machine, &windows)
+            };
+            let narrowed =
+                rewind_core::check::narrow((s.start, end), jobs, worst, probe_all, differs)?;
+            let (lo, until, worst) = (narrowed.from, narrowed.until, narrowed.run);
+            clear_status();
+            if same_outcome_only {
+                say(format!(
+                    "perturbing only steps {lo}..{until} still ends differently"
+                ));
+            } else {
+                say(format!(
+                    "perturbing only steps {lo}..{until} still makes the run {}",
+                    makes(&violated)
+                ));
+            }
+            // The window's last step decides how the run ends. The window
+            // one step shorter ends like the seed's unperturbed run and is
+            // the same run until that step, so it is the run to compare
+            // with; a window of one step leaves that run itself.
+            let partner = narrowed.without_last.unwrap_or(s.base);
+            (
+                worst,
+                partner,
+                s.seed,
+                Some((schedule, lo, until, violated)),
+            )
+        }
+    };
+
     let (worst, partner) = std::thread::scope(|scope| {
         let worst = scope.spawn(|| worst.add_keyframes(home));
         let partner = partner.add_keyframes(home);
@@ -647,11 +798,19 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
 
     // Whether a late timer is part of what the step does depends on
     // whether its exit armed one, which only running it shows.
-    let timer = worst.armed_timer_at(home, deciding)?;
-    let words = worst.manifest.spec.schedule().words_at(deciding, timer);
-    say(format!(
-        "step {deciding} decides it: {words} there makes the run {makes}\n"
-    ));
+    let deciding = match &decided {
+        Some((_, _, until, violated)) => {
+            let deciding = until - 1;
+            let timer = worst.armed_timer_at(home, deciding)?;
+            let words = worst.manifest.spec.schedule().words_at(deciding, timer);
+            say(format!(
+                "step {deciding} decides it: {words} there makes the run {}\n",
+                makes(violated)
+            ));
+            Some(deciding)
+        }
+        None => None,
+    };
     let (passing, failing) = if base_bad {
         (worst, partner)
     } else {
@@ -678,7 +837,10 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             .as_ref()
             .and_then(|p| p.here)
             .and_then(|side| ft.events.get(side.index));
-        let mut asked = vec![(locate::Involved::AtTheDecidingStep, deciding, (None, None))];
+        let mut asked = Vec::new();
+        if let Some(deciding) = deciding {
+            asked.push((locate::Involved::AtTheDecidingStep, deciding, (None, None)));
+        }
         if let Some(event) = first {
             asked.push((
                 locate::Involved::AtTheFirstDifference,
@@ -700,9 +862,14 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         Vec::new()
     };
     if json {
+        let (schedule, from, until) = match &decided {
+            Some((schedule, lo, until, _)) => (*schedule, Some(*lo), Some(*until)),
+            None => (0, None, None),
+        };
         let narrowed = serde_json::json!({
-            "schedule": seed,
-            "from": lo,
+            "seed": found_seed,
+            "schedule": schedule,
+            "from": from,
             "until": until,
             "deciding_step": deciding,
             "passing": json::run(&passing)?,
@@ -715,17 +882,19 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         println!("{}", search(narrowed));
         return Ok(ExitCode::FAILURE);
     }
-    println!(
-        "passing: run {}, {}",
-        passing.manifest.id,
-        show::schedule_words(&passing.manifest.spec)
-    );
-    println!(
-        "failing: run {}, {}",
-        failing.manifest.id,
-        show::schedule_words(&failing.manifest.spec)
-    );
-    println!("the two are the same run until step {deciding}");
+    let words = |run: &Run| {
+        let spec = &run.manifest.spec;
+        if seeds > 1 {
+            format!("seed {}, {}", spec.seed, show::schedule_words(spec))
+        } else {
+            show::schedule_words(spec)
+        }
+    };
+    println!("passing: run {}, {}", passing.manifest.id, words(&passing));
+    println!("failing: run {}, {}", failing.manifest.id, words(&failing));
+    if let Some(deciding) = deciding {
+        println!("the two are the same run until step {deciding}");
+    }
     for v in &failing_violations {
         println!("failing run violates {}: {v}", v.property);
     }
@@ -753,6 +922,77 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     );
     println!("\nopen both in the desktop app: {open}");
     Ok(ExitCode::FAILURE)
+}
+
+/// One seed of a search: the seed, its unperturbed run, how its perturbed
+/// schedules are made, the machine they run on, and the step they start
+/// perturbing at.
+struct Seeded<'a> {
+    seed: u64,
+    base: Run,
+    subject: Subject<'a>,
+    machine: MachineArgs,
+    start: u64,
+}
+
+impl<'a> Seeded<'a> {
+    /// A seed whose unperturbed run is `base`. Perturbing starts at the
+    /// step the job started on, since everything before that is boot and
+    /// perturbing it would only make every run differ from the first
+    /// kernel thread on, or later when the user said so.
+    fn new(
+        base: Run,
+        subject: Subject<'a>,
+        machine: MachineArgs,
+        user_from: u64,
+    ) -> Result<Seeded<'a>> {
+        let start = show::start_step(base.trace()?).max(user_from);
+        Ok(Seeded {
+            seed: machine.seed,
+            base,
+            subject,
+            machine,
+            start,
+        })
+    }
+}
+
+/// What a search found first: a seed whose unperturbed run differs, by
+/// its index among the seeds, or a perturbed schedule of a seed that
+/// does.
+enum Found {
+    Seed(usize),
+    Schedule(usize, Box<Run>),
+}
+
+/// How a search's lines start: a run's schedule, and its seed too when
+/// the search tries more than one, padded so the lines align.
+fn run_label(seeds: u64, seed: u64, schedule: u64) -> String {
+    if seeds > 1 {
+        format!("seed {seed:>2} schedule {schedule:>3}")
+    } else {
+        format!("schedule {schedule:>3}")
+    }
+}
+
+/// How a search's sentences name a run, as [`run_label`] without the
+/// padding.
+fn run_name(seeds: u64, seed: u64, schedule: u64) -> String {
+    if seeds > 1 {
+        format!("seed {seed} schedule {schedule}")
+    } else {
+        format!("schedule {schedule}")
+    }
+}
+
+/// `machine` with keyframes and progress, for an unperturbed run that
+/// other runs start from.
+fn with_keyframes(machine: &MachineArgs) -> MachineArgs {
+    MachineArgs {
+        no_keyframes: false,
+        progress: Progress::Shown,
+        ..machine.clone()
+    }
 }
 
 /// One thread `rewind check --where` names, for its JSON: why, the step,
@@ -1338,11 +1578,12 @@ fn execute_all(
     })
 }
 
-/// A run `rewind check` tried, for its JSON: the run, its schedule,
+/// A run `rewind check` tried, for its JSON: the run, its seed and schedule,
 /// whether its verdict differs from the unperturbed run's, and the
 /// properties it violates.
 fn schedule_json(run: &Run, differs: bool, violations: &[Violation]) -> Result<serde_json::Value> {
     let mut value = json::run(run)?;
+    value["seed"] = run.manifest.spec.seed.into();
     value["schedule"] = run.manifest.spec.schedule.into();
     value["differs"] = differs.into();
     value["violations"] = violations_json(violations);
