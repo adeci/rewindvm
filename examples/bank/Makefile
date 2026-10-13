@@ -6,6 +6,9 @@ PREFIX ?= /usr/local
 
 all: bank
 
+bank: bank.c rewind.h
+	$(CC) $(CFLAGS) -o $@ bank.c $(LDLIBS)
+
 check: bank
 	./bank
 

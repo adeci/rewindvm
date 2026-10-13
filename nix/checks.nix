@@ -400,6 +400,13 @@ let
   sdkLanguages = import ./sdk-languages { inherit pkgs; };
 in
 {
+  # The examples that copy an SDK library, as a program would, hold the
+  # library as sdk/ has it.
+  sdk-copies = pkgs.runCommand "rewind-sdk-copies" { } ''
+    cmp ${../sdk/c/rewind.h} ${../examples/bank/rewind.h}
+    touch $out
+  '';
+
   # House style, checked rather than remembered: no em dashes and none of
   # the vocabulary that marks machine written prose, in docs, site copy and
   # code comments alike. Runs over a copy of the whole tree.

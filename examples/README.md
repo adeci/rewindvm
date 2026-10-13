@@ -41,6 +41,9 @@ balance, writes a line to the ledger, then stores the balance plus the
 deposit, with no lock, so a teller that runs between the other's read and
 store has its deposit written over. `make check` fails when the balance
 comes up short. Holding a mutex across the read and the store fixes it.
+It asserts with the Rewind SDK, through a copy of
+[`sdk/c/rewind.h`](../sdk/c/rewind.h): the balance adds up, and some run
+should have two deposits overlap.
 
 ```console
 $ make -C bank check                       # plain, on the host
@@ -73,4 +76,18 @@ Blocking SIGCHLD around the check and waiting with `sigsuspend` fixes it.
 ```console
 $ make -C waiter check                       # plain, on the host
 $ nix build github:fzakaria/rewindvm#waiter  # as a derivation
+```
+
+## hash-order
+
+A post's tags, each once and lowercased, collected through a Rust
+`HashSet`, and a test that expects them in the order its author saw. A
+`HashSet` keeps no order, and Rust seeds its hasher from the system's
+randomness, so the test passes in some runs and fails in others. In Rewind
+VM the randomness is the seed's, so `rewind check --seeds` finds a seed it
+fails under. Sorting the tags fixes it.
+
+```console
+$ make -C hash-order check                       # plain, on the host
+$ nix build github:fzakaria/rewindvm#hash-order  # as a derivation
 ```

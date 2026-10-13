@@ -4,10 +4,17 @@
  * lock, so a teller that runs between another's read and store has its
  * deposit written over. The check has both tellers deposit and fails when
  * the balance comes up short.
+ *
+ * rewind.h is the Rewind SDK's header, copied from sdk/c in Rewind VM's
+ * repository: it tells `rewind check` that the balance must add up, and
+ * that some run should make two deposits overlap. Outside Rewind its calls
+ * do nothing.
  */
 #include <pthread.h>
 #include <stdio.h>
 #include <unistd.h>
+
+#include "rewind.h"
 
 #define DEPOSITS 20
 #define AMOUNT 10
@@ -23,6 +30,8 @@ static void deposit(int teller, long amount)
 
 	if (write(1, line, n) != n)
 		return;
+	/* Another teller stored between this one's read and store. */
+	REWIND_SOMETIMES(balance != seen, "deposits-overlapped");
 	balance = seen + amount;
 }
 
@@ -46,5 +55,7 @@ int main(void)
 	pthread_join(second, NULL);
 
 	printf("balance %ld, expected %ld\n", balance, expected);
+	REWIND_ALWAYS(balance == expected, "balance-adds-up", "balance %ld, expected %ld", balance,
+		      expected);
 	return balance == expected ? 0 : 1;
 }

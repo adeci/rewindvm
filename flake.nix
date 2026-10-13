@@ -186,6 +186,10 @@
           # a parent waiting on a signal that already came, a lost wakeup
           # (nix/examples.nix)
           waiter = p.examples.waiter;
+
+          # a test that expects a HashSet's order, decided by the seed
+          # (nix/examples.nix)
+          hash-order = p.examples.hash-order;
         }
       );
 
