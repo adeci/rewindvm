@@ -510,6 +510,74 @@ impl Scrubber {
         )
     }
 
+    /// The marks of forks, dashed pale amber: the step this run was forked
+    /// from its parent at, and each step forks of this run on disk were
+    /// made at. Like the split mark, each goes to its step on a click and
+    /// says what was forked there when pointed at.
+    fn fork_marks(
+        &self,
+        view: crate::view::View,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::Stateful<Div>> {
+        let Some(session) = self.session.as_ref() else {
+            return Vec::new();
+        };
+
+        // The parent's step, with a thicker line, then this run's forks.
+        let mut marks: Vec<(SharedString, u64, f32, String)> = Vec::new();
+        if let (Some(parent), Some(note)) = (session.run.parent(), session.run.parent_note()) {
+            marks.push((
+                "fork-mark-parent".into(),
+                parent.step,
+                size::FORK_MARK_WIDTH,
+                note,
+            ));
+        }
+        let shown_id = session
+            .run
+            .id()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let runs = self.runs.family.iter().flat_map(|f| f.runs.iter());
+        for (step, forks) in crate::family::forks_by_step(runs, &shown_id) {
+            marks.push((
+                format!("fork-mark-{step}").into(),
+                step,
+                size::DISK_FORK_MARK_WIDTH,
+                crate::family::forks_note(step, &forks),
+            ));
+        }
+
+        marks
+            .into_iter()
+            .filter(|(_, step, _, _)| view.contains(*step))
+            .map(|(id, step, width, note)| {
+                div()
+                    .id(id)
+                    .absolute()
+                    .left(relative(view.fraction_of(step)))
+                    .top(px(-size::MARKER_OVERHANG))
+                    .bottom(px(-size::MARKER_OVERHANG))
+                    .w(px(size::SPLIT_MARK_HIT_WIDTH))
+                    .ml(px(-size::SPLIT_MARK_HIT_WIDTH / 2.0))
+                    .flex()
+                    .justify_center()
+                    .cursor_pointer()
+                    .tooltip(tooltip(note))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |this, _, _, cx| this.jump_to(step, cx)))
+                    .child(
+                        div()
+                            .h_full()
+                            .w(px(width))
+                            .border_l(px(width))
+                            .border_dashed()
+                            .border_color(rgb(theme::AMBER_PALE)),
+                    )
+            })
+            .collect()
+    }
+
     /// The timeline: phase segments, ticks, markers and the playhead over
     /// a track that scrubs on click and drag, then the controls row.
     fn render_timeline(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
@@ -602,44 +670,7 @@ impl Scrubber {
                     .bg(rgb(color))
             })
         };
-        // The step this run was forked from its parent at.
-        if let Some(parent) = session.run.parent() {
-            track = track.children(
-                marker(parent.step, size::FORK_MARK_WIDTH, theme::AMBER_PALE).map(|m| {
-                    m.bg(rgba(0))
-                        .border_l_2()
-                        .border_dashed()
-                        .border_color(rgb(theme::AMBER_PALE))
-                }),
-            );
-        }
-        // Forks of this run on disk, from this session or before it.
-        let shown_id = session
-            .run
-            .id()
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        let disk_forks = self
-            .runs
-            .family
-            .iter()
-            .flat_map(|f| f.runs.iter())
-            .filter_map(|r| {
-                r.parent
-                    .as_ref()
-                    .filter(|p| p.id == shown_id)
-                    .map(|p| p.step)
-            });
-        for step in disk_forks {
-            track = track.children(marker(step, size::FORK_MARK_WIDTH, theme::AMBER_PALE).map(
-                |m| {
-                    m.bg(rgba(0))
-                        .border_l_1()
-                        .border_dashed()
-                        .border_color(rgb(theme::AMBER_PALE))
-                },
-            ));
-        }
+        track = track.children(self.fork_marks(view, cx));
         for (n, fork) in self.forks.iter().enumerate() {
             let color = match fork.state {
                 ForkState::Failed(_) => theme::MUTED,

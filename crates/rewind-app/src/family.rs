@@ -943,6 +943,41 @@ pub fn family_of(runs: Vec<RunEntry>, id: &str) -> Option<Family> {
     Some(Family { runs })
 }
 
+/// The forks of run `id` among `runs`, by the step each was forked at.
+pub fn forks_by_step<'a>(
+    runs: impl Iterator<Item = &'a RunEntry>,
+    id: &str,
+) -> BTreeMap<u64, Vec<&'a RunEntry>> {
+    let mut by_step: BTreeMap<u64, Vec<&RunEntry>> = BTreeMap::new();
+    for run in runs {
+        let Some(parent) = run.parent.as_ref().filter(|p| p.id == id) else {
+            continue;
+        };
+        by_step.entry(parent.step).or_default().push(run);
+    }
+    by_step
+}
+
+/// The mark of the forks a run has at one step, when pointed at: one fork
+/// by its id, schedule and ending, several by how many failed.
+pub fn forks_note(step: u64, forks: &[&RunEntry]) -> String {
+    let step = thousands(step);
+    if let [fork] = forks {
+        return format!(
+            "Step {step}: fork {} of this run, under schedule {}, ended {}",
+            short_id(&fork.id),
+            fork.schedule,
+            fork.ending
+        );
+    }
+    let failed = forks.iter().filter(|f| f.failed).count();
+    let failed = match failed {
+        0 => "none failed".to_string(),
+        n => format!("{n} of them failed"),
+    };
+    format!("Step {step}: {} forks of this run, {failed}", forks.len())
+}
+
 #[cfg(test)]
 mod tests {
     // Families built from runs described in memory: a base, a schedule
@@ -1620,5 +1655,25 @@ mod tests {
         };
         assert_eq!(f.base().id, "orphan");
         assert_eq!(f.rows()[0].depth, 0);
+    }
+
+    #[test]
+    fn a_fork_mark_names_its_forks() {
+        // One fork at a step is named with its schedule and ending; several
+        // are counted, with how many failed.
+        let one = run("6a9fdcf51567e33e", Some(("base", 340)), 3, "exited:2");
+        assert_eq!(
+            forks_note(340, &[&one]),
+            "Step 340: fork 6a9fdcf5 of this run, under schedule 3, ended exited:2"
+        );
+        let other = run("f2", Some(("base", 340)), 4, "exited:0");
+        assert_eq!(
+            forks_note(4200, &[&one, &other]),
+            "Step 4,200: 2 forks of this run, 1 of them failed"
+        );
+        assert_eq!(
+            forks_note(4200, &[&other, &other]),
+            "Step 4,200: 2 forks of this run, none failed"
+        );
     }
 }

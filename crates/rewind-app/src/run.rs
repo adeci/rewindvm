@@ -170,6 +170,26 @@ impl Run {
         self.manifest.as_ref()?.parent.as_ref()
     }
 
+    /// The note on the mark of the step this run was forked at.
+    pub fn parent_note(&self) -> Option<String> {
+        let manifest = self.manifest.as_ref()?;
+        let parent = manifest.parent.as_ref()?;
+        let spec = &manifest.spec;
+
+        // A fork reseeded where it was made took that seed there.
+        let reseed = spec
+            .reseeds
+            .iter()
+            .find(|r| r.step == parent.step)
+            .map(|r| r.seed);
+        Some(parent_note(
+            &parent.run.to_string(),
+            parent.step,
+            spec.schedule,
+            reseed,
+        ))
+    }
+
     /// How the run ended, in the engine's words, once the engine has
     /// recorded its end. A Nix build that exited 0 without creating every
     /// output ended missing-output, as nix-daemon would fail it.
@@ -578,6 +598,21 @@ impl ScheduleSplit {
     }
 }
 
+/// The mark of the step a fork was made at, when pointed at: the run it
+/// came from, its schedule, and the seed it was reseeded with there, if
+/// any.
+pub fn parent_note(parent: &str, step: u64, schedule: u64, reseed: Option<u64>) -> String {
+    let start = format!(
+        "Step {}: forked from run {} under schedule {schedule}",
+        thousands(step),
+        short_id(parent)
+    );
+    match reseed {
+        Some(seed) => format!("{start}, reseeded with seed {seed}"),
+        None => start,
+    }
+}
+
 /// One run's side of a divergence as the event it names.
 fn party(run: &Run, side: Option<crate::model::Side>) -> Option<describe::Party<'_>> {
     let side = side?;
@@ -947,5 +982,19 @@ mod tests {
         assert!(run.path.join(TRACE).is_file());
         assert_eq!(run.verdict(), Verdict::Failed);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_parent_mark_names_the_parent_schedule_and_seed() {
+        // A fork's mark names the run it came from and its schedule, and
+        // the seed when the fork was reseeded at its step.
+        assert_eq!(
+            parent_note("95701620b9331847", 340, 0, Some(8)),
+            "Step 340: forked from run 95701620 under schedule 0, reseeded with seed 8"
+        );
+        assert_eq!(
+            parent_note("95701620b9331847", 4200, 3, None),
+            "Step 4,200: forked from run 95701620 under schedule 3"
+        );
     }
 }

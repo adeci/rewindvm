@@ -172,7 +172,10 @@ pub mod size {
     /// the pointer, wider than the line it draws.
     pub const SPLIT_MARK_HIT_WIDTH: f32 = 9.0;
     pub const FAILURE_WIDTH: f32 = 3.0;
+    /// The dashed line where this run was forked from its parent.
     pub const FORK_MARK_WIDTH: f32 = 2.0;
+    /// The thinner dashed line where forks of this run on disk were made.
+    pub const DISK_FORK_MARK_WIDTH: f32 = 1.0;
     /// The focus ring sits this far outside the track.
     pub const FOCUS_RING_OUTSET_X: f32 = 8.0;
     pub const FOCUS_RING_OUTSET_Y: f32 = 14.0;
