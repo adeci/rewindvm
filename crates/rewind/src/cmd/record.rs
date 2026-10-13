@@ -721,13 +721,16 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         ("schedule", "schedules")
     };
     let Some(found) = found else {
+        // Every run tried, or the one when only the unperturbed run was.
+        let every = if tried == 0 {
+            format!("the one {one_run} tried")
+        } else {
+            format!("all {} {all_runs}", tried + 1)
+        };
         if same_outcome_only {
-            say(format!("same result under all {} {all_runs}", tried + 1));
+            say(format!("same result under {every}"));
         } else if base_holds {
-            say(format!(
-                "every property held under all {} {all_runs}",
-                tried + 1
-            ));
+            say(format!("every property held under {every}"));
         } else {
             if !all {
                 say(format!(
