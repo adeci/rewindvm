@@ -82,8 +82,8 @@ here. The last line says the output matches the copy in your store.
 ## Find a failing interleaving
 
 `rewind check` builds it again under perturbed schedules, which reschedule
-the VM's threads at different points, and stops at the first batch in which a
-build ends differently:
+and stall the VM's threads at different points, and stops at the first batch
+in which a build ends differently:
 
 ```console run name=check time=check_seconds
 $ rewind check --epoch {{epoch}} {{flake}}

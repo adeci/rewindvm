@@ -39,11 +39,11 @@ $ rewind where {{failing|short}} {{crash_step}}
 
 <!-- assert: grep -q '^#0 worker (src/pool.c:77)' {{out:where}} && grep -q '^> *77 .*p->queue->completed++;' {{out:where}} && grep -q 'start_thread' {{out:where}} && grep -q 'clone3' {{out:where}} -->
 
-`--tid` picks another thread, on the CPU or not. At step {{last_write}}, the
-worker's last write, the main thread is waiting to join the workers:
+`--tid` picks another thread, on the CPU or not. At step {{crash_step}}, where
+the worker faults, the main thread is waiting to join the workers:
 
 ```console run name=where_main
-$ rewind where {{failing|short}} {{last_write}} --tid {{pid}}
+$ rewind where {{failing|short}} {{crash_step}} --tid {{pid}}
 ```
 
 <!-- assert: grep -q 'pool_shutdown (src/pool.c:128)' {{out:where_main}} && grep -q 'pthread_join' {{out:where_main}} -->
@@ -52,12 +52,12 @@ $ rewind where {{failing|short}} {{last_write}} --tid {{pid}}
 every thread, ask gdb for all the stacks of the process:
 
 ```console run name=all_bt
-$ rewind gdb {{failing|short}} {{last_write}} --pid {{pid}} -- -batch -ex 'thread apply all bt' 2>/dev/null | grep -E '^Thread|src/|tests/'
+$ rewind gdb {{failing|short}} {{crash_step}} --pid {{pid}} -- -batch -ex 'thread apply all bt' 2>/dev/null | grep -E '^Thread|src/|tests/'
 ```
 
 <!-- assert: grep -q 'in pool_shutdown .* at src/pool.c:128' {{out:all_bt}} && grep -q 'in main () at tests/test_pool_shutdown.c' {{out:all_bt}} -->
 
-<!-- set main_frame: rewind where {{failing}} {{last_write}} --tid {{pid}} --json 2>/dev/null | jq .chosen -->
+<!-- set main_frame: rewind where {{failing}} {{crash_step}} --tid {{pid}} --json 2>/dev/null | jq .chosen -->
 
 `rewind gdb` starts in the thread `rewind where` looks at, in its innermost
 frame. `--tid` and `--frame` start it elsewhere, with frames numbered as
@@ -65,7 +65,7 @@ frame. `--tid` and `--frame` start it elsewhere, with frames numbered as
 `pool_shutdown` has already set the queue to NULL:
 
 ```console run name=gdb_frame
-$ rewind gdb {{failing|short}} {{last_write}} --tid {{pid}} --frame {{main_frame}} -- -batch -ex 'p p->queue'
+$ rewind gdb {{failing|short}} {{crash_step}} --tid {{pid}} --frame {{main_frame}} -- -batch -ex 'p p->queue'
 ```
 
 <!-- assert: grep -q 'in pool_shutdown .* at src/pool.c:128' {{out:gdb_frame}} && grep -q '(struct queue \*) 0x0' {{out:gdb_frame}} -->
@@ -97,14 +97,15 @@ on the CPU there:
 $ rewind where {{failing|short}} {{deciding}}
 ```
 
-<!-- assert: grep -q 'main (tests/test_pool_shutdown.c:23)' {{out:decides}} && grep -q 'usleep(100);' {{out:decides}} -->
+<!-- assert: grep -q 'worker (src/pool.c:75)' {{out:decides}} && grep -q 'if (!p->stopping) {' {{out:decides}} -->
 
-The test's main thread was waiting for half the jobs to finish before it
-shuts the pool down. A worker checks `p->stopping` without the lock and then
-counts its job through `p->queue`, which `pool_shutdown` frees. After the
-reschedule at step {{deciding}}, the main thread sets the queue to NULL
-between a worker's check and its count, and the worker faults on it
-{{gap}} steps later. Without it, the worker counts first and the test passes.
+A worker checks `p->stopping` without the lock, prints its job, and then
+counts it through `p->queue`, which `pool_shutdown` frees. At step
+{{deciding}} the worker has made its check and is printing; {{deciding_words}}
+there holds it before the count. The test's main thread runs meanwhile, sees
+half the jobs done, and shuts the pool down, setting the queue to NULL, and
+the worker faults on it {{gap}} steps later. Without that step's
+perturbation, the worker counts first and the test passes.
 
 `check --where` looks up both threads itself: the one on the CPU at the
 deciding step, and the one at the failing run's first differing event. Each
@@ -114,7 +115,7 @@ lookup forks the run and starts gdb, so it is opt-in:
 $ rewind check --where --epoch {{epoch}} {{flake}} 2>/dev/null | sed -n '/^where the threads were/,/first event that differs$/p'
 ```
 
-<!-- assert: grep -q 'main (tests/test_pool_shutdown.c:23), on the CPU at the deciding step$' {{out:check_where}} && grep -q 'worker (src/pool.c:77), at the first event that differs$' {{out:check_where}} -->
+<!-- assert: grep -q 'worker (src/pool.c:75), on the CPU at the deciding step$' {{out:check_where}} && grep -q 'worker (src/pool.c:77), at the first event that differs$' {{out:check_where}} -->
 
 In the app, the deciding step is a dashed blue mark on the timeline, before
 the solid one where the runs' events first differ. Zoomed in around the crash:

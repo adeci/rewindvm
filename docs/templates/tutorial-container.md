@@ -80,9 +80,9 @@ makes ids other than these.
 
 ## Find a failing interleaving
 
-`rewind check` runs it again under perturbed schedules, which reschedule the
-VM's threads at different points, and stops at the first batch in which a run
-ends differently:
+`rewind check` runs it again under perturbed schedules, which reschedule and
+stall the VM's threads at different points, and stops at the first batch in
+which a run ends differently:
 
 ```console run name=check time=check_seconds
 $ rewind check --root mylib.tar --cwd /src -- make check

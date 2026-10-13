@@ -90,10 +90,12 @@ randomness, which in the VM is a function of `--seed`, so no schedule
 changes the order and every one passes. `--seeds` tries other seeds:
 
 ```console run name=seeds
-$ rewind check --epoch {{epoch}} --seeds 8 --schedules 0 {{repo}}#hash-order | grep -E '^seed|decides it'
+$ rewind check --epoch {{epoch}} --seeds 8 --schedules 0 {{repo}}#hash-order | grep -E '^seed|decides it|passing:|failing:'
 ```
 
 <!-- capture deciding_seed: seed (\d+) decides it -->
+<!-- capture hash_passing: passing: run (\w+) -->
+<!-- set hash_start: rewind events {{hash_passing}} --json | jq -r 'select(.kind.type == "mark" and .kind.text == "rewind-start") | .step' -->
 <!-- assert: grep -qE '^seed [0-9]+ decides it: unperturbed, seed [0-9]+ passes and seed [0-9]+ fails$' {{out:seeds}} -->
 
 Seed {{deciding_seed}} orders the tags the other way. Every seed is tried
@@ -108,14 +110,24 @@ Open the failing `bank` run beside the passing one, at the assertion:
 $ rewind open {{bank_failing|short}} {{assert_step}} --compare {{bank_passing|short}}
 ```
 
-<!-- screenshot site/img/app-assertion: {{home}}/runs/{{bank_failing}} --compare {{home}}/runs/{{bank_passing}} --step {{assert_step}} ;; wait 2 -->
+<!-- screenshot site/img/app-assertion: {{home}}/runs/{{bank_failing}} --compare {{home}}/runs/{{bank_passing}} --step {{assert_step}} ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; wait 2 -->
 
-![The app at step {{assert_step}} of the failing bank run: a red mark above the track where always "balance-adds-up" failed, and the event card naming it](../site/img/app-assertion.png)
+![The app zoomed in around step {{assert_step}} of the failing bank run: a red mark above the track where always "balance-adds-up" failed, the test's span under the track in red, and the event card naming it](../site/img/app-assertion.png)
 
 The red mark above the track is the assertion that broke, and pointing at it
 says what broke. The event card names it, and Jump to failure goes to it.
-Tests a job marks with the SDK, or its pytest and JUnit plugins, show as a
-strip under the track, a span per test, green passed and red failed.
+`bank` marks its test with the SDK too, as the pytest and JUnit plugins mark
+theirs, and the strip under the track has a span per test, green passed and
+red failed.
+
+The chevron beside Fork from here also offers Check from here with 8 seeds
+of 8 schedules, each seed after the run's own reseeding a fork of it at the
+playhead. From the start of `hash-order`'s passing run, a row of cells per
+seed, blue where the seed made the test fail:
+
+<!-- screenshot site/img/app-seeds: {{home}}/runs/{{hash_passing}} --step {{hash_start}} ;; click 1408 168 ;; wait 1 ;; click 1300 376 ;; wait 1 ;; click 1300 168 ;; wait 120 -->
+
+![The app after Check from here with 8 seeds of 8 schedules at the start of hash-order's passing run: a card with a row of cells per seed, the seeds that made the test fail in blue](../site/img/app-seeds.png)
 
 ## What to read next
 
