@@ -7,8 +7,8 @@
  *
  * rewind.h is the Rewind SDK's header, copied from sdk/c in Rewind VM's
  * repository: it tells `rewind check` that the balance must add up, and
- * that some run should make two deposits overlap. Outside Rewind its calls
- * do nothing.
+ * that some run should make two deposits overlap, and marks the test's
+ * start and result. Outside Rewind its calls do nothing.
  */
 #include <pthread.h>
 #include <stdio.h>
@@ -44,11 +44,15 @@ static void *teller(void *arg)
 	return NULL;
 }
 
+/* The test's name, as the Rewind SDK marks it. */
+#define TEST "two tellers deposit"
+
 int main(void)
 {
 	pthread_t first, second;
 	long expected = 2L * DEPOSITS * AMOUNT;
 
+	rewind_test_begin(TEST);
 	pthread_create(&first, NULL, teller, (void *)1L);
 	pthread_create(&second, NULL, teller, (void *)2L);
 	pthread_join(first, NULL);
@@ -57,5 +61,6 @@ int main(void)
 	printf("balance %ld, expected %ld\n", balance, expected);
 	REWIND_ALWAYS(balance == expected, "balance-adds-up", "balance %ld, expected %ld", balance,
 		      expected);
+	rewind_test_end(TEST, balance == expected ? REWIND_PASS : REWIND_FAIL);
 	return balance == expected ? 0 : 1;
 }
