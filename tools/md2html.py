@@ -27,6 +27,7 @@ LINK_MAP = {
     "docs/pmu.md": "counter-time.html",
     "docs/tutorial-nix.md": "tutorials/nix.html",
     "docs/tutorial-container.md": "tutorials/container.html",
+    "docs/tutorial-properties.md": "tutorials/properties.html",
     "docs/tutorial-advanced.md": "tutorials/advanced.html",
     "docs/case-studies/nix-gc-closure-sigpipe.md": "case-studies/nix-gc-closure-sigpipe.html",
     "docs/case-studies/nix-schema-migration-hang.md": "case-studies/nix-schema-migration-hang.html",
@@ -146,6 +147,19 @@ PAGES = [
         description="Install Rewind VM, find the thread interleaving that breaks a container image's tests, look at the crash step by step, fork it, and check the fix. No Nix needed.",
         toc="Steps",
         figure=("scrub-it-in-the-app", 1, CONTAINER_FIGURE),
+        next=(
+            "tutorials/properties.html",
+            "Tutorial &middot; Properties",
+            "Say what a correct run is",
+            "Properties, assertions from inside the program, and seeds.",
+        ),
+    ),
+    dict(
+        source="docs/tutorial-properties.md",
+        eyebrow="Tutorial &middot; Properties",
+        description="Tell rewind check what a correct run is: properties it judges every run by, assertions a program makes with the Rewind SDK, and seeds that vary a program's randomness as well as its schedule.",
+        toc="Steps",
+        figure=None,
         next=(
             "tutorials/advanced.html",
             "Tutorial &middot; Advanced",

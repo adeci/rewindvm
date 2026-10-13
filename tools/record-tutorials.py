@@ -3,6 +3,7 @@
 
     tools/record-tutorials.py --rev HEAD              # every tutorial
     tools/record-tutorials.py --rev v0.3.2 nix        # one of them
+    tools/record-tutorials.py --local properties      # before a push
 
 Each tutorial is a template in docs/templates/, written as the page reads,
 and this writes the page, docs/tutorial-<name>.md, which tools/md2html.py
@@ -56,6 +57,12 @@ wall times are those of a reader's fresh install.
 Any command that fails, capture that does not match, or assertion that does
 not hold stops the recording with the template line, so a build that tells
 the story differently is noticed rather than published.
+
+The pages name workloads by GitHub, as `github:fzakaria/rewindvm#bank`.
+With --local, the commands build them from the recorded commit instead,
+while the page still shows GitHub: a page about an example that is not
+pushed yet can be recorded, and the runs are the ones a reader's build of
+the same source makes.
 """
 
 import argparse
@@ -73,6 +80,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 TEMPLATES = REPO / "docs" / "templates"
+
+# The repository as the pages name it.
+GITHUB_FLAKE = re.compile(r"github:fzakaria/rewindvm(\?[^#\s'\"]*)?")
 
 # The flake outputs a recording runs: the command and the app, the
 # release tarballs the container tutorial installs, and the guest every
@@ -131,8 +141,11 @@ class Recording:
     """One tutorial being recorded: its values, its shell's directory and
     environment, and the page so far."""
 
-    def __init__(self, name, work, home, paths):
+    def __init__(self, name, work, home, paths, local=None):
         self.name = name
+        # The flake the commands build `github:fzakaria/rewindvm` from
+        # instead, with --local.
+        self.local = local
         self.work = work
         self.cwd = work
         self.values = {
@@ -185,10 +198,23 @@ class Recording:
 
         return VALUE.sub(one, text)
 
+    def localize(self, command):
+        """`command` with the repository's GitHub flake replaced by the
+        recorded commit, with --local, keeping any query it has."""
+        if self.local is None:
+            return command
+
+        def one(m):
+            query = m.group(1)
+            return self.local + ("&" + query[1:] if query else "")
+
+        return GITHUB_FLAKE.sub(one, command)
+
     def shell(self, command, check=True):
         """Runs `command` the way the page's reader would, returning what it
         printed, standard error included. `cd` changes the directory for the
         commands after it, as in the reader's shell."""
+        command = self.localize(command)
         if m := re.fullmatch(r"cd (\S+)", command):
             self.cwd = (self.cwd / m.group(1)).resolve()
             return ""
@@ -207,6 +233,7 @@ class Recording:
     def background(self, command, until, after):
         """Runs `command` until its output matches `until`, then `after`,
         then waits for it."""
+        command = self.localize(command)
         proc = subprocess.Popen(
             ["bash", "-c", command],
             cwd=self.cwd,
@@ -432,10 +459,10 @@ def check_guest(home, paths):
                 )
 
 
-def record(name, work, home, paths):
+def record(name, work, home, paths, local=None):
     """Records one tutorial and writes its page."""
     template = TEMPLATES / f"tutorial-{name}.md"
-    rec = Recording(name, work, home, paths)
+    rec = Recording(name, work, home, paths, local)
     lines = template.read_text().splitlines()
     page = []
     i = 0
@@ -492,6 +519,11 @@ def main():
         help="where each tutorial's commands run",
     )
     parser.add_argument(
+        "--local",
+        action="store_true",
+        help="build the pages' github:fzakaria/rewindvm workloads from the recorded commit",
+    )
+    parser.add_argument(
         "tutorials", nargs="*", help="names, such as nix; all by default"
     )
     args = parser.parse_args()
@@ -510,7 +542,8 @@ def main():
         work = args.work / name
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
-        record(name, work, home, paths)
+        local = f"git+file://{REPO}?rev={commit}" if args.local else None
+        record(name, work, home, paths, local)
 
     lines = [
         "# The guest the tutorials were recorded with, by tools/record-tutorials.py.",

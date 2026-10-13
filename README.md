@@ -127,6 +127,12 @@ $ rewind check --where github:fzakaria/rewindvm#mylib
 # each a fork of the run
 $ rewind check --run <run> --schedule-from <step> --schedules 16 --all --no-narrow
 
+# judge every schedule by what a correct run is: here, a config rewritten in place
+$ rewind check --property 'atomic-replace=*.conf' github:fzakaria/rewindvm#config-reload
+
+# vary the program's randomness as well as its schedule
+$ rewind check --seeds 8 github:fzakaria/rewindvm#hash-order
+
 # any command in a root filesystem: a directory, an erofs image, or a docker export
 $ rewind run --root mylib.tar --cwd /src -- make check
 
@@ -162,8 +168,9 @@ $ rewind where <run> <step> --tid <tid> --json
 # which thread held the CPU at each step of a window, replayed step by step
 $ rewind threads <run> --from <step> --to <step>
 
-# branch a run at a step under another schedule, or replay it exactly
+# branch a run at a step under another schedule or seed, or replay it exactly
 $ rewind fork <run> <step> --schedule 2
+$ rewind fork <run> <step> --seed 7
 $ rewind replay <run>
 
 # remove a run's forks that ran exactly as an older one did
@@ -186,6 +193,11 @@ $ rewind export <run> --replayable
 $ rewind import <file>.rwd
 $ rewind import https://github.com/fzakaria/rewindvm/releases/download/case-studies/nix-gc-closure-sigpipe-replayable.rwd
 ```
+
+A program can say what a correct run is from the inside with the
+[Rewind SDK](sdk/README.md), a file or two for C, Rust, Go, Python, Java or
+shell: `rewind check` judges every run by its assertions, and the app marks
+where one broke.
 
 ## The desktop app
 

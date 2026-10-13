@@ -625,8 +625,10 @@ nothing.
 
 1. Runs the unperturbed schedule.
 2. Runs perturbed schedules, starting the window at the step the job
-   started, until one ends differently. It compares exit statuses and output
-   hashes. A schedule can make a program loop forever, so each run gets ten
+   started, until one's verdict differs from schedule 0's. By default a run
+   is judged by its exit status and output hashes against schedule 0's;
+   `--property` judges it by what a correct run is (see
+   [Properties](#properties-seeds-and-the-sdk)). A schedule can make a program loop forever, so each run gets ten
    times as long as schedule 0 took, and at least a minute, unless
    `--timeout` says otherwise. A run still going then is stopped, and ends
    as timed-out. Whether a run times out depends on how fast the host is.
@@ -710,6 +712,50 @@ schedule is a fork of the run at `--schedule-from`, made with the same
 perturbation of its own before that step stays. Counting and narrowing are
 the same as for a job. `--no-narrow` stops at the count, which is what the
 app's Check from here asks for.
+
+### Properties, seeds and the SDK
+
+A property says whether a finished run is correct and, when it is not, why
+and at which step. `check` judges schedule 0 and every run it tries by the
+properties given, and looks for a run whose verdict differs from schedule
+0's: one that violates a property schedule 0 holds, or holds every
+property where schedule 0 violates one. Narrowing takes the same predicate,
+so it is unchanged. With no property given the property is `same-outcome`,
+the comparison above. A property schedule 0 violates and every run tried
+violates too is the bug itself, reported at its step with no search.
+
+Most properties read the trace alone, from the job's start to its exit, over
+the processes init's first fork after the start mark forked:
+`no-crash` (a death by a signal that dumps core), `no-orphans` (a process
+alive after the job's main process exited, which init then killed),
+`single-writer`, `atomic-replace`, `no-read-while-written` and
+`writes-within`. A write lasts from the open to the close that drops the
+file's last reference, a `dup2` onto it included, or to the process's exit;
+a parent and a child sharing one file count as one writer, as gcc hands
+cc1 its temporary file. `/dev`, `/proc` and `/sys` are not files to any of
+them. `script=PATH` runs a program on the host with the run's id, schedule
+0's and the job's exit step in its environment, and `junit=GLOB` reads the
+JUnit XML reports the job left matching the glob, through one `files`
+inspection of the run at the job's exit, and compares results by test name
+with schedule 0's.
+
+`--seeds N` tries N seeds of the guest's randomness from `--seed` on, each
+unperturbed and then under every perturbed schedule. A job's other seeds
+boot from scratch, since the seed is credited at boot. A recorded run's are
+forks reseeded at `--schedule-from` (see [Forks](#forks)). A seed whose
+unperturbed run already differs decides the run alone and is not
+perturbed further: there is no step to narrow to.
+
+The Rewind SDK is a line a program writes to `/dev/rewind` per call, kept in
+the trace as a mark with its process, thread and step: `always`, `sometimes`,
+`unreachable`, `test-begin` and `test-end`, in a format `rewind_trace::sdk`
+reads. Only init's marks count as init's, so a program cannot pose as it.
+`check` adds the `sdk` property by itself when schedule 0 writes SDK marks:
+a run violates it where an `always` failed, an `unreachable` was reached, or
+a test that passed in schedule 0 failed or never finished. A `sometimes`
+fails no run; after the search `check` names each one no run made true. The
+libraries in `sdk/` write each pass or failure once per id and process,
+since every line is an exit.
 
 Which thread held the CPU at a step is not in the trace. Events carry a pid
 and tid, but between two events nothing says who ran, and a race is an order
