@@ -85,14 +85,20 @@ platforms. The platform is detected by the CPUID signature `RewindRewind`.
   port writes.
 - The monitor's interrupt arrives as an MSI on `HYPERVISOR_CALLBACK_VECTOR`.
   A reason word in the shared page says whether the timer is due, a
-  reschedule is requested, or an inspection is.
+  reschedule, a stall or an inspection is requested, or the RNG is to take
+  in new bytes the shared page holds.
+- Besides exec, fork, exit, signals and opens for writing, it reports the
+  close that drops a written file's last reference, and an open for reading
+  of a regular file whose inode counts a writer. Opens of files nobody is
+  writing, nearly all of them, cost a descriptor lookup and no record.
 - `sched_getaffinity` reports the CPU count given as `rewind.cpus=` on the
   command line, and `sched_setaffinity` takes any of those CPUs to mean the
   one there is (see [Exploring interleavings](#exploring-interleavings)).
 - `sched_yield` makes an exit, so a thread that yields in a loop moves
   virtual time (see [Limits](#limits)). These three hooks in
-  `kernel/sched/syscalls.c` are the patch's only changes outside
-  `arch/x86`.
+  `kernel/sched/syscalls.c`, and `rewind_rng_reseed` in
+  `drivers/char/random.c`, which mixes bytes into the input pool and rekeys
+  the crng at once, are the patch's only changes outside `arch/x86`.
 
 An inspection is how `rewind cat` and `rewind shell` look inside a run at a
 step. Rewind forks the run at the step and writes a request, a list of
@@ -205,9 +211,9 @@ the last event that wrote, renamed or unlinked each path, or as original when
 none did, and keeps the paths the VM did not have as absent. A later lookup
 whose step has the same last event for a path reads it from there, and makes
 no `files` fork when every path is there. An open for writing counts once
-every process that opened the file has exited, since the trace does not
-record the writes themselves; until then the file is read from the VM each
-time.
+every process that opened the file has closed it or exited, since the trace
+does not record the writes themselves; until then the file is read from the
+VM each time.
 
 DWARF and sources for everything in the store come by build ID from
 nixseparatedebuginfod2, which Rewind starts for the session on a socket it
@@ -463,6 +469,14 @@ fork reads the parent's keyframes at or before that step and its own after,
 and the parent may share some of its own the same way, back to a run that
 shares none. Runs that share keyframes sit side by side in one runs
 directory.
+
+A fork can be given another seed for the guest's randomness, as `rewind
+fork --seed` and `rewind check --run --seeds` do. Its spec lists the reseed
+with its step, and at that step's interrupt the monitor writes 32 bytes
+derived from the seed and the step into the shared page and the kernel mixes
+them in and rekeys its RNG, so `getrandom` returns other numbers from there
+on. A reseed parts the fork from its parent at its step, as a schedule does,
+and a fork of the fork keeps the reseeds before its own step.
 
 Rewind takes one keyframe at the last shared step and puts it in the
 directory of the earliest run that has that step in common with the fork,

@@ -28,6 +28,7 @@ const NO_CRASH: &str = "no-crash";
 const NO_ORPHANS: &str = "no-orphans";
 const SINGLE_WRITER: &str = "single-writer";
 const ATOMIC_REPLACE: &str = "atomic-replace";
+const NO_READ_WHILE_WRITTEN: &str = "no-read-while-written";
 const WRITES_WITHIN: &str = "writes-within";
 const SDK: &str = "sdk";
 const JUNIT: &str = "junit";
@@ -36,7 +37,8 @@ const SCRIPT: &str = "script";
 /// Every property as the command line writes it, for the message that
 /// refuses an unknown one.
 const ALL: &str = "same-outcome, exit-zero, no-crash, no-orphans, single-writer=GLOB, \
-     atomic-replace=GLOB, writes-within=DIR:DIR, sdk, junit=GLOB and script=PATH";
+     atomic-replace=GLOB, no-read-while-written=GLOB, writes-within=DIR:DIR, sdk, junit=GLOB \
+     and script=PATH";
 
 /// What separates the directories of writes-within.
 const DIR_SEPARATOR: char = ':';
@@ -71,6 +73,9 @@ pub enum Property {
     /// No file matching the glob that the run had written was truncated
     /// in place.
     AtomicReplace(Glob),
+    /// No file matching the glob was opened for reading while another
+    /// process was writing it.
+    NoReadWhileWritten(Glob),
     /// The job wrote files only under these directories.
     WritesWithin(Vec<String>),
     /// What the job asserted with the Rewind SDK held: no `always` failed,
@@ -103,6 +108,9 @@ impl FromStr for Property {
             (SDK, None) => Ok(Property::Sdk),
             (SINGLE_WRITER, Some(glob)) => Ok(Property::SingleWriter(Glob::new(glob))),
             (ATOMIC_REPLACE, Some(glob)) => Ok(Property::AtomicReplace(Glob::new(glob))),
+            (NO_READ_WHILE_WRITTEN, Some(glob)) => {
+                Ok(Property::NoReadWhileWritten(Glob::new(glob)))
+            }
             (JUNIT, Some(glob)) => Ok(Property::Junit(Glob::new(glob))),
             (WRITES_WITHIN, Some(dirs)) => {
                 let dirs: Vec<String> = dirs.split(DIR_SEPARATOR).map(str::to_string).collect();
@@ -115,7 +123,7 @@ impl FromStr for Property {
             (SAME_OUTCOME | EXIT_ZERO | NO_CRASH | NO_ORPHANS | SDK, Some(_)) => {
                 bail!("property {name} takes no argument")
             }
-            (SINGLE_WRITER | ATOMIC_REPLACE | JUNIT, None) => {
+            (SINGLE_WRITER | ATOMIC_REPLACE | NO_READ_WHILE_WRITTEN | JUNIT, None) => {
                 bail!("property {name} needs the files it is about: {name}=GLOB")
             }
             (WRITES_WITHIN, None) => bail!("property {name} needs directories: {name}=DIR:DIR"),
@@ -136,6 +144,9 @@ impl fmt::Display for Property {
             Property::Sdk => write!(f, "{SDK}"),
             Property::SingleWriter(glob) => write!(f, "{SINGLE_WRITER}={}", glob.as_str()),
             Property::AtomicReplace(glob) => write!(f, "{ATOMIC_REPLACE}={}", glob.as_str()),
+            Property::NoReadWhileWritten(glob) => {
+                write!(f, "{NO_READ_WHILE_WRITTEN}={}", glob.as_str())
+            }
             Property::Junit(glob) => write!(f, "{JUNIT}={}", glob.as_str()),
             Property::WritesWithin(dirs) => {
                 let dirs = dirs.join(&DIR_SEPARATOR.to_string());
@@ -335,6 +346,9 @@ impl<'a> Judge<'a> {
             Property::AtomicReplace(glob) => {
                 Ok(found(trace_properties::atomic_replace(run.trace()?, glob)))
             }
+            Property::NoReadWhileWritten(glob) => Ok(found(
+                trace_properties::no_read_while_written(run.trace()?, glob),
+            )),
             Property::WritesWithin(dirs) => {
                 Ok(found(trace_properties::writes_within(run.trace()?, dirs)))
             }
@@ -615,6 +629,10 @@ mod tests {
             (
                 "atomic-replace=*.conf",
                 Property::AtomicReplace(Glob::new("*.conf")),
+            ),
+            (
+                "no-read-while-written=*.conf",
+                Property::NoReadWhileWritten(Glob::new("*.conf")),
             ),
             (
                 "writes-within=/build:/tmp",

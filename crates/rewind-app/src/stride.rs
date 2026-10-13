@@ -26,6 +26,8 @@ pub enum Kind {
     Unlink,
     Rename,
     Mark,
+    ReadOpen,
+    Close,
     Unknown,
 }
 
@@ -42,6 +44,8 @@ impl Kind {
             EventKind::Unlink { .. } => Kind::Unlink,
             EventKind::Rename { .. } => Kind::Rename,
             EventKind::Mark { .. } => Kind::Mark,
+            EventKind::ReadOpen { .. } => Kind::ReadOpen,
+            EventKind::Close { .. } => Kind::Close,
             EventKind::Unknown { .. } => Kind::Unknown,
         }
     }
@@ -59,6 +63,8 @@ impl Kind {
             Kind::Unlink => "unlink",
             Kind::Rename => "rename",
             Kind::Mark => "mark",
+            Kind::ReadOpen => "open while written",
+            Kind::Close => "close",
             Kind::Unknown => "unknown record",
         }
     }

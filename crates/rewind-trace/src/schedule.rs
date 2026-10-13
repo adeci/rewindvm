@@ -54,7 +54,22 @@ pub struct Schedule {
     /// Perturbations inherited from earlier forks, each ending by the
     /// time the next one starts.
     pub earlier: Vec<Segment>,
+    /// The steps where the guest's RNG takes in new bytes, from a fork
+    /// given another seed than its parent's, in step order.
+    pub reseeds: Vec<Reseed>,
 }
+
+/// A fork's new RNG seed and the step it takes effect at: the guest mixes
+/// bytes derived from the two into its RNG there and rekeys it, so the
+/// fork draws other random numbers from then on.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Reseed {
+    pub step: u64,
+    pub seed: u64,
+}
+
+/// The bytes a reseed mixes in: 32, as the guest's shared page holds them.
+pub const RESEED_BYTES: usize = 32;
 
 /// One seed over one window of steps.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -108,10 +123,44 @@ impl Schedule {
             .chain([0])
             .collect();
         edges.sort_unstable();
-        edges
+        let perturbed = edges
             .into_iter()
-            .find(|step| self.seed_at(*step) != other.seed_at(*step))
+            .find(|step| self.seed_at(*step) != other.seed_at(*step));
+
+        // The two runs part at a reseed only one of them makes, or that
+        // they make with different seeds, as they do where a window
+        // starts: the step's own interrupt is the first thing that
+        // differs.
+        let reseeded = self
+            .reseeds
+            .iter()
+            .chain(&other.reseeds)
+            .map(|r| r.step)
+            .filter(|step| self.reseed_at(*step) != other.reseed_at(*step))
+            .min();
+        [perturbed, reseeded]
+            .into_iter()
+            .flatten()
+            .min()
             .map_or(u64::MAX, |step| step.saturating_sub(1))
+    }
+
+    /// The seed the guest's RNG takes in after the exit that made `step`,
+    /// if any.
+    pub fn reseed_at(&self, step: u64) -> Option<u64> {
+        self.reseeds.iter().find(|r| r.step == step).map(|r| r.seed)
+    }
+
+    /// The bytes a reseed with `seed` at `step` mixes in: a fixed,
+    /// well-mixed function of the two.
+    pub fn reseed_bytes(seed: u64, step: u64) -> [u8; RESEED_BYTES] {
+        let mut bytes = [0u8; RESEED_BYTES];
+        let mut state = mix(seed ^ 0x2e5e_ed00) ^ step;
+        for chunk in bytes.chunks_mut(8) {
+            state = mix(state);
+            chunk.copy_from_slice(&state.to_le_bytes());
+        }
+        bytes
     }
 
     /// How long to stall the task running after the exit that made
@@ -174,11 +223,13 @@ mod tests {
             seed: 0,
             window: 0..u64::MAX,
             earlier: Vec::new(),
+            reseeds: Vec::new(),
         };
         let perturbed = Schedule {
             seed: 3,
             window: 100..200,
             earlier: Vec::new(),
+            reseeds: Vec::new(),
         };
         assert_eq!(unperturbed.slack_at(150), 0);
         assert_eq!(perturbed.slack_at(50), 0);
@@ -194,11 +245,13 @@ mod tests {
             seed: 0,
             window: 0..u64::MAX,
             earlier: Vec::new(),
+            reseeds: Vec::new(),
         };
         let perturbed = Schedule {
             seed: 3,
             window: 1000..100_000,
             earlier: Vec::new(),
+            reseeds: Vec::new(),
         };
         assert!((0..10_000).all(|s| unperturbed.stall_at(s).is_none()));
         assert!((0..1000).all(|s| perturbed.stall_at(s).is_none()));
@@ -220,6 +273,7 @@ mod tests {
             seed,
             window,
             earlier: Vec::new(),
+            reseeds: Vec::new(),
         };
         (0..10_000).filter(|step| s.preempt_at(*step)).collect()
     }
@@ -252,7 +306,44 @@ mod tests {
                 seed: 7,
                 window: 1000..3000,
             }],
+            reseeds: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_reseed_parts_two_runs_after_its_step() {
+        // A fork reseeded at 4000 is its parent through step 3999: the
+        // interrupt after the exit that made step 4000 carries the bytes.
+        // A reseed both make alike parts nothing, and one with another
+        // seed parts them the same way.
+        let parent = fork_of_fork();
+        let child = Schedule {
+            reseeds: vec![Reseed {
+                step: 4000,
+                seed: 2,
+            }],
+            ..parent.clone()
+        };
+        assert_eq!(child.reseed_at(4000), Some(2));
+        assert_eq!(child.reseed_at(4001), None);
+        assert_eq!(parent.same_through(&child), 3999);
+        assert_eq!(child.same_through(&child.clone()), u64::MAX);
+        let other = Schedule {
+            reseeds: vec![Reseed {
+                step: 4000,
+                seed: 3,
+            }],
+            ..parent.clone()
+        };
+        assert_eq!(child.same_through(&other), 3999);
+        assert_ne!(
+            Schedule::reseed_bytes(2, 4000),
+            Schedule::reseed_bytes(3, 4000)
+        );
+        assert_ne!(
+            Schedule::reseed_bytes(2, 4000),
+            Schedule::reseed_bytes(2, 4001)
+        );
     }
 
     #[test]
@@ -277,11 +368,13 @@ mod tests {
             seed: 7,
             window: 1000..u64::MAX,
             earlier: Vec::new(),
+            reseeds: Vec::new(),
         };
         let none = Schedule {
             seed: 0,
             window: 0..u64::MAX,
             earlier: Vec::new(),
+            reseeds: Vec::new(),
         };
         assert_eq!(parent.same_through(&fork_of_fork()), 2999);
         assert_eq!(fork_of_fork().same_through(&parent), 2999);
@@ -300,6 +393,7 @@ mod tests {
             seed: 4,
             window: 0..u64::MAX,
             earlier: Vec::new(),
+            reseeds: Vec::new(),
         };
         let find = |f: &dyn Fn(u64) -> bool| (0..100_000).find(|&step| f(step)).unwrap();
         let late = |step: u64| format!("a timer {:.1} µs late", s.slack_at(step) as f64 / 1e3);

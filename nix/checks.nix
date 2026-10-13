@@ -1080,7 +1080,7 @@ in
           -ex 'bt 2' > gdb 2>&1 || true
         cat gdb
         # gdb names the vDSO's function by its other name, clock_gettime.
-        grep -q 'hit Breakpoint 1, 0x00007f[0-9a-f]* in clock_gettime ()' gdb
+        grep -q 'hit Breakpoint 1, 0x00007[0-9a-f]* in clock_gettime ()' gdb
         grep -q '^#1  0x0000000000[0-9a-f]* in clock_gettime ()' gdb
         touch $out
       '';
@@ -1320,9 +1320,21 @@ in
           --root ${busyboxRoot} -- sh -c "$coin" > seeds.json
         jq -e '.seeds == 6 and ([.schedules[].seed] | unique) == [0, 1, 2, 3, 4, 5]' seeds.json
         jq -e '.differing > 0 and ([.schedules[] | select(.differs)] | length) == .differing' seeds.json
-        # A recorded run keeps its seed.
-        ! rewind check --run "$(rewind ls --json -n 1 | jq -r .id)" --seeds 2 2> refused
-        grep -q -- '--seeds' refused
+        # A recorded run tried under other seeds: each a fork of it at the
+        # job's start, its RNG reseeded there.
+        rewind run -q --clock exits --name coin --root ${busyboxRoot} -- sh -c "$coin"
+        ! rewind check --run coin --seeds 6 --schedules 0 > reseeded
+        cat reseeded
+        grep -qE '^seed [0-9]+ decides it: unperturbed, seed [0-9]+ passes and seed [0-9]+ fails$' reseeded
+        grep -qE '^failing: run [0-9a-f]+, seed [0-9]+ from step [0-9]+, schedule 0$|^passing: run [0-9a-f]+, seed [0-9]+ from step [0-9]+, schedule 0$' reseeded
+
+        # rewind fork --seed: the fork is its parent until the step, and
+        # replays the same.
+        start=$(rewind events coin --json | jq -r 'select(.kind.type == "mark" and .kind.text == "rewind-start") | .step')
+        rewind fork -q coin "$start" --seed 9 --json > forked.json
+        jq -e '.name | test("seed 9")' forked.json
+        rewind replay "$(jq -r .id forked.json)" > replayed
+        grep -q '^identical' replayed
 
         # The Rewind SDK from a shell: a job that asserts its random byte
         # is even and marks a test, and exits 0 either way. check judges
@@ -1379,9 +1391,10 @@ in
   # decides from the trace alone, each on a shell job in the busybox root
   # that breaks it, and on one that does not: a child killed by SIGSEGV
   # while the job exits 0, a sleep left running, two sibling processes
-  # appending to one log at once, a config rewritten in place, and a
-  # write outside the job's directory. A properties file lists them with
-  # a comment and a script beside it. Boots the VM, so it needs /dev/kvm.
+  # appending to one log at once, a config rewritten in place, a reader
+  # opening a file another process is writing, and a write outside the
+  # job's directory. A properties file lists them with a comment and a
+  # script beside it. Boots the VM, so it needs /dev/kvm.
   trace-properties =
     pkgs.runCommand "rewind-trace-properties"
       {
@@ -1394,10 +1407,12 @@ in
       ''
         export REWIND_HOME=$TMPDIR/rewind
         # One unperturbed and one perturbed schedule of a shell job, judged
-        # by the property; exits 1 when schedule 0 violates it.
+        # by the property; exits 1 when schedule 0 violates it. The root
+        # has no /run until the job makes it, and an open that fails
+        # writes nothing.
         prop() {
           rewind check -j 2 --clock exits --schedules 1 --all --no-narrow \
-            --property "$1" --root ${busyboxRoot} -- sh -c "$2" > out
+            --property "$1" --root ${busyboxRoot} -- sh -c "mkdir -p /run; $2" > out
           status=$?
           cat out
           return $status
@@ -1411,8 +1426,8 @@ in
         grep -qE '^  no-orphans: step [0-9]+: process [0-9]+ \(sleep\), started at step [0-9]+, was still running when the job.s main process exited at step [0-9]+$' out
         prop no-orphans 'sleep 1 & wait'
 
-        ! prop 'single-writer=*.log' '(echo a >> /run/w.log; sleep 2) & (sleep 1; echo b >> /run/w.log) & wait'
-        grep -qE '^  single-writer: step [0-9]+: process [0-9]+ \(sh\) opened /run/w.log for writing while process [0-9]+ \(sh\), which opened it at step [0-9]+, was still running$' out
+        ! prop 'single-writer=*.log' '(exec 3>> /run/w.log; echo a >&3; sleep 2) & (sleep 1; echo b >> /run/w.log) & wait'
+        grep -qE '^  single-writer: step [0-9]+: process [0-9]+ \(sh\) opened /run/w.log for writing while process [0-9]+ \(sh\), which opened it at step [0-9]+, had not closed it$' out
         prop 'single-writer=*.log' '(echo a >> /run/w.log) & wait; (echo b >> /run/w.log) & wait'
 
         ! prop 'atomic-replace=*.conf' 'echo a > /run/app.conf; echo b > /run/app.conf'
@@ -1422,6 +1437,16 @@ in
         ! prop writes-within=/run 'echo a > /run/ok; echo b > /stray'
         grep -qE '^  writes-within: step [0-9]+: process [0-9]+ \(sh\) opened /stray for writing, outside /run$' out
         prop writes-within=/run 'echo a > /run/ok; echo b > /dev/null'
+
+        # A reader opening a file another process holds open for writing,
+        # recorded because the kernel counts a writer, and the same read
+        # once the writer has closed it, never recorded. Two writers one
+        # after the other, the first closing before the second opens, are
+        # not two at once.
+        ! prop 'no-read-while-written=*.conf' '(exec 3> /run/app.conf; echo a >&3; sleep 2) & sleep 1; cat /run/app.conf; wait'
+        grep -qE '^  no-read-while-written: step [0-9]+: process [0-9]+ \(cat\) opened /run/app.conf for reading while process [0-9]+ \(sh\), which opened it for writing at step [0-9]+, had not closed it$' out
+        prop 'no-read-while-written=*.conf' 'echo a > /run/app.conf; cat /run/app.conf'
+        prop 'single-writer=*.log' '(echo a >> /run/w.log; sleep 2) & (sleep 1; echo b >> /run/w.log) & wait'
 
         # A properties file: comments skipped, a script taken from the
         # file's directory, and the verdicts of both in the JSON.

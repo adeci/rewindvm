@@ -40,8 +40,8 @@ pub fn executing(dir: &Path) -> bool {
 }
 
 /// The version of the manifest format. Every manifest before rewind 1.0
-/// said 1, whatever its fields, so 1.0's is 2.
-pub const MANIFEST_VERSION: u32 = 2;
+/// said 1, whatever its fields, so 1.0's was 2; 3 adds a fork's reseeds.
+pub const MANIFEST_VERSION: u32 = 3;
 
 /// The version every manifest before rewind 1.0 named.
 const BEFORE_1_0: u32 = 1;
@@ -188,6 +188,10 @@ pub struct Spec {
     /// each over its window and all ending by `schedule_from`, so the fork
     /// is its parent up to its own step.
     pub inherited_schedules: Vec<ScheduleSegment>,
+    /// Where a fork given another seed than its parent's has the guest's
+    /// RNG take in new bytes, each of its own and its ancestors', in step
+    /// order. A run from boot takes its seed at boot and has none.
+    pub reseeds: Vec<crate::schedule::Reseed>,
     /// The CPU the guest is shown.
     pub cpu: CpuModel,
     /// What moves virtual time besides exits and idling.
@@ -285,11 +289,32 @@ impl Spec {
             })
             .filter(|s| s.seed != 0 && s.from < s.until)
             .collect();
+        // A reseed at or after the step is the parent's alone.
+        let reseeds = self
+            .reseeds
+            .iter()
+            .filter(|r| r.step < step)
+            .cloned()
+            .collect();
         Spec {
             schedule: seed,
             schedule_from: step,
             schedule_until: u64::MAX,
             inherited_schedules: inherited,
+            reseeds,
+            ..self.clone()
+        }
+    }
+
+    /// This spec with the guest's RNG reseeded with `seed` at `step`, as
+    /// a fork given another seed at that step is.
+    pub fn reseeded(&self, step: u64, seed: u64) -> Spec {
+        let mut reseeds = self.reseeds.clone();
+        reseeds.retain(|r| r.step != step);
+        reseeds.push(crate::schedule::Reseed { step, seed });
+        reseeds.sort_by_key(|r| r.step);
+        Spec {
+            reseeds,
             ..self.clone()
         }
     }
@@ -307,6 +332,7 @@ impl Spec {
                     window: s.from..s.until,
                 })
                 .collect(),
+            reseeds: self.reseeds.clone(),
         }
     }
 
@@ -341,6 +367,7 @@ impl Spec {
             schedule_from: 0,
             schedule_until: u64::MAX,
             inherited_schedules: Vec::new(),
+            reseeds: Vec::new(),
             image: None,
             kernel_debug: None,
             ..self.clone()

@@ -1,0 +1,81 @@
+{
+  "version": 3,
+  "id": "f8eb24272348bd04",
+  "name": "sample",
+  "created": 1791907760,
+  "source": {
+    "mode": "image",
+    "root": "/nix/store/md5ikacq7vzcr3xxx58i2miy4iz0dipj-busybox-static-x86_64-unknown-linux-musl-1.36.1"
+  },
+  "spec": {
+    "kernel": "/nix/store/3yvikbl39ghlsh54by18ww3qlsy8i6ic-rewind-guest-kernel-7.2.8/bzImage",
+    "initrd": "/nix/store/a9nlm3ash6gpjk50v66dnv8d6w27mp8x-rewind-initrd/initrd",
+    "kernel_debug": "/nix/store/786lykjx1wddiwxins7hsr9hv8aq4ccc-rewind-guest-kernel-7.2.8-debug",
+    "image": "/tmp/claude-1000/-home-fmzakari-code-github-com-fzakaria-rewind/9687a1ee-2e87-4dcb-8291-6aaa8088c9e2/scratchpad/prop/home3/images/2/e7b1b3934e738f6863a8c0b2be7cc9a4.erofs",
+    "image_hash": "e7b1b3934e738f6863a8c0b2be7cc9a4b06c46980113d9fba48ec0b874b22c7c",
+    "mem_mib": 1024,
+    "cores": 1,
+    "seed": 0,
+    "epoch": 1791849600,
+    "quantum": 5000,
+    "schedule": 0,
+    "schedule_from": 303,
+    "schedule_until": 18446744073709551615,
+    "inherited_schedules": [],
+    "reseeds": [
+      {
+        "step": 303,
+        "seed": 1
+      }
+    ],
+    "cpu": "v3",
+    "clock": {
+      "branches": "amd_retired_conditional_branches"
+    },
+    "preemption": "at_exits",
+    "extras": "reserved",
+    "cmdline": "nolapic_timer lpj=1000000 panic=-1 rdinit=/init loglevel=7 mitigations=off",
+    "job": {
+      "program": null,
+      "argv": [
+        "sh",
+        "-c",
+        "sdk() { printf 'rewind-sdk 1 %s\\n' \"$*\" > /dev/rewind; }\nb=$(od -An -tu1 -N1 /dev/urandom)\nb=$((b + 0))\nsdk test-begin coin flip\nif [ $((b % 2)) = 0 ]; then\n  sdk always pass even\n  sdk test-end pass coin flip\nelse\n  sdk always fail even byte $b is odd\n  sdk test-end fail coin flip\nfi\nif [ $b -gt 250 ]; then sdk sometimes hit huge-byte; else sdk sometimes miss huge-byte; fi\nexit 0"
+      ],
+      "env": [
+        [
+          "PATH",
+          "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        ]
+      ],
+      "cwd": "/",
+      "uid": 0,
+      "gid": 0,
+      "hostname": "localhost",
+      "root": "image",
+      "files": [],
+      "outputs": [],
+      "output": "plain"
+    }
+  },
+  "parent": {
+    "run": "bf9142050abb8d11",
+    "step": 303
+  },
+  "shared_keyframes": {
+    "run": "bf9142050abb8d11",
+    "through": 302
+  },
+  "outcome": {
+    "stop": {
+      "how": "powered_off"
+    },
+    "step": 333,
+    "virtual_ns": 1721975,
+    "status": 0,
+    "wall_ms": 600
+  },
+  "trace_hash": "2d74b4332cc1bd5e7de02bdb0abbe66fe306638beafcf7b17ffd6e2b1ddef9da",
+  "first_difference": 322,
+  "recorded_by": "0.7.0 (b683d573a08d)"
+}

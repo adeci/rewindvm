@@ -16,6 +16,7 @@ use rewind_core::{
 use rewind_init::{Job, Output, Root};
 use rewind_trace::compare::Comparison;
 use rewind_trace::located::Located;
+use rewind_trace::schedule::Reseed;
 
 use crate::property::{self, Coverage, Judge, Property, Violation};
 use crate::{
@@ -147,9 +148,9 @@ pub struct CheckArgs {
     /// temporary names, and the inputs a property-testing library
     /// generates when it seeds itself from the system. A seed whose
     /// unperturbed run already differs from the first seed's is not
-    /// perturbed further. A run recorded already keeps its seed, so --run
-    /// tries one.
-    #[arg(long, default_value_t = 1, conflicts_with = "run")]
+    /// perturbed further. With --run, the run's own seed comes first, and
+    /// each other one reseeds the run's RNG at --schedule-from.
+    #[arg(long, default_value_t = 1)]
     pub(crate) seeds: u64,
     /// What a correct run is. The search looks for a schedule that
     /// violates a property schedule 0 holds, or that holds every property
@@ -162,9 +163,12 @@ pub struct CheckArgs {
     /// signal that dumps core, such as SIGSEGV, even one the job's exit
     /// status hides. no-orphans: every process the job started had exited
     /// when its main process did. single-writer=GLOB: no two of the job's
-    /// processes had a matching file open for writing at once.
+    /// processes had a matching file open for writing at once, from its
+    /// open until its close.
     /// atomic-replace=GLOB: no matching file the run had written was
     /// truncated in place, where a reader can see it half written.
+    /// no-read-while-written=GLOB: no process opened a matching file for
+    /// reading while another had it open for writing.
     /// writes-within=DIR:DIR: the job wrote, renamed and removed files
     /// only under these directories, besides /dev, /proc and /sys.
     ///
@@ -250,8 +254,12 @@ enum Subject<'a> {
         start: Start,
     },
     /// A run recorded already: each schedule is a fork of it at the
-    /// first step of the schedule's window.
-    Run(Box<Run>),
+    /// first step of the schedule's window, its RNG reseeded at the
+    /// search's first step when the seed is another than the run's.
+    Run {
+        run: Box<Run>,
+        reseed: Option<Reseed>,
+    },
 }
 
 /// One run `rewind check` tries: a schedule seed over the steps
@@ -288,10 +296,12 @@ impl Subject<'_> {
             }
 
             // A run's forks, each on a thread of its own.
-            Subject::Run(run) => std::thread::scope(|scope| {
+            Subject::Run { run, reseed } => std::thread::scope(|scope| {
                 let handles: Vec<_> = windows
                     .iter()
-                    .map(|w| scope.spawn(move || fork_window(home, run, machine, *w)))
+                    .map(|w| {
+                        scope.spawn(move || fork_window(home, run, machine, *w, reseed.as_ref()))
+                    })
                     .collect();
                 handles
                     .into_iter()
@@ -303,8 +313,15 @@ impl Subject<'_> {
 }
 
 /// Forks `run` at the first step of `window`, perturbed by its seed until
-/// its last, without keyframes of its own, as `rewind check` tries it.
-fn fork_window(home: &Home, run: &Run, machine: &MachineArgs, window: Window) -> Result<Run> {
+/// its last, and its RNG reseeded as `reseed` says, without keyframes of
+/// its own, as `rewind check` tries it.
+fn fork_window(
+    home: &Home,
+    run: &Run,
+    machine: &MachineArgs,
+    window: Window,
+    reseed: Option<&Reseed>,
+) -> Result<Run> {
     let Window { seed, from, until } = window;
     let m = &run.manifest;
     let mut spec = m.spec.fork(from, seed);
@@ -312,6 +329,10 @@ fn fork_window(home: &Home, run: &Run, machine: &MachineArgs, window: Window) ->
     let mut name = format!("{} (fork of {} at {from}, schedule {seed}", m.name, m.id);
     if until != u64::MAX {
         name.push_str(&format!(" until {until}"));
+    }
+    if let Some(r) = reseed {
+        spec = spec.reseeded(r.step, r.seed);
+        name.push_str(&format!(", seed {} from {}", r.seed, r.step));
     }
     name.push(')');
     let how = Execution {
@@ -371,7 +392,6 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     machine.no_keyframes = true;
     machine.quiet = true;
     let (user_from, user_until) = (machine.schedule_from, machine.schedule_until);
-    let first_seed = machine.seed;
     let label = |seed: u64, schedule: u64| run_label(seeds, seed, schedule);
     let name = |seed: u64, schedule: u64| run_name(seeds, seed, schedule);
 
@@ -388,7 +408,16 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             if user_from > 0 {
                 base.check_step(user_from)?;
             }
-            let subject = Subject::Run(Box::new(Run::open(&base.dir)?));
+            if seeds > 1 {
+                say(format!(
+                    "rewind: {seeds} seeds, the run's own and {} more reseeding it at the search's first step, each unperturbed and under {schedules} perturbed schedules",
+                    seeds - 1
+                ));
+            }
+            let subject = Subject::Run {
+                run: Box::new(Run::open(&base.dir)?),
+                reseed: None,
+            };
             (base, subject, None)
         }
         None => {
@@ -431,8 +460,11 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             (base, subject, Some((&guest, &prepared)))
         }
     };
+    // The first seed is the unperturbed run's own: --seed for a job, and
+    // whatever a recorded run was recorded with.
+    let first_seed = base.manifest.spec.seed;
     let base_words = match &subject {
-        Subject::Run(_) => format!("run {}", base.manifest.id),
+        Subject::Run { .. } => format!("run {}", base.manifest.id),
         Subject::Job { .. } => name(first_seed, 0),
     };
 
@@ -510,20 +542,59 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         // Another seed's unperturbed run, from boot, judged as any other
         // run: a seed alone can decide how a run ends.
         if i > 0 {
-            let Some((guest, prepared)) = inputs else {
-                bail!("--seeds needs a job to record, not a run");
-            };
             let seed_machine = MachineArgs {
                 seed,
                 ..machine.clone()
             };
             status(&format!("rewind: seed {seed} executing"));
-            let started = if schedules > 0 {
-                with_keyframes(&seed_machine)
-            } else {
-                seed_machine.clone()
+            let (seed_base, subject) = match (&seeded[0].subject, inputs) {
+                // A recorded run: a fork of it at the search's first step,
+                // its RNG reseeded there, and its schedules forks of the
+                // run reseeded the same way.
+                (Subject::Run { run, .. }, _) => {
+                    let reseed = Reseed {
+                        step: seeded[0].start,
+                        seed,
+                    };
+                    let window = Window {
+                        seed: 0,
+                        from: reseed.step,
+                        until: u64::MAX,
+                    };
+                    let seed_base = fork_window(home, run, &machine, window, Some(&reseed));
+                    let subject = Subject::Run {
+                        run: Box::new(Run::open(&run.dir)?),
+                        reseed: Some(reseed),
+                    };
+                    (seed_base, subject)
+                }
+
+                // A job: its run from boot with the seed, which the seed's
+                // schedules start from.
+                (Subject::Job { .. }, Some((guest, prepared))) => {
+                    let started = if schedules > 0 {
+                        with_keyframes(&seed_machine)
+                    } else {
+                        seed_machine.clone()
+                    };
+                    let seed_base =
+                        execute(home, guest, prepared, &started, Start::Boot, Announce::No);
+                    let subject = match &seed_base {
+                        Ok(b) => Subject::Job {
+                            guest,
+                            prepared,
+                            start: Start::After(b.manifest.id.clone()),
+                        },
+                        Err(_) => Subject::Job {
+                            guest,
+                            prepared,
+                            start: Start::Boot,
+                        },
+                    };
+                    (seed_base, subject)
+                }
+                (Subject::Job { .. }, None) => bail!("a job's search has no job to record"),
             };
-            let seed_base = execute(home, guest, prepared, &started, Start::Boot, Announce::No);
             clear_status();
             let seed_base = seed_base?;
             let violations = judge.violations(&seed_base)?;
@@ -537,11 +608,6 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             tried_runs.push(schedule_json(&seed_base, differs, &violations)?);
             coverage.add(&seed_base)?;
             tried += 1;
-            let subject = Subject::Job {
-                guest,
-                prepared,
-                start: Start::After(seed_base.manifest.id.clone()),
-            };
             seeded.push(Seeded::new(seed_base, subject, seed_machine, user_from)?);
             if differs {
                 differing += 1;
@@ -915,7 +981,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     let words = |run: &Run| {
         let spec = &run.manifest.spec;
         if seeds > 1 {
-            format!("seed {}, {}", spec.seed, show::schedule_words(spec))
+            format!("{}, {}", show::seed_words(spec), show::schedule_words(spec))
         } else {
             show::schedule_words(spec)
         }
@@ -1060,14 +1126,20 @@ pub struct ForkArgs {
     pub(crate) run: String,
     #[arg(help = STEP_HELP, long_help = STEP_LONG_HELP)]
     pub(crate) step: u64,
-    /// The schedule seed for the new branch.
+    /// The schedule seed for the new branch; 1 by default, or 0 with
+    /// --seed.
     ///
     /// As with a run's --schedule, values programs draw from the kernel's
     /// randomness after the step, such as load addresses, can differ from
     /// the parent's; a run recorded with `--kernel-args norandmaps` loads
     /// programs at fixed addresses.
-    #[arg(long, default_value_t = 1)]
-    pub(crate) schedule: u64,
+    #[arg(long)]
+    pub(crate) schedule: Option<u64>,
+    /// Reseeds the VM's randomness at the step with this seed, so the
+    /// branch draws other random numbers from there on: hash map order,
+    /// which branch a select tries first, temporary names.
+    #[arg(long)]
+    pub(crate) seed: Option<u64>,
     /// Print nothing while the fork executes.
     #[arg(long, short)]
     pub(crate) quiet: bool,
@@ -1086,6 +1158,7 @@ pub fn fork(home: &Home, args: ForkArgs) -> Result<ExitCode> {
         run,
         step,
         schedule,
+        seed,
         quiet,
         json,
         timeout,
@@ -1093,14 +1166,20 @@ pub fn fork(home: &Home, args: ForkArgs) -> Result<ExitCode> {
     let parent = Run::find(home, &run)?;
     let step = parent.check_step(step)?;
     let m = &parent.manifest;
-    if schedule == 0 {
-        bail!("schedule 0 is the unperturbed run; a fork needs another seed");
+    let schedule = schedule.unwrap_or(if seed.is_some() { 0 } else { 1 });
+    if schedule == 0 && seed.is_none() {
+        bail!("schedule 0 is the unperturbed run; a fork needs another schedule or --seed");
     }
-    let spec = m.spec.fork(step, schedule);
-    let name = format!(
-        "{} (fork of {} at {step}, schedule {schedule})",
+    let mut spec = m.spec.fork(step, schedule);
+    let mut name = format!(
+        "{} (fork of {} at {step}, schedule {schedule}",
         m.name, m.id
     );
+    if let Some(seed) = seed {
+        spec = spec.reseeded(step, seed);
+        name.push_str(&format!(", seed {seed}"));
+    }
+    name.push(')');
     let echo = if quiet || json {
         Echo::Quiet
     } else {
@@ -1540,6 +1619,7 @@ fn execute(
         schedule_from: machine.schedule_from,
         schedule_until: machine.schedule_until,
         inherited_schedules: Vec::new(),
+        reseeds: Vec::new(),
         cpu: machine.cpu.into(),
         clock: machine.resolved_clock.unwrap_or_default(),
         preemption: if machine.experimental_preempt {
@@ -1613,7 +1693,7 @@ fn execute_all(
 /// properties it violates.
 fn schedule_json(run: &Run, differs: bool, violations: &[Violation]) -> Result<serde_json::Value> {
     let mut value = json::run(run)?;
-    value["seed"] = run.manifest.spec.seed.into();
+    value["seed"] = show::seed_of(&run.manifest.spec).into();
     value["schedule"] = run.manifest.spec.schedule.into();
     value["differs"] = differs.into();
     value["violations"] = violations_json(violations);

@@ -187,6 +187,7 @@ pub(crate) mod tests {
             schedule_from: 0,
             schedule_until: u64::MAX,
             inherited_schedules: Vec::new(),
+            reseeds: Vec::new(),
             cpu: rewind_vmm::CpuModel::V3,
             clock: rewind_vmm::ClockSource::Exits,
             preemption: rewind_vmm::Preemption::AtExits,

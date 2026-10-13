@@ -208,52 +208,131 @@ pub fn no_orphans(trace: &Trace) -> Option<Finding> {
         .min_by_key(|f| f.step)
 }
 
-/// No two of the job's processes had a file matching `glob` open for
-/// writing at once. Devices and kernel state, such as /dev/null, are not
-/// files and are left out. The trace has no closes, so a process counts
-/// as writing a file from its open until it exits, and a process that
-/// opens a file its own ancestor or descendant opened is taken as handed
-/// it: gcc creates a temporary file that its child cc1 then writes.
-pub fn single_writer(trace: &Trace, glob: &Glob) -> Option<Finding> {
-    let job = Job::of(trace)?;
-    let pids = job.pids();
+/// The processes that have each file open for writing, as far as the
+/// trace tells: from an open for writing until the process closes the
+/// file's last reference or exits. A close by a process that did not open
+/// the file is by a child that inherited it, and ends its ancestor's write.
+#[derive(Default)]
+struct Writers<'t> {
+    open: HashMap<&'t str, Vec<(u32, u64)>>,
+}
 
-    // Per path, the processes that opened it for writing and still run,
-    // with the steps they opened it on.
-    let mut writers: HashMap<&str, Vec<(u32, u64)>> = HashMap::new();
-    for e in job_events(trace, &job) {
+impl<'t> Writers<'t> {
+    /// Follows `e`: an open for writing, a close, or a process's exit.
+    fn follow(&mut self, job: &Job, e: &'t crate::Event) {
         match &e.kind {
-            EventKind::Exit { thread: false, .. } => {
-                writers
-                    .values_mut()
-                    .for_each(|w| w.retain(|(pid, _)| *pid != e.pid));
-            }
-            EventKind::Open { path, .. }
-                if pids.contains(&e.pid) && !under(path, &PSEUDO_DIRS) && glob.matches(path) =>
-            {
-                let open = writers.entry(path.as_str()).or_default();
-                let unrelated = |other: u32| {
-                    other != e.pid
-                        && !job.descends(e.pid, other, e.step)
-                        && !job.descends(other, e.pid, e.step)
-                };
-                if let Some(&(other, since)) = open.iter().find(|(pid, _)| unrelated(*pid)) {
-                    return Some(Finding {
-                        step: e.step,
-                        why: format!(
-                            "process {} ({}) opened {path} for writing while process {other} ({}), which opened it at step {since}, was still running",
-                            e.pid,
-                            job.name(e.pid, e.step),
-                            job.name(other, since)
-                        ),
-                    });
-                }
+            EventKind::Open { path, .. } => {
+                let open = self.open.entry(path.as_str()).or_default();
                 if !open.iter().any(|(pid, _)| *pid == e.pid) {
                     open.push((e.pid, e.step));
                 }
             }
+            EventKind::Close { path } => {
+                if let Some(open) = self.open.get_mut(path.as_str()) {
+                    if open.iter().any(|(pid, _)| *pid == e.pid) {
+                        open.retain(|(pid, _)| *pid != e.pid);
+                    } else {
+                        open.retain(|(pid, _)| !job.descends(e.pid, *pid, e.step));
+                    }
+                }
+            }
+            EventKind::Exit { thread: false, .. } => {
+                self.open
+                    .values_mut()
+                    .for_each(|w| w.retain(|(pid, _)| *pid != e.pid));
+            }
             _ => {}
         }
+    }
+
+    /// The processes writing `path`, with the steps they opened it on.
+    fn of(&self, path: &str) -> &[(u32, u64)] {
+        self.open.get(path).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// No two of the job's processes had a file matching `glob` open for
+/// writing at once. Devices and kernel state, such as /dev/null, are not
+/// files and are left out. A process writes a file from its open until it
+/// closes the file or exits, and a process that opens a file its own
+/// ancestor or descendant has open is taken as handed it: gcc creates a
+/// temporary file that its child cc1 then writes.
+pub fn single_writer(trace: &Trace, glob: &Glob) -> Option<Finding> {
+    let job = Job::of(trace)?;
+    let pids = job.pids();
+    let mut writers = Writers::default();
+    for e in job_events(trace, &job) {
+        if let EventKind::Open { path, .. } = &e.kind
+            && pids.contains(&e.pid)
+            && !under(path, &PSEUDO_DIRS)
+            && glob.matches(path)
+        {
+            let unrelated = |other: u32| {
+                other != e.pid
+                    && !job.descends(e.pid, other, e.step)
+                    && !job.descends(other, e.pid, e.step)
+            };
+            if let Some(&(other, since)) = writers.of(path).iter().find(|(pid, _)| unrelated(*pid))
+            {
+                return Some(Finding {
+                    step: e.step,
+                    why: format!(
+                        "process {} ({}) opened {path} for writing while process {other} ({}), which opened it at step {since}, had not closed it",
+                        e.pid,
+                        job.name(e.pid, e.step),
+                        job.name(other, since)
+                    ),
+                });
+            }
+        }
+        writers.follow(&job, e);
+    }
+    None
+}
+
+/// No process of the job opened a file matching `glob` for reading while
+/// another process had it open for writing, where the reader can see it
+/// half written. The guest records such an open only when the kernel
+/// counts a writer of the file at that moment, so a read of a finished
+/// file costs nothing.
+pub fn no_read_while_written(trace: &Trace, glob: &Glob) -> Option<Finding> {
+    let job = Job::of(trace)?;
+    let pids = job.pids();
+    let mut writers = Writers::default();
+    for e in job_events(trace, &job) {
+        if let EventKind::ReadOpen { path, .. } = &e.kind
+            && pids.contains(&e.pid)
+            && !under(path, &PSEUDO_DIRS)
+            && glob.matches(path)
+        {
+            let open = writers.of(path);
+            let reader = format!("process {} ({})", e.pid, job.name(e.pid, e.step));
+            let writer = open.iter().find(|(pid, _)| *pid != e.pid);
+            match writer {
+                Some(&(other, since)) => {
+                    return Some(Finding {
+                        step: e.step,
+                        why: format!(
+                            "{reader} opened {path} for reading while process {other} ({}), which opened it for writing at step {since}, had not closed it",
+                            job.name(other, since)
+                        ),
+                    });
+                }
+                // A writer the trace does not know: one that opened the
+                // file before the job started, or a process outside it.
+                None if open.is_empty() => {
+                    return Some(Finding {
+                        step: e.step,
+                        why: format!(
+                            "{reader} opened {path} for reading while another process had it open for writing"
+                        ),
+                    });
+                }
+                // The reader writes the file itself.
+                None => {}
+            }
+        }
+        writers.follow(&job, e);
     }
     None
 }
@@ -558,6 +637,20 @@ mod tests {
             open(120, 42, "/build/cc.s", CREATE),
         ]);
         assert_eq!(single_writer(&handed, &Glob::new("**")), None);
+        let closed = job(vec![
+            fork(100, JOB, 41),
+            fork(101, JOB, 42),
+            open(110, 41, "/build/out.log", CREATE),
+            event(
+                115,
+                41,
+                EventKind::Close {
+                    path: "/build/out.log".into(),
+                },
+            ),
+            open(120, 42, "/build/out.log", CREATE),
+        ]);
+        assert_eq!(single_writer(&closed, &Glob::new("*.log")), None);
         assert_eq!(found.step, 120);
         assert!(found.why.starts_with("process 42 (sh) opened /build/out.log for writing while process 41 (sh), which opened it at step 110"));
         assert_eq!(single_writer(&trace, &Glob::new("*.txt")), None);
@@ -608,6 +701,50 @@ mod tests {
             open(200, JOB, "/dev/null", REWRITE),
         ]);
         assert_eq!(atomic_replace(&device, &Glob::new("**")), None);
+    }
+
+    // A read of a file another process is writing is found, naming the
+    // writer; a read after the writer closed it is never recorded, and a
+    // process reading the file it writes itself is fine.
+    #[test]
+    fn a_read_of_a_file_being_written_is_found() {
+        let read = |step: u64, pid: u32| {
+            event(
+                step,
+                pid,
+                EventKind::ReadOpen {
+                    path: "/build/app.conf".into(),
+                    flags: 0,
+                },
+            )
+        };
+        let trace = job(vec![
+            fork(100, JOB, 41),
+            exec(101, 41, "/bin/reader"),
+            open(110, JOB, "/build/app.conf", REWRITE),
+            read(120, 41),
+        ]);
+        let found = no_read_while_written(&trace, &Glob::new("*.conf")).unwrap();
+        assert_eq!(found.step, 120);
+        assert_eq!(
+            found.why,
+            "process 41 (reader) opened /build/app.conf for reading while process 40 (sh), which opened it for writing at step 110, had not closed it"
+        );
+        assert_eq!(no_read_while_written(&trace, &Glob::new("*.txt")), None);
+
+        let own = job(vec![
+            open(110, JOB, "/build/app.conf", REWRITE),
+            read(120, JOB),
+        ]);
+        assert_eq!(no_read_while_written(&own, &Glob::new("*.conf")), None);
+
+        let unknown = job(vec![read(120, JOB)]);
+        let found = no_read_while_written(&unknown, &Glob::new("*.conf")).unwrap();
+        assert!(
+            found
+                .why
+                .ends_with("while another process had it open for writing")
+        );
     }
 
     // The files a job wrote and left in place: one renamed into place by

@@ -24,6 +24,8 @@ mod kind {
     pub const UNLINK: u16 = 8;
     pub const RENAME: u16 = 9;
     pub const MARK: u16 = 10;
+    pub const READ_OPEN: u16 = 11;
+    pub const CLOSE: u16 = 12;
 }
 
 /// The flag on fork and exit records that marks a thread rather than a
@@ -93,6 +95,18 @@ pub enum EventKind {
     /// A line written to /dev/rewind: a label on the timeline.
     Mark {
         text: String,
+    },
+    /// A regular file was opened for reading while some process had it
+    /// open for writing, so the reader may see it half written. Opens of
+    /// files nobody is writing are not recorded.
+    ReadOpen {
+        path: String,
+        flags: u32,
+    },
+    /// The last reference to a regular file opened for writing was
+    /// closed: the writes through it are over.
+    Close {
+        path: String,
     },
     /// A record this version does not know.
     Unknown {
@@ -226,6 +240,11 @@ impl Event {
             kind::MARK => EventKind::Mark {
                 text: text(data).trim_end().to_string(),
             },
+            kind::READ_OPEN => EventKind::ReadOpen {
+                path: text(data),
+                flags: aux,
+            },
+            kind::CLOSE => EventKind::Close { path: text(data) },
             other => EventKind::Unknown {
                 kind: other,
                 data: data.to_vec(),

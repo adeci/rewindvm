@@ -657,6 +657,13 @@ impl Machine {
                 .write(shared + pv::SHARED_STALL_NS, &(ns as u32).to_le_bytes())?;
             reasons |= pv::PENDING_STALL;
         }
+        if let (Some(seed), Some(shared)) =
+            (self.dev.schedule.reseed_at(self.dev.step), self.dev.shared)
+        {
+            let bytes = pv::Schedule::reseed_bytes(seed, self.dev.step);
+            self.dev.ram.write(shared + pv::SHARED_RESEED, &bytes)?;
+            reasons |= pv::PENDING_RESEED;
+        }
         if self.dev.inspect {
             reasons |= pv::PENDING_INSPECT;
         }

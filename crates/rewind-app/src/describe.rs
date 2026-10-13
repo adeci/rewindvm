@@ -137,6 +137,12 @@ pub fn describe_as(event: &Event, length: Length) -> Described {
         EventKind::Unlink { path } => normal(format!("unlink({})", quote(path))),
         EventKind::Rename { from, to } => normal(format!("rename({}, {})", quote(from), quote(to))),
         EventKind::Mark { text } => normal(format!("write(\"/dev/rewind\", {})", quote(text))),
+        EventKind::ReadOpen { path, flags } => normal(format!(
+            "openat({}, {}) while it is being written",
+            quote(path),
+            open_flags(*flags)
+        )),
+        EventKind::Close { path } => normal(format!("close({})", quote(path))),
         EventKind::Unknown { kind, data } => {
             normal(format!("record kind {kind}, {} bytes", data.len()))
         }
@@ -463,6 +469,10 @@ fn plain_from(
         EventKind::Unlink { path } => format!("{who} deletes {path}"),
         EventKind::Rename { from, to } => format!("{who} renames {from} to {to}"),
         EventKind::Mark { text } => format!("{who} writes the mark {}", quoted(text)),
+        EventKind::ReadOpen { path, .. } => {
+            format!("{who} opens {path} for reading while it is being written")
+        }
+        EventKind::Close { path } => format!("{who} closes {path}"),
         EventKind::Console { text } => format!("the kernel logs {}", quoted(text)),
         EventKind::Unknown { kind, .. } => format!("{who} reports a record of kind {kind}"),
     }

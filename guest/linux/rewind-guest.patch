@@ -118,7 +118,7 @@ diff -ruN a/arch/x86/kernel/cpu/Makefile b/arch/x86/kernel/cpu/Makefile
 diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 --- a/arch/x86/kernel/cpu/rewind.c	1969-12-31 16:00:00.000000000 -0800
 +++ b/arch/x86/kernel/cpu/rewind.c	1969-12-31 16:00:00.000000000 -0800
-@@ -0,0 +1,1326 @@
+@@ -0,0 +1,1444 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Rewind VM guest platform.
@@ -139,8 +139,9 @@ diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 + *   - the wall clock at boot (the monitor passes SOURCE_DATE_EPOCH),
 + *   - power off, restart and halt as port writes,
 + *   - a console, and an event stream of exec, fork, exit, signals, file
-+ *     writes and program output, each written to the monitor with the
-+ *     guest physical address of a record,
++ *     writes and their closes, reads of files being written, and program
++ *     output, each written to the monitor with the guest physical address
++ *     of a record,
 + *   - a terminal for the workload's output, as nix-daemon gives a
 + *     builder, whose writes join the event stream,
 + *   - the CPU count the affinity system calls report, which may exceed the
@@ -165,6 +166,7 @@ diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 +#include <linux/mutex.h>
 +#include <linux/pm.h>
 +#include <linux/poll.h>
++#include <linux/random.h>
 +#include <linux/reboot.h>
 +#include <linux/sched.h>
 +#include <linux/sched/mm.h>
@@ -218,7 +220,7 @@ diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 + * rewind_shared.interface before setup, and a monitor that speaks another
 + * stops rather than run it.
 + */
-+#define REWIND_INTERFACE	2
++#define REWIND_INTERFACE	3
 +
 +/* Values written to REWIND_PORT_EXIT. */
 +enum rewind_exit {
@@ -239,6 +241,8 @@ diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 +	REWIND_EV_UNLINK = 8,	/* payload: path */
 +	REWIND_EV_RENAME = 9,	/* payload: old path NUL new path */
 +	REWIND_EV_MARK = 10,	/* payload: text written to /dev/rewind */
++	REWIND_EV_READ_OPEN = 11, /* aux: open flags; payload: path */
++	REWIND_EV_CLOSE = 12,	/* payload: path */
 +};
 +
 +#define REWIND_FLAG_THREAD	BIT(0)
@@ -323,6 +327,11 @@ diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 +	 */
 +	u64 fsbase;
 +	u64 gsbase;
++	/*
++	 * Bytes the monitor has the RNG mix in with REWIND_PENDING_RESEED,
++	 * at the step a fork given another seed starts from.
++	 */
++	u8 reseed[32];
 +};
 +
 +/* Reasons for an interrupt, in rewind_shared.pending. */
@@ -331,6 +340,7 @@ diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 +#define REWIND_PENDING_INSPECT	BIT(2)	/* run the request in rewind_shared */
 +#define REWIND_PENDING_INPUT	BIT(3)	/* input for /dev/rewind-console */
 +#define REWIND_PENDING_STALL	BIT(4)	/* stall the running task stall_ns */
++#define REWIND_PENDING_RESEED	BIT(5)	/* reseed the RNG from reseed */
 +
 +/*
 + * /dev/rewind-console's input: bytes the monitor sends, in arrival order.
@@ -647,6 +657,10 @@ diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 +
 +	if (pending & REWIND_PENDING_STALL)
 +		rewind_stall_current();
++
++	if (pending & REWIND_PENDING_RESEED)
++		rewind_rng_reseed(rewind_shared.reseed,
++				  sizeof(rewind_shared.reseed));
 +
 +	if (pending & REWIND_PENDING_INSPECT) {
 +		WRITE_ONCE(rewind_inspecting, true);
@@ -1145,6 +1159,45 @@ diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 +		    rewind_path_b, strlen(rewind_path_b));
 +}
 +
++/*
++ * A path the kernel names an open file by, without the " (deleted)" it
++ * adds once the file is unlinked, so it matches the path it was opened by.
++ */
++static void rewind_strip_deleted(char *path)
++{
++	static const char deleted[] = " (deleted)";
++	size_t len = strlen(path), tail = sizeof(deleted) - 1;
++
++	if (len > tail && !strcmp(path + len - tail, deleted))
++		path[len - tail] = '\0';
++}
++
++/*
++ * A close that drops the last reference to a regular file open for
++ * writing: the writes through it are over. A file the process still holds
++ * through another descriptor, a child or a mapping is not closed yet.
++ */
++static void rewind_report_close(unsigned int fd)
++{
++	struct file *file = fget(fd);
++	char *path;
++
++	if (!file)
++		return;
++	/* The descriptor's reference and the one fget took. */
++	if ((file->f_mode & FMODE_WRITE) &&
++	    S_ISREG(file_inode(file)->i_mode) && file_count(file) == 2) {
++		path = d_path(&file->f_path, rewind_path_a, PATH_MAX);
++		if (!IS_ERR(path)) {
++			rewind_strip_deleted(path);
++			rewind_emit(REWIND_EV_CLOSE, 0, current->tgid,
++				    current->pid, 0, path, strlen(path),
++				    NULL, 0);
++		}
++	}
++	fput(file);
++}
++
 +static void rewind_probe_sys_enter(void *data, struct pt_regs *regs, long id)
 +{
 +	/*
@@ -1158,6 +1211,31 @@ diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 +	if (in_ia32_syscall())
 +		return;
 +
++	/*
++	 * A close, before the descriptor goes: whether it drops the file's
++	 * last reference is known only while the descriptor still holds one.
++	 * A dup2 or dup3 onto an open descriptor closes it the same way, as
++	 * a shell does when it puts standard output back after a redirect.
++	 */
++	if (id == __NR_close) {
++		mutex_lock(&rewind_path_lock);
++		rewind_report_close(regs->di);
++		mutex_unlock(&rewind_path_lock);
++	} else if ((id == __NR_dup2 || id == __NR_dup3) &&
++		   regs->di != regs->si) {
++		mutex_lock(&rewind_path_lock);
++		rewind_report_close(regs->si);
++		mutex_unlock(&rewind_path_lock);
++	}
++}
++
++/*
++ * Opens for writing, unlinks and renames that succeeded, once they have:
++ * one that failed changed no file. The registers still hold the call's
++ * arguments, so the path is read as it was passed.
++ */
++static void rewind_report_changes(struct pt_regs *regs, long id)
++{
 +	mutex_lock(&rewind_path_lock);
 +	switch (id) {
 +	case __NR_open:
@@ -1185,6 +1263,45 @@ diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 +		break;
 +	}
 +	mutex_unlock(&rewind_path_lock);
++}
++
++/*
++ * A system call that succeeded: the file changes it made, and an open for
++ * reading of a regular file some process has open for writing, so the
++ * reader can see it half written. That open is seen from the file it
++ * opened: an open of a file nobody is writing, which is nearly every one,
++ * costs a descriptor lookup and no record.
++ */
++static void rewind_probe_sys_exit(void *data, struct pt_regs *regs, long ret)
++{
++	long id = syscall_get_nr(current, regs);
++	struct inode *inode;
++	struct file *file;
++	char *path;
++
++	if (ret < 0 || in_ia32_syscall())
++		return;
++	rewind_report_changes(regs, id);
++
++	if (id != __NR_open && id != __NR_openat && id != __NR_openat2)
++		return;
++	file = fget(ret);
++	if (!file)
++		return;
++	inode = file_inode(file);
++	if (!(file->f_mode & FMODE_WRITE) && S_ISREG(inode->i_mode) &&
++	    atomic_read(&inode->i_writecount) > 0) {
++		mutex_lock(&rewind_path_lock);
++		path = d_path(&file->f_path, rewind_path_a, PATH_MAX);
++		if (!IS_ERR(path)) {
++			rewind_strip_deleted(path);
++			rewind_emit(REWIND_EV_READ_OPEN, 0, current->tgid,
++				    current->pid, file->f_flags, path,
++				    strlen(path), NULL, 0);
++		}
++		mutex_unlock(&rewind_path_lock);
++	}
++	fput(file);
 +}
 +
 +/*
@@ -1441,6 +1558,7 @@ diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 +	WARN_ON(register_trace_sched_process_exit(rewind_probe_exit, NULL));
 +	WARN_ON(register_trace_signal_deliver(rewind_probe_signal, NULL));
 +	WARN_ON(register_trace_sys_enter(rewind_probe_sys_enter, NULL));
++	WARN_ON(register_trace_sys_exit(rewind_probe_sys_exit, NULL));
 +	WARN_ON(register_reboot_notifier(&rewind_reboot_nb));
 +	return 0;
 +}
@@ -1487,6 +1605,44 @@ diff -ruN a/arch/x86/kernel/tsc.c b/arch/x86/kernel/tsc.c
  	/*
  	 * Fall back to jiffies if there's no TSC available:
  	 * ( But note that we still use it if the TSC is marked
+diff -ruN a/drivers/char/random.c b/drivers/char/random.c
+--- a/drivers/char/random.c	2026-10-13 09:00:00.000000000 -0700
++++ b/drivers/char/random.c	2026-10-13 09:00:00.000000000 -0700
+@@ -936,6 +936,20 @@
+ 	spin_unlock_irqrestore(&input_pool.lock, flags);
+ }
+ EXPORT_SYMBOL(add_device_randomness);
++
++#ifdef CONFIG_REWIND_GUEST
++/*
++ * Rewind VM: mixes bytes from the monitor into the input pool and rekeys
++ * the crng from it at once, so a fork of a run given another seed draws
++ * other random numbers from that step on. Called from the monitor's
++ * interrupt, at a step the run's spec names.
++ */
++void rewind_rng_reseed(const void *buf, size_t len)
++{
++	add_device_randomness(buf, len);
++	crng_reseed(NULL);
++}
++#endif
+ 
+ /*
+  * Interface for in-kernel drivers of true hardware RNGs. Those devices
+diff -ruN a/include/linux/random.h b/include/linux/random.h
+--- a/include/linux/random.h	2026-10-13 09:00:00.000000000 -0700
++++ b/include/linux/random.h	2026-10-13 09:00:00.000000000 -0700
+@@ -12,6 +12,10 @@
+ struct notifier_block;
+ 
+ void add_device_randomness(const void *buf, size_t len);
++#ifdef CONFIG_REWIND_GUEST
++/* Mixes buf in and rekeys the crng from it, at a step the monitor names. */
++void rewind_rng_reseed(const void *buf, size_t len);
++#endif
+ void __init add_bootloader_randomness(const void *buf, size_t len);
+ void add_input_randomness(unsigned int type, unsigned int code,
+ 			  unsigned int value) __latent_entropy;
 diff -ruN a/kernel/sched/syscalls.c b/kernel/sched/syscalls.c
 --- a/kernel/sched/syscalls.c	2026-09-25 07:37:14.000000000 -0700
 +++ b/kernel/sched/syscalls.c	2026-10-02 15:54:32.286596879 -0700

@@ -247,6 +247,21 @@ pub fn schedule_words(spec: &rewind_core::Spec) -> String {
     }
 }
 
+/// The seed a run's randomness came from: its own from boot, or for a
+/// fork reseeded since, the last reseed's.
+pub fn seed_of(spec: &rewind_core::Spec) -> u64 {
+    spec.reseeds.last().map_or(spec.seed, |r| r.seed)
+}
+
+/// The seed a run's randomness came from, in words: its own from boot, or
+/// for a fork reseeded since, the last reseed and the step it was made at.
+pub fn seed_words(spec: &rewind_core::Spec) -> String {
+    match spec.reseeds.last() {
+        Some(r) => format!("seed {} from step {}", r.seed, r.step),
+        None => format!("seed {}", spec.seed),
+    }
+}
+
 /// One event, in the syscall-ish notation the scrubber uses.
 pub fn event(e: &Event) -> String {
     let what = match &e.kind {
@@ -280,6 +295,10 @@ pub fn event(e: &Event) -> String {
         EventKind::Unlink { path } => format!("unlink({path:?})"),
         EventKind::Rename { from, to } => format!("rename({from:?}, {to:?})"),
         EventKind::Mark { text } => format!("mark {text:?}"),
+        EventKind::ReadOpen { path, flags } => {
+            format!("open({path:?}, {flags:#o}) while it is being written")
+        }
+        EventKind::Close { path } => format!("close({path:?})"),
         EventKind::Unknown { kind, data } => format!("record kind {kind}, {} bytes", data.len()),
     };
     format!("{:>10} {:>5}/{:<5} {what}", e.step, e.pid, e.tid)

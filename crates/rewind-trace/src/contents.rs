@@ -19,7 +19,7 @@ pub enum Version {
     Original,
     /// The last such event was at this step, a rename, an unlink or an
     /// open for writing, and nothing writes the file since: every process
-    /// that opened it for writing had exited by the step.
+    /// that opened it for writing had closed it or exited by the step.
     Since(u64),
     /// A process that opened the file for writing was still running at the
     /// step, and may write more. Not kept.
@@ -30,9 +30,9 @@ pub enum Version {
 ///
 /// An open for writing marks only the start of the writes, which the
 /// trace does not record one by one, so its version is finished once
-/// every process that opened the file has exited. A process one of them
-/// forked after opening could hold the file open longer; builds do not
-/// write source files that way.
+/// every process that opened the file has closed it or exited. A process
+/// one of them forked after opening could hold the file open longer;
+/// builds do not write source files that way.
 pub fn version(trace: &Trace, path: &str, step: u64) -> Version {
     // Events name absolute paths without `.` or `..`.
     let Some(path) = normal(path) else {
@@ -55,10 +55,14 @@ pub fn version(trace: &Trace, path: &str, step: u64) -> Version {
             }
             continue;
         }
-        if let EventKind::Exit { thread: false, .. } = e.kind
-            && !writers.is_empty()
-        {
-            writers.remove(&e.pid);
+        match &e.kind {
+            EventKind::Exit { thread: false, .. } if !writers.is_empty() => {
+                writers.remove(&e.pid);
+            }
+            EventKind::Close { path: closed } if closed == path => {
+                writers.remove(&e.pid);
+            }
+            _ => {}
         }
     }
 
@@ -244,5 +248,26 @@ mod tests {
         );
         assert_eq!(version(&unlinked, "/build/out.c", 45), Version::Changing);
         assert_eq!(version(&unlinked, "/build/out.c", 55), Version::Since(40));
+    }
+
+    #[test]
+    fn a_path_is_finished_once_its_writers_close_it() {
+        // Process 100 opens out.c at 10 and closes it at 15, and runs on
+        // until 50: from 15 the file is the version of its open, without
+        // waiting for the process to exit. A close of another file
+        // changes nothing.
+        let close = |step: u64, pid: u32, path: &str| {
+            event(step, pid, EventKind::Close { path: path.into() })
+        };
+        let trace = Trace {
+            events: vec![
+                open(10, 100, "/build/out.c"),
+                close(12, 100, "/build/other.c"),
+                close(15, 100, "/build/out.c"),
+                exit(50, 100),
+            ],
+        };
+        assert_eq!(version(&trace, "/build/out.c", 13), Version::Changing);
+        assert_eq!(version(&trace, "/build/out.c", 20), Version::Since(10));
     }
 }

@@ -143,7 +143,7 @@ pub const SHARED_TASKS: u64 = (SHARED_STALL_NS + 4).next_multiple_of(8);
 /// the ports, the records and the shared page. The kernel writes it into
 /// the shared page, after the task layout, before it sends setup; a kernel
 /// from before rewind 1.0 wrote none, and the field reads 0.
-pub const INTERFACE_VERSION: u32 = 2;
+pub const INTERFACE_VERSION: u32 = 3;
 pub const SHARED_INTERFACE: u64 = SHARED_TASKS + 8 * TASK_LAYOUT_FIELDS as u64;
 
 /// Where a task off the CPU saved its user FS and GS bases, as offsets in
@@ -151,6 +151,12 @@ pub const SHARED_INTERFACE: u64 = SHARED_TASKS + 8 * TASK_LAYOUT_FIELDS as u64;
 /// after the interface version and aligned to 8 bytes, so the version
 /// stays where every monitor reads it.
 pub const SHARED_TASK_BASES: u64 = (SHARED_INTERFACE + 4).next_multiple_of(8);
+
+/// The bytes the guest's RNG takes in at a reseed, after the task bases,
+/// with their interrupt reason.
+pub const PENDING_RESEED: u32 = 1 << 5;
+pub const SHARED_RESEED: u64 = SHARED_TASK_BASES + 8 * TASK_BASES_FIELDS as u64;
+pub use rewind_trace::schedule::RESEED_BYTES;
 
 /// Whether a guest kernel that names interface `version` is one this
 /// monitor runs.
@@ -284,6 +290,15 @@ mod interface_tests {
             SHARED_INTERFACE,
             SHARED_TASKS + 8 * TASK_LAYOUT_FIELDS as u64
         );
+    }
+
+    /// The reseed bytes follow the two task bases, after the interface
+    /// number and its padding, as struct rewind_shared lays them out.
+    #[test]
+    fn the_reseed_bytes_follow_the_task_bases() {
+        assert_eq!(SHARED_TASK_BASES, SHARED_INTERFACE + 8);
+        assert_eq!(SHARED_RESEED, SHARED_TASK_BASES + 16);
+        assert_eq!(RESEED_BYTES, 32);
     }
 
     /// The monitor runs only a kernel that names the interface it speaks;

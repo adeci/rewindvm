@@ -33,6 +33,10 @@ const SAMPLES: &[(&str, &str)] = &[
         "1760004634e87ae88359afd7e683f4b59f31070f3a4e2bdad7cafbf076eb29d2",
     ),
     (
+        "manifest-3.json",
+        "a560684a6120a25c8e5380c0d64954dbee10cbfca9359f56114c699e8d94288a",
+    ),
+    (
         "store-1/format",
         "50cc1102b1c612e6962547aacdcef9a400d4416ef8dd9388e885991853c400c9",
     ),
