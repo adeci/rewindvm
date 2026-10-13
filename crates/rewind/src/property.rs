@@ -181,7 +181,12 @@ impl Property {
     pub fn read_file(path: &Path) -> Result<Vec<Property>> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading properties from {}", path.display()))?;
-        let dir = path.parent().unwrap_or(Path::new("."));
+        // A file named without a directory is in the current one, and a
+        // script beside it is ./name there, not a name to look up on PATH.
+        let dir = match path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => Path::new("."),
+        };
         let mut properties = Vec::new();
         for (i, line) in text.lines().enumerate() {
             let line = line.trim();
@@ -680,6 +685,16 @@ mod tests {
                 Property::Script(dir.join("checks/adds-up.sh")),
             ]
         );
+
+        // A file in the current directory takes its scripts from ./, so
+        // a script named alone is not looked up on PATH.
+        let here = Path::new("rewind-properties-here.properties");
+        std::fs::write(here, "script=adds-up.sh\n").unwrap();
+        assert_eq!(
+            Property::read_file(here).unwrap(),
+            vec![Property::Script(PathBuf::from("./adds-up.sh"))]
+        );
+        std::fs::remove_file(here).unwrap();
 
         std::fs::write(&file, "no-crash\nexit-0\n").unwrap();
         let error = format!("{:#}", Property::read_file(&file).unwrap_err());
