@@ -136,6 +136,14 @@ pub fn describe_as(event: &Event, length: Length) -> Described {
         }
         EventKind::Unlink { path } => normal(format!("unlink({})", quote(path))),
         EventKind::Rename { from, to } => normal(format!("rename({}, {})", quote(from), quote(to))),
+        EventKind::Mark { .. } if event.sdk_mark().is_some() => {
+            let (text, broke) = crate::model::sdk_words(&event.sdk_mark().expect("an SDK mark"));
+            let text = format!("rewind sdk: {text}");
+            if broke {
+                return error(text);
+            }
+            normal(text)
+        }
         EventKind::Mark { text } => normal(format!("write(\"/dev/rewind\", {})", quote(text))),
         EventKind::ReadOpen { path, flags } => normal(format!(
             "openat({}, {}) while it is being written",
@@ -468,6 +476,10 @@ fn plain_from(
         EventKind::Open { path, .. } => format!("{who} opens {path} for writing"),
         EventKind::Unlink { path } => format!("{who} deletes {path}"),
         EventKind::Rename { from, to } => format!("{who} renames {from} to {to}"),
+        EventKind::Mark { .. } if party.event.sdk_mark().is_some() => {
+            let (text, _) = crate::model::sdk_words(&party.event.sdk_mark().expect("an SDK mark"));
+            format!("{who} reports {text}")
+        }
         EventKind::Mark { text } => format!("{who} writes the mark {}", quoted(text)),
         EventKind::ReadOpen { path, .. } => {
             format!("{who} opens {path} for reading while it is being written")

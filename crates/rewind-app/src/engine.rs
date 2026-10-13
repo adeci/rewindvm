@@ -284,14 +284,16 @@ pub trait Engine: Send + Sync {
     ) -> EngineResult<Vec<crate::lanes::Slice>>;
 
     /// Tries `schedules` schedules from `step` of `run`, each a fork of
-    /// it, and says how each ended against the run. The forks are kept
-    /// as runs. `progress` is handed each line the engine says, one per
-    /// schedule as it ends, and `cancel` stops it early.
+    /// it, under the run's own seed and `seeds - 1` more that reseed it at
+    /// the step, and says how each ended against the run. The forks are
+    /// kept as runs. `progress` is handed each line the engine says, one
+    /// per run as it ends, and `cancel` stops it early.
     fn check_from(
         &self,
         run: &Path,
         step: u64,
         schedules: u64,
+        seeds: u64,
         cancel: &Cancel,
         progress: &mut dyn FnMut(&str),
     ) -> EngineResult<crate::sweep::Checked>;
@@ -721,11 +723,12 @@ impl Engine for CliEngine {
         run: &Path,
         step: u64,
         schedules: u64,
+        seeds: u64,
         cancel: &Cancel,
         progress: &mut dyn FnMut(&str),
     ) -> EngineResult<crate::sweep::Checked> {
-        // rewind check --run <run> --schedule-from S --schedules N --all
-        // --no-narrow --json, which exits 1 when a schedule ended
+        // rewind check --run <run> --schedule-from S --schedules N --seeds
+        // K --all --no-narrow --json, which exits 1 when a run ended
         // differently: the JSON is what says the check finished.
         let args: Vec<OsString> = vec![
             "check".into(),
@@ -735,6 +738,8 @@ impl Engine for CliEngine {
             step.to_string().into(),
             "--schedules".into(),
             schedules.to_string().into(),
+            "--seeds".into(),
+            seeds.to_string().into(),
             "--all".into(),
             "--no-narrow".into(),
             "--json".into(),
@@ -1460,16 +1465,16 @@ mod tests {
     /// The stand-in prints what `rewind check --run --json` does, and exits
     /// 1 as check does when a schedule ended differently; the app reads
     /// the schedules all the same, hands on check's lines as progress, and
-    /// the arguments name the run, the step and the count.
+    /// the arguments name the run, the step and the counts.
     #[test]
     fn check_from_reads_the_schedules_whatever_check_exits() {
         let dir = temp_dir("check-from");
         let run = dir.join("run");
-        let json = r#"{"schedules":[{"id":"base","dir":"/runs/base","schedule":0,"ending":"exited:2","differs":false},{"id":"a","dir":"/runs/a","schedule":1,"ending":"exited:0","differs":true}],"tried":1,"differing":1,"schedule_0_failed":true,"narrowed":null}\n"#;
+        let json = r#"{"schedules":[{"id":"base","dir":"/runs/base","seed":0,"schedule":0,"ending":"exited:2","differs":false,"violations":[]},{"id":"a","dir":"/runs/a","seed":0,"schedule":1,"ending":"exited:0","differs":true,"violations":[]}],"tried":1,"differing":1,"sometimes_never":[],"schedule_0_failed":true,"narrowed":null}\n"#;
         let engine = fake_engine(&dir, json, "schedule   1: exited:0\n", 1);
         let said = std::cell::RefCell::new(Vec::new());
         let checked = retrying(|| {
-            engine.check_from(&run, 4_200, 1, &Cancel::default(), &mut |line| {
+            engine.check_from(&run, 4_200, 1, 4, &Cancel::default(), &mut |line| {
                 said.borrow_mut().push(line.to_string())
             })
         })
@@ -1481,13 +1486,13 @@ mod tests {
         assert_eq!(
             args.trim(),
             format!(
-                "check --run {} --schedule-from 4200 --schedules 1 --all --no-narrow --json",
+                "check --run {} --schedule-from 4200 --schedules 1 --seeds 4 --all --no-narrow --json",
                 run.display()
             )
         );
 
         let refusing = fake_engine(&dir, "", "rewind: run abc has not finished\n", 1);
-        let err = retrying(|| refusing.check_from(&run, 1, 1, &Cancel::default(), &mut |_| {}))
+        let err = retrying(|| refusing.check_from(&run, 1, 1, 1, &Cancel::default(), &mut |_| {}))
             .unwrap_err();
         let EngineError::Failed { message, .. } = err else {
             panic!("{err:?}");

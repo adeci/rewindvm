@@ -1,7 +1,8 @@
 //! Check from here: what the amber button at the end of the controls does
 //! once its menu turns it from Fork from here, trying schedules from the
-//! playhead, each a fork of the run there, and the card in "At this step"
-//! that counts how they ended, a cell per schedule.
+//! playhead, each a fork of the run there, under the run's own seed or
+//! several, and the card in "At this step" that counts how they ended, a
+//! cell per run and a row per seed.
 //!
 //! The engine runs the schedules as `rewind check --run` does, several at
 //! once, and says a line as each ends, which fills the card as it goes.
@@ -19,11 +20,11 @@ use crate::describe::thousands;
 use crate::engine::Cancel;
 use crate::request::Request;
 use crate::run::{Origin, short_id};
-use crate::sweep::{Checked, HereAction, Outcome, SIZES, schedule_said};
+use crate::sweep::{Cell, Checked, HereAction, Outcome, SEEDED, SIZES, cells, schedule_said};
 use crate::theme::{self, size};
 use crate::ui::render::{card, card_title};
 use crate::ui::scrubber::{EXAMPLE_FORK, NoticeTone, Replay, Scrubber, replay_unavailable};
-use crate::ui::widgets::{Availability, ButtonStyle, button};
+use crate::ui::widgets::{Availability, ButtonStyle, button, tooltip};
 
 /// The height of a schedule's cell.
 const CELL_HEIGHT: f32 = 26.0;
@@ -40,22 +41,26 @@ const HERE_MENU_WIDTH: f32 = 250.0;
 
 /// A check from here, running or done.
 pub struct Sweep {
-    /// The run it forks, the step it forks at, and how many schedules it
-    /// tries.
+    /// The run it forks, the step it forks at, and how many schedules and
+    /// seeds it tries.
     pub run: PathBuf,
     pub step: u64,
     pub schedules: u64,
+    pub seeds: u64,
+    /// The run's own seed, once check has said it, which the other seeds
+    /// count from.
+    pub first_seed: Option<u64>,
     pub state: SweepState,
-    /// The schedule picked in the card, by its place among the forks.
-    pub picked: Option<usize>,
+    /// The run picked in the card, by its cell.
+    pub picked: Option<Cell>,
     request: Request,
     cancel: Cancel,
 }
 
 pub enum SweepState {
-    /// The schedules that have ended so far.
+    /// The runs that have ended so far, by their cells.
     Running {
-        ended: Vec<u64>,
+        ended: Vec<Cell>,
     },
     Done(Checked),
     Failed(String),
@@ -72,7 +77,7 @@ impl Drop for Sweep {
 impl Scrubber {
     /// Tries schedules from the playhead, unless a check runs already or
     /// the run cannot be forked here.
-    pub(super) fn check_here(&mut self, schedules: u64, cx: &mut Context<Self>) {
+    pub(super) fn check_here(&mut self, schedules: u64, seeds: u64, cx: &mut Context<Self>) {
         let Some(session) = &self.session else {
             return;
         };
@@ -105,6 +110,8 @@ impl Scrubber {
             run: run.clone(),
             step,
             schedules,
+            seeds,
+            first_seed: None,
             state: SweepState::Running { ended: Vec::new() },
             picked: None,
             request,
@@ -117,23 +124,27 @@ impl Scrubber {
         let engine = self.engine.clone();
         let (lines, mut said) = futures::channel::mpsc::unbounded::<String>();
         let task = crate::jobs::on_own_thread(move || {
-            engine.check_from(&run, step, schedules, &cancel, &mut |line| {
+            engine.check_from(&run, step, schedules, seeds, &cancel, &mut |line| {
                 let _ = lines.unbounded_send(line.to_string());
             })
         });
         cx.spawn(async move |this, cx| {
             while let Some(line) = said.next().await {
-                let Some(schedule) = schedule_said(&line) else {
+                let Some((seed, schedule)) = schedule_said(&line) else {
                     continue;
                 };
                 let alive = this.update(cx, |this, cx| {
                     let Some(sweep) = this.sweep.as_mut().filter(|s| s.request == request) else {
                         return;
                     };
+                    // The first line is the run itself, under its own seed.
+                    let seed = seed.unwrap_or(0);
+                    let first = *sweep.first_seed.get_or_insert(seed);
+                    let cell = (seed.wrapping_sub(first), schedule);
                     if let SweepState::Running { ended } = &mut sweep.state
-                        && schedule > 0
+                        && cell != (0, 0)
                     {
-                        ended.push(schedule);
+                        ended.push(cell);
                     }
                     cx.notify();
                 });
@@ -163,7 +174,7 @@ impl Scrubber {
     pub(super) fn act_here(&mut self, cx: &mut Context<Self>) {
         match self.here_action {
             HereAction::Fork => self.fork_here(cx),
-            HereAction::Check { schedules } => self.check_here(schedules, cx),
+            HereAction::Check { schedules, seeds } => self.check_here(schedules, seeds, cx),
         }
     }
 
@@ -190,7 +201,11 @@ impl Scrubber {
     pub(super) fn render_here_menu(&self, cx: &mut Context<Self>) -> Option<Div> {
         let position = self.here_menu?;
         let actions = std::iter::once(HereAction::Fork)
-            .chain(SIZES.map(|schedules| HereAction::Check { schedules }));
+            .chain(SIZES.map(|schedules| HereAction::Check {
+                schedules,
+                seeds: 1,
+            }))
+            .chain(SEEDED.map(|(seeds, schedules)| HereAction::Check { schedules, seeds }));
         let mut items = div()
             .w(px(HERE_MENU_WIDTH))
             .flex()
@@ -207,8 +222,12 @@ impl Scrubber {
         for (i, action) in actions.enumerate() {
             let label = match action {
                 HereAction::Fork => "Fork from here, once".to_string(),
-                HereAction::Check { schedules } => {
-                    format!("Check from here, {schedules} schedules")
+                HereAction::Check {
+                    schedules,
+                    seeds: 1,
+                } => format!("Check from here, {schedules} schedules"),
+                HereAction::Check { schedules, seeds } => {
+                    format!("Check from here, {seeds} seeds \u{d7} {schedules} schedules")
                 }
             };
             items = items.child(
@@ -293,16 +312,21 @@ impl Scrubber {
             SweepState::Running { ended } => {
                 card = card
                     .child(div().text_color(rgb(theme::TEXT)).child(format!(
-                        "{} of {} schedules ended",
+                        "{} of {} {} ended",
                         ended.len(),
-                        sweep.schedules
+                        cells(sweep.seeds, sweep.schedules).len(),
+                        runs_noun(sweep.seeds)
                     )))
                     .child(self.render_cells(sweep, cx))
                     .child(
                         div()
                             .text_size(px(size::TEXT_SMALL))
                             .text_color(rgb(theme::MUTED))
-                            .child("Each is a fork of this run at the step, run under its own schedule. Cancel keeps the forks that ended."),
+                            .child(if sweep.seeds > 1 {
+                                "Each is a fork of this run at the step, run under its own seed and schedule. Cancel keeps the forks that ended."
+                            } else {
+                                "Each is a fork of this run at the step, run under its own schedule. Cancel keeps the forks that ended."
+                            }),
                     )
                     .child(
                         div().flex().child(
@@ -316,17 +340,36 @@ impl Scrubber {
             SweepState::Done(checked) => {
                 card = card
                     .child(div().text_color(rgb(theme::TEXT)).child(format!(
-                        "{} of {} schedules ended differently",
-                        checked.differing, checked.tried
+                        "{} of {} {} ended differently",
+                        checked.differing,
+                        checked.tried,
+                        runs_noun(sweep.seeds)
                     )))
                     .child(
                         div()
                             .text_size(px(size::TEXT_SMALL))
                             .text_color(rgb(theme::SOFT))
                             .child(checked.summary()),
-                    )
-                    .child(self.render_cells(sweep, cx))
-                    .child(legend());
+                    );
+                // What the program said some run should make true and no
+                // run did: the check never reached that case.
+                if !checked.sometimes_never.is_empty() {
+                    let quoted: Vec<String> = checked
+                        .sometimes_never
+                        .iter()
+                        .map(|id| format!("\"{id}\""))
+                        .collect();
+                    card = card.child(
+                        div()
+                            .text_size(px(size::TEXT_SMALL))
+                            .text_color(rgb(theme::AMBER_PALE))
+                            .child(format!(
+                                "Never true in any run: sometimes {}",
+                                quoted.join(", ")
+                            )),
+                    );
+                }
+                card = card.child(self.render_cells(sweep, cx)).child(legend());
                 if let Some(picked) = self.render_picked_schedule(sweep, checked, cx) {
                     card = card.child(picked);
                 }
@@ -335,76 +378,110 @@ impl Scrubber {
         Some(card)
     }
 
-    /// A cell per schedule, CELLS_PER_ROW to a row: grey ended as this
-    /// run did, blue differently, outlined timed out; while the check
-    /// runs, filled once ended.
+    /// A cell per run, CELLS_PER_ROW to a row and a row per seed, each
+    /// seed's labelled when there are several: grey ended as this run
+    /// did, blue differently, outlined timed out; while the check runs,
+    /// filled once ended. A seed whose unperturbed run already differed
+    /// leaves its schedules untried.
     fn render_cells(&self, sweep: &Sweep, cx: &mut Context<Self>) -> Div {
-        let mut rows = div().flex().flex_col().gap(px(CELL_GAP));
-        let mut strip = div().flex().gap(px(CELL_GAP));
-        for (i, schedule) in (1..=sweep.schedules).enumerate() {
-            if i > 0 && i % CELLS_PER_ROW == 0 {
-                rows = rows.child(std::mem::replace(
-                    &mut strip,
-                    div().flex().gap(px(CELL_GAP)),
-                ));
-            }
-            let cell = div()
-                .id(SharedString::from(format!("check-cell-{schedule}")))
-                .flex()
-                .flex_1()
-                .items_end()
-                .justify_center()
-                .h(px(CELL_HEIGHT))
-                .pb(px(2.0))
-                .rounded(px(size::RADIUS_SEGMENT))
-                .border_1()
-                .font_family(self.fonts.mono.clone())
-                .text_size(px(size::TEXT_SMALL - 2.0))
-                .child(schedule.to_string());
-            let cell = match &sweep.state {
-                SweepState::Running { ended } if ended.contains(&schedule) => cell
-                    .bg(rgb(theme::PHASE_GREYS[1]))
-                    .border_color(rgb(theme::PHASE_GREYS[1]))
-                    .text_color(rgb(theme::SOFT)),
-                SweepState::Running { .. } | SweepState::Failed(_) => cell
-                    .border_color(rgb(theme::LINE_2))
-                    .text_color(rgb(theme::FAINT)),
-                SweepState::Done(checked) => {
-                    let Some(tried) = checked.forks().get(i) else {
-                        strip = strip.child(cell.border_color(rgb(theme::LINE_2)));
-                        continue;
-                    };
-                    let cell = match tried.outcome() {
-                        Outcome::Same => cell
-                            .bg(rgb(theme::PHASE_GREYS[3]))
-                            .border_color(rgb(theme::PHASE_GREYS[3]))
-                            .text_color(rgb(theme::SOFT)),
-                        Outcome::Differs => cell
-                            .bg(rgb(theme::BLUE))
-                            .border_color(rgb(theme::BLUE))
-                            .text_color(rgb(theme::BG)),
-                        Outcome::TimedOut => cell
-                            .border_dashed()
-                            .border_color(rgb(theme::MUTED))
-                            .text_color(rgb(theme::MUTED)),
-                    };
-                    let cell = if sweep.picked == Some(i) {
-                        cell.border_2().border_color(rgb(theme::AMBER))
-                    } else {
-                        cell
-                    };
-                    cell.cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(sweep) = &mut this.sweep {
-                                sweep.picked = Some(i);
-                            }
-                            cx.notify();
-                        }))
-                }
-            };
-            strip = strip.child(cell);
+        let first = match &sweep.state {
+            SweepState::Done(checked) => checked.schedules.first().map(|t| t.seed),
+            _ => sweep.first_seed,
         }
-        rows.child(strip)
+        .unwrap_or(0);
+        let mut rows = div().flex().flex_col().gap(px(CELL_GAP));
+        for seed in 0..sweep.seeds {
+            if sweep.seeds > 1 {
+                rows = rows.child(
+                    div()
+                        .text_size(px(size::TEXT_SMALL))
+                        .text_color(rgb(theme::MUTED))
+                        .child(if seed == 0 {
+                            format!("seed {}, the run's own", first)
+                        } else {
+                            format!("seed {}, from step {}", first + seed, thousands(sweep.step))
+                        }),
+                );
+            }
+            let mut strip = div().flex().gap(px(CELL_GAP));
+            let row: Vec<Cell> = cells(sweep.seeds, sweep.schedules)
+                .into_iter()
+                .filter(|c| c.0 == seed)
+                .collect();
+            for (i, cell_at) in row.into_iter().enumerate() {
+                if i > 0 && i % CELLS_PER_ROW == 0 {
+                    rows = rows.child(std::mem::replace(
+                        &mut strip,
+                        div().flex().gap(px(CELL_GAP)),
+                    ));
+                }
+                let (cell_seed, schedule) = cell_at;
+                let cell = div()
+                    .id(SharedString::from(format!(
+                        "check-cell-{cell_seed}-{schedule}"
+                    )))
+                    .flex()
+                    .flex_1()
+                    .items_end()
+                    .justify_center()
+                    .h(px(CELL_HEIGHT))
+                    .pb(px(2.0))
+                    .rounded(px(size::RADIUS_SEGMENT))
+                    .border_1()
+                    .font_family(self.fonts.mono.clone())
+                    .text_size(px(size::TEXT_SMALL - 2.0))
+                    .child(schedule.to_string());
+                let cell = match &sweep.state {
+                    SweepState::Running { ended } if ended.contains(&cell_at) => cell
+                        .bg(rgb(theme::PHASE_GREYS[1]))
+                        .border_color(rgb(theme::PHASE_GREYS[1]))
+                        .text_color(rgb(theme::SOFT)),
+                    SweepState::Running { .. } | SweepState::Failed(_) => cell
+                        .border_color(rgb(theme::LINE_2))
+                        .text_color(rgb(theme::FAINT)),
+                    SweepState::Done(checked) => {
+                        let Some(tried) = checked.at(cell_at) else {
+                            strip = strip.child(
+                                cell.border_dashed()
+                                    .border_color(rgb(theme::LINE_2))
+                                    .text_color(rgb(theme::FAINT))
+                                    .tooltip(tooltip(UNTRIED.to_string())),
+                            );
+                            continue;
+                        };
+                        let cell = match tried.outcome() {
+                            Outcome::Same => cell
+                                .bg(rgb(theme::PHASE_GREYS[3]))
+                                .border_color(rgb(theme::PHASE_GREYS[3]))
+                                .text_color(rgb(theme::SOFT)),
+                            Outcome::Differs => cell
+                                .bg(rgb(theme::BLUE))
+                                .border_color(rgb(theme::BLUE))
+                                .text_color(rgb(theme::BG)),
+                            Outcome::TimedOut => cell
+                                .border_dashed()
+                                .border_color(rgb(theme::MUTED))
+                                .text_color(rgb(theme::MUTED)),
+                        };
+                        let cell = if sweep.picked == Some(cell_at) {
+                            cell.border_2().border_color(rgb(theme::AMBER))
+                        } else {
+                            cell
+                        };
+                        cell.cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(sweep) = &mut this.sweep {
+                                    sweep.picked = Some(cell_at);
+                                }
+                                cx.notify();
+                            }))
+                    }
+                };
+                strip = strip.child(cell);
+            }
+            rows = rows.child(strip);
+        }
+        rows
     }
 
     /// The picked schedule's run and how it ended, with Compare, which
@@ -415,7 +492,7 @@ impl Scrubber {
         checked: &Checked,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
-        let tried = checked.forks().get(sweep.picked?)?;
+        let tried = checked.at(sweep.picked?)?;
         let this_run = sweep.run.clone();
         let dir = tried.dir.clone();
         let (compare_this, compare_dir) = (this_run.clone(), dir.clone());
@@ -433,12 +510,27 @@ impl Scrubber {
                         .text_size(px(size::TEXT_SMALL))
                         .text_color(rgb(theme::TEXT))
                         .child(format!(
-                            "schedule {} \u{b7} run {} \u{b7} {}",
+                            "{}schedule {} \u{b7} run {} \u{b7} {}",
+                            if sweep.seeds > 1 {
+                                format!("seed {} \u{b7} ", tried.seed)
+                            } else {
+                                String::new()
+                            },
                             tried.schedule,
                             short_id(&tried.id),
                             tried.ending.as_deref().unwrap_or("still running")
                         )),
                 )
+                // What the run violated, and where.
+                .children(tried.violations.iter().map(|v| {
+                    let at = v
+                        .step
+                        .map_or(String::new(), |s| format!("step {}: ", thousands(s)));
+                    div()
+                        .text_size(px(size::TEXT_SMALL))
+                        .text_color(rgb(theme::RED_SOFT))
+                        .child(format!("{}: {at}{}", v.property, v.why))
+                }))
                 .child(
                     div()
                         .flex()
@@ -468,6 +560,14 @@ impl Scrubber {
                 ),
         )
     }
+}
+
+/// What a cell the check did not try says.
+const UNTRIED: &str = "Not tried: this seed already ended differently unperturbed";
+
+/// What a check counts: schedules under one seed, runs under several.
+fn runs_noun(seeds: u64) -> &'static str {
+    if seeds > 1 { "runs" } else { "schedules" }
 }
 
 /// What the cells' colors mean.

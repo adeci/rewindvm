@@ -664,6 +664,7 @@ impl Scrubber {
         }
         track = track.children(self.split_mark(view, cx));
         track = track.children(self.bookmark_marks(view, cx));
+        track = track.children(self.assertion_marks(view, cx));
         if let Some(failure) = t.failure {
             track = track.children(marker(failure.step, size::FAILURE_WIDTH, theme::RED));
         }
@@ -717,6 +718,7 @@ impl Scrubber {
 
         track = track.child(self.track_input(cx));
         let track = self.with_callout(track, Anchor::Timeline, cx);
+        let tests = self.render_test_strip(view, cx);
 
         div()
             .flex_none()
@@ -728,7 +730,7 @@ impl Scrubber {
             .px(px(size::PAGE_PAD_X))
             .border_b_1()
             .border_color(rgb(theme::LINE))
-            .child(track)
+            .child(div().flex().flex_col().child(track).children(tests))
             .child(self.render_controls(cx))
     }
 
@@ -913,9 +915,16 @@ impl Scrubber {
         };
         let (label, note) = match self.here_action {
             HereAction::Fork => ("Fork from here".to_string(), None),
-            HereAction::Check { schedules } => (
+            HereAction::Check {
+                schedules,
+                seeds: 1,
+            } => (
                 format!("Check from here \u{b7} {schedules}"),
-                Some(check_note(schedules)),
+                Some(check_note(schedules, 1)),
+            ),
+            HereAction::Check { schedules, seeds } => (
+                format!("Check from here \u{b7} {seeds}\u{d7}{schedules}"),
+                Some(check_note(schedules, seeds)),
             ),
         };
         let note = match (forking, note) {
@@ -2092,7 +2101,13 @@ const EXPORT_NOTE: &str = "Writes this run to one .rwd file, with its keyframes 
 const THREADS_NOTE: &str = "A lane per thread over a window of steps, a bar where the thread held the CPU, beside the compared run's. Rewind replays the window one step at a time in each run to find them. Key: t.";
 
 /// The amber button's note when it checks from here.
-fn check_note(schedules: u64) -> String {
+fn check_note(schedules: u64, seeds: u64) -> String {
+    if seeds > 1 {
+        return format!(
+            "Runs {schedules} other schedules from this step under this run's seed, and {} more seeds, each unperturbed and under {schedules} schedules, each a fork of this run reseeded at the step, and counts how many end differently. The forks stay among this run's forks. The menu beside it turns it back to Fork from here.",
+            seeds - 1
+        );
+    }
     format!(
         "Runs {schedules} other schedules from this step, each a fork of this run, and counts how many end differently. The forks stay among this run's forks. The menu beside it turns it back to Fork from here."
     )

@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 
+use rewind_trace::sdk::{SdkMark, TestResult};
 use rewind_trace::{Event, EventKind, JobExit, Trace, signal};
 
 use crate::shown_line::{Pen, shown};
@@ -82,6 +83,9 @@ pub enum Stream {
     Console,
     /// A mark written to /dev/rewind.
     Mark,
+    /// What the job asserted with the Rewind SDK and broke, and how its
+    /// tests ended.
+    Sdk,
 }
 
 /// How a log line is drawn.
@@ -220,6 +224,9 @@ pub enum FailureKind {
     /// The machine stopped before the job exited: at its time limit, or
     /// by a fault.
     Stopped,
+    /// The job exited 0, but an assertion it made with the Rewind SDK did
+    /// not hold: an `always` failed or an `unreachable` was reached.
+    Assertion,
 }
 
 /// How a run's machine stopped, as far as finding its failure goes.
@@ -296,6 +303,109 @@ pub struct Timeline {
     pub job_start: Option<u64>,
     /// A display name per process row pid, for describing events.
     names: HashMap<u32, String>,
+    /// What the job asserted with the Rewind SDK and broke, in step order.
+    pub assertions: Vec<Assertion>,
+    /// The tests the job marked with the Rewind SDK, in the order they
+    /// began.
+    pub tests: Vec<TestSpan>,
+}
+
+/// An assertion the job made with the Rewind SDK that did not hold: an
+/// `always` that failed, or an `unreachable` it reached.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Assertion {
+    pub step: u64,
+    pub pid: u32,
+    pub tid: u32,
+    /// What failed, in words: `always "even" failed: byte 221 is odd`.
+    pub text: String,
+}
+
+/// A test the job marked with the Rewind SDK: the steps it began and
+/// ended on, and how it ended. A test that never ended has neither.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TestSpan {
+    pub name: String,
+    pub begin: u64,
+    pub end: Option<u64>,
+    pub result: Option<TestResult>,
+}
+
+/// An SDK mark in words, and whether it says something broke: what the
+/// event card, the log and the timeline show for it.
+pub fn sdk_words(mark: &SdkMark) -> (String, bool) {
+    let said = |what: String, message: &str| {
+        if message.is_empty() {
+            what
+        } else {
+            format!("{what}: {message}")
+        }
+    };
+    match mark {
+        SdkMark::Always {
+            id,
+            held: false,
+            message,
+        } => (said(format!("always \"{id}\" failed"), message), true),
+        SdkMark::Always { id, .. } => (format!("always \"{id}\" held"), false),
+        SdkMark::Sometimes { id, hit: true } => (format!("sometimes \"{id}\" was true"), false),
+        SdkMark::Sometimes { id, hit: false } => (format!("sometimes \"{id}\" was false"), false),
+        SdkMark::Unreachable { id, message } => {
+            (said(format!("unreachable \"{id}\" reached"), message), true)
+        }
+        SdkMark::TestBegin { name } => (format!("test {name} began"), false),
+        SdkMark::TestEnd { name, result } => match result {
+            TestResult::Pass => (format!("test {name} passed"), false),
+            TestResult::Fail => (format!("test {name} failed"), true),
+            TestResult::Skip => (format!("test {name} was skipped"), false),
+        },
+    }
+}
+
+/// The assertions that broke and the tests, from the job's SDK marks.
+fn sdk_findings(trace: &Trace) -> (Vec<Assertion>, Vec<TestSpan>) {
+    let mut assertions = Vec::new();
+    let mut tests: Vec<TestSpan> = Vec::new();
+    for (e, mark) in trace.sdk_marks() {
+        match &mark {
+            SdkMark::Always { held: false, .. } | SdkMark::Unreachable { .. } => {
+                assertions.push(Assertion {
+                    step: e.step,
+                    pid: e.pid,
+                    tid: e.tid,
+                    text: sdk_words(&mark).0,
+                });
+            }
+            SdkMark::TestBegin { name } => tests.push(TestSpan {
+                name: name.clone(),
+                begin: e.step,
+                end: None,
+                result: None,
+            }),
+            // The test's latest unfinished begin, or one of its own when
+            // the job marked no begin.
+            SdkMark::TestEnd { name, result } => {
+                match tests
+                    .iter_mut()
+                    .rev()
+                    .find(|t| t.name == *name && t.end.is_none())
+                {
+                    Some(test) => {
+                        test.end = Some(e.step);
+                        test.result = Some(*result);
+                    }
+                    None => tests.push(TestSpan {
+                        name: name.clone(),
+                        begin: e.step,
+                        end: Some(e.step),
+                        result: Some(*result),
+                    }),
+                }
+            }
+            SdkMark::Always { .. } | SdkMark::Sometimes { .. } => {}
+        }
+    }
+    (assertions, tests)
 }
 
 impl Timeline {
@@ -321,6 +431,7 @@ impl Timeline {
         let job_exit = trace.job_exit();
         let job_start = trace.job_start();
         let failure = find_failure(&trace, job_exit, total, stopped, None);
+        let (assertions, tests) = sdk_findings(&trace);
 
         // Command names for event descriptions: the latest process per pid
         // wins, which is the right one for any pid that was not reused.
@@ -342,6 +453,8 @@ impl Timeline {
             job_exit,
             job_start,
             names,
+            assertions,
+            tests,
         }
     }
 
@@ -490,12 +603,13 @@ fn starts_a_word(text: &str, marker: &str) -> bool {
 
 /// The text of a mark someone wrote to /dev/rewind on purpose: not
 /// empty, and not one of init's own, which shape the timeline and the
-/// verdict instead.
+/// verdict instead, nor one of the Rewind SDK's, which the log and the
+/// timeline show as assertions and tests.
 fn user_mark(event: &Event) -> Option<&str> {
     let EventKind::Mark { text } = &event.kind else {
         return None;
     };
-    if text.trim().is_empty() || event.init_mark().is_some() {
+    if text.trim().is_empty() || event.init_mark().is_some() || event.sdk_mark().is_some() {
         return None;
     }
     Some(text)
@@ -547,6 +661,34 @@ fn output_lines(trace: &Trace) -> Vec<LogLine> {
         .collect();
     if !marks.is_empty() {
         lines = merge_by_step(&lines, &marks);
+    }
+
+    // What the job asserted with the SDK and broke, and how its tests
+    // ended, join the log too; the rest of its marks stay out.
+    let sdk: Vec<LogLine> = trace
+        .sdk_marks()
+        .filter(|(_, mark)| {
+            matches!(
+                mark,
+                SdkMark::Always { held: false, .. }
+                    | SdkMark::Unreachable { .. }
+                    | SdkMark::TestEnd { .. }
+            )
+        })
+        .map(|(e, mark)| {
+            let (text, broke) = sdk_words(&mark);
+            LogLine {
+                step: e.step,
+                pid: e.pid,
+                stream: Stream::Sdk,
+                text,
+                tone: if broke { Tone::Error } else { Tone::Normal },
+                pens: Vec::new(),
+            }
+        })
+        .collect();
+    if !sdk.is_empty() {
+        lines = merge_by_step(&lines, &sdk);
     }
     lines
 }
@@ -689,8 +831,27 @@ fn find_failure(
     stopped: Stopped,
     shared: Option<u64>,
 ) -> Option<Failure> {
+    // A job that exited 0 failed only where an assertion it made did not
+    // hold, as `rewind check`'s sdk property judges it.
+    let made_too = |step: u64| shared.is_some_and(|s| step < s);
     if job_exit.is_some_and(|j| j.status == 0) {
-        return None;
+        let until = job_exit.map_or(u64::MAX, |j| j.step);
+        return trace.events.iter().enumerate().find_map(|(index, e)| {
+            if e.step > until || made_too(e.step) {
+                return None;
+            }
+            let broke = matches!(
+                e.sdk_mark()?,
+                SdkMark::Always { held: false, .. } | SdkMark::Unreachable { .. }
+            );
+            broke.then_some(Failure {
+                step: e.step,
+                pid: e.pid,
+                tid: e.tid,
+                index,
+                kind: FailureKind::Assertion,
+            })
+        });
     }
 
     // Only what happened up to the job's exit, when init reported one:
@@ -700,7 +861,6 @@ fn find_failure(
 
     // A crash signal anywhere wins: the exits after it are its
     // consequences.
-    let made_too = |step: u64| shared.is_some_and(|s| step < s);
     let signal = trace.events.iter().enumerate().find_map(|(index, e)| {
         if e.step > until || made_too(e.step) {
             return None;
@@ -1219,6 +1379,95 @@ mod tests {
 
     fn mark(step: u64, text: &str) -> Event {
         ev(step, 1, 1, EventKind::Mark { text: text.into() })
+    }
+
+    #[test]
+    fn sdk_marks_are_assertions_and_tests_not_phases() {
+        // A job that marks a phase of its own, then a test whose always
+        // fails, a passing test, and an unreachable it reaches. Only the
+        // phase starts a segment; the failures are assertions in step
+        // order, the tests are spans with their results, and the log has
+        // a line for each failure and each test's end.
+        let sdk = |step: u64, text: &str| ev(step, 41, 41, EventKind::Mark { text: text.into() });
+        let events = vec![
+            mark(10, "rewind-start"),
+            fork(11, 1, 41, false),
+            ev(
+                20,
+                41,
+                41,
+                EventKind::Mark {
+                    text: "load".into(),
+                },
+            ),
+            sdk(30, "rewind-sdk 1 test-begin coin flip"),
+            sdk(31, "rewind-sdk 1 always pass even"),
+            sdk(32, "rewind-sdk 1 always fail even byte 221 is odd"),
+            sdk(33, "rewind-sdk 1 test-end fail coin flip"),
+            sdk(40, "rewind-sdk 1 test-begin steady"),
+            sdk(41, "rewind-sdk 1 sometimes miss huge-byte"),
+            sdk(42, "rewind-sdk 1 test-end pass steady"),
+            sdk(50, "rewind-sdk 1 unreachable retry-after-close pool closed"),
+            mark(60, "rewind-exit 0"),
+        ];
+        let t = Timeline::new(Trace { events }, None, None);
+
+        let phases: Vec<&str> = t.phases.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(phases, vec![BOOT_PHASE, SETUP_PHASE, "load"]);
+
+        // The job exited 0, so its failure is the first assertion that
+        // broke.
+        let failure = t.failure.unwrap();
+        assert_eq!((failure.step, failure.kind), (32, FailureKind::Assertion));
+
+        let failed: Vec<(u64, &str)> = t
+            .assertions
+            .iter()
+            .map(|a| (a.step, a.text.as_str()))
+            .collect();
+        assert_eq!(
+            failed,
+            vec![
+                (32, "always \"even\" failed: byte 221 is odd"),
+                (50, "unreachable \"retry-after-close\" reached: pool closed"),
+            ]
+        );
+        assert_eq!(
+            t.tests,
+            vec![
+                TestSpan {
+                    name: "coin flip".into(),
+                    begin: 30,
+                    end: Some(33),
+                    result: Some(TestResult::Fail),
+                },
+                TestSpan {
+                    name: "steady".into(),
+                    begin: 40,
+                    end: Some(42),
+                    result: Some(TestResult::Pass),
+                },
+            ]
+        );
+
+        let sdk_lines: Vec<(&str, Tone)> = t
+            .lines(LogFilter::Output)
+            .iter()
+            .filter(|l| l.stream == Stream::Sdk)
+            .map(|l| (l.text.as_str(), l.tone))
+            .collect();
+        assert_eq!(
+            sdk_lines,
+            vec![
+                ("always \"even\" failed: byte 221 is odd", Tone::Error),
+                ("test coin flip failed", Tone::Error),
+                ("test steady passed", Tone::Normal),
+                (
+                    "unreachable \"retry-after-close\" reached: pool closed",
+                    Tone::Error
+                ),
+            ]
+        );
     }
 
     /// A job the way the guest's init runs one: boot, the start mark, a

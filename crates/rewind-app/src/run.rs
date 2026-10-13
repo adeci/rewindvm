@@ -19,6 +19,9 @@ use crate::archive;
 use crate::describe::{self, thousands};
 use crate::model::{Comparison, Timeline};
 
+/// What a run's label adds when its job broke an assertion it made with
+/// the Rewind SDK.
+const ASSERTION_FAILED: &str = "assertion failed";
 /// Where a run came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Origin {
@@ -187,13 +190,15 @@ impl Run {
 
     /// Whether the run failed: as its ending says, once the engine has
     /// recorded one. A trace without a manifest goes by init's exit mark,
-    /// else by a crash or failing exit in the trace.
+    /// else by a crash or failing exit in the trace. A job that broke an
+    /// assertion it made with the Rewind SDK failed, however it exited.
     pub fn verdict(&self) -> Verdict {
-        let passed = match (self.ending(), self.timeline.job_exit) {
+        let ended_well = match (self.ending(), self.timeline.job_exit) {
             (Some(ending), _) => ending.passed(),
             (None, Some(exit)) => ExitStatus::from_wait(exit.status).success(),
             (None, None) => self.timeline.failure.is_none(),
         };
+        let passed = ended_well && self.timeline.assertions.is_empty();
         if passed {
             Verdict::Passed
         } else {
@@ -215,9 +220,14 @@ impl Run {
     }
 
     /// How the run ended, in the engine's words (exited:2, killed:SIGSEGV,
-    /// timed-out), else by init's exit mark, else passed or failed.
+    /// timed-out), else by init's exit mark, else passed or failed; with
+    /// "assertion failed" after an ending that passed when the job broke
+    /// an assertion it made with the Rewind SDK.
     pub fn verdict_label(&self) -> String {
         if let Some(ending) = self.ending() {
+            if ending.passed() && !self.timeline.assertions.is_empty() {
+                return format!("{ending}, {ASSERTION_FAILED}");
+            }
             return ending.to_string();
         }
         match self.timeline.job_exit {
