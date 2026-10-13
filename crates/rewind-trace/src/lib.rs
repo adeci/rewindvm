@@ -20,6 +20,7 @@ pub mod export;
 pub mod located;
 pub mod machine;
 pub mod manifest;
+pub mod properties;
 pub mod prune;
 pub mod schedule;
 pub mod stop;

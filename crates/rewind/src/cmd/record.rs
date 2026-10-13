@@ -145,7 +145,16 @@ pub struct CheckArgs {
     ///
     /// same-outcome: the run ends as schedule 0 did, with the same exit
     /// status and outputs; the default. exit-zero: the job exits 0 having
-    /// made every output. script=PATH: a program on this machine judges
+    /// made every output. no-crash: no process of the job died of a
+    /// signal that dumps core, such as SIGSEGV, even one the job's exit
+    /// status hides. no-orphans: every process the job started had exited
+    /// when the job did. single-writer=GLOB: no two of the job's
+    /// processes had a matching file open for writing at once.
+    /// atomic-replace=GLOB: no matching file the run had written was
+    /// truncated in place, where a reader can see it half written.
+    /// writes-within=DIR:DIR: the job wrote, renamed and removed files
+    /// only under these directories, besides /dev, /proc and /sys.
+    /// script=PATH: a program on this machine judges
     /// each run, exiting 0 when the property holds and 1 when it is
     /// violated, with the reason on its first line, which may start with
     /// `step N:`. It finds the run in $REWIND_RUN, schedule 0 in
@@ -154,6 +163,11 @@ pub struct CheckArgs {
     /// log`.
     #[arg(long = "property", value_name = "PROPERTY")]
     pub(crate) properties: Vec<Property>,
+    /// A file of properties, one a line, as --property takes them; lines
+    /// starting with # are comments, and a script's path is taken from
+    /// the file's directory. Adds to --property.
+    #[arg(long = "properties", value_name = "FILE")]
+    pub(crate) properties_file: Option<PathBuf>,
     /// Try every schedule and report how many end differently, instead
     /// of stopping at the first.
     #[arg(long)]
@@ -305,7 +319,8 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         image,
         run,
         schedules,
-        properties,
+        mut properties,
+        properties_file,
         all,
         no_narrow,
         jobs,
@@ -322,6 +337,9 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             println!("{line}");
         }
     };
+    if let Some(file) = &properties_file {
+        properties.extend(Property::read_file(file)?);
+    }
     let jobs = jobs
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
         .max(1);
@@ -514,11 +532,16 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         if same_outcome_only {
             say(format!("same result under all {} schedules", tried + 1));
         } else if base_holds {
-            say(format!("every property held under all {} schedules", tried + 1));
-        } else {
             say(format!(
-                "every schedule violated a property, as {base_words} did"
+                "every property held under all {} schedules",
+                tried + 1
             ));
+        } else {
+            if !all {
+                say(format!(
+                    "every schedule violated a property, as {base_words} did"
+                ));
+            }
             // Schedule 0's violation is the bug, at the step it names.
             if let Some(step) = base_violations.iter().find_map(|v| v.step)
                 && !json

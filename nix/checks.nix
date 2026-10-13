@@ -1309,6 +1309,67 @@ in
         touch $out
       '';
 
+  # checks.trace-properties: the properties `rewind check --property`
+  # decides from the trace alone, each on a shell job in the busybox root
+  # that breaks it, and on one that does not: a child killed by SIGSEGV
+  # while the job exits 0, a sleep left running, two sibling processes
+  # appending to one log at once, a config rewritten in place, and a
+  # write outside the job's directory. A properties file lists them with
+  # a comment and a script beside it. Boots the VM, so it needs /dev/kvm.
+  trace-properties =
+    pkgs.runCommand "rewind-trace-properties"
+      {
+        nativeBuildInputs = [
+          rewind
+          pkgs.jq
+        ];
+        requiredSystemFeatures = [ "kvm" ];
+      }
+      ''
+        export REWIND_HOME=$TMPDIR/rewind
+        # One unperturbed and one perturbed schedule of a shell job, judged
+        # by the property; exits 1 when schedule 0 violates it.
+        prop() {
+          rewind check -j 2 --clock exits --schedules 1 --all --no-narrow \
+            --property "$1" --root ${busyboxRoot} -- sh -c "$2" > out
+          status=$?
+          cat out
+          return $status
+        }
+
+        ! prop no-crash 'sh -c "kill -SEGV \$\$"; exit 0'
+        grep -qE '^  no-crash: step [0-9]+: process [0-9]+ \(sh\) died of SIGSEGV$' out
+        prop no-crash 'sh -c "exit 3"; exit 0'
+
+        ! prop no-orphans 'sleep 100 & sleep 1; exit 0'
+        grep -qE '^  no-orphans: step [0-9]+: process [0-9]+ \(sleep\), started at step [0-9]+, was still running when the job.s main process exited at step [0-9]+$' out
+        prop no-orphans 'sleep 1 & wait'
+
+        ! prop 'single-writer=*.log' '(echo a >> /run/w.log; sleep 2) & (sleep 1; echo b >> /run/w.log) & wait'
+        grep -qE '^  single-writer: step [0-9]+: process [0-9]+ \(sh\) opened /run/w.log for writing while process [0-9]+ \(sh\), which opened it at step [0-9]+, was still running$' out
+        prop 'single-writer=*.log' '(echo a >> /run/w.log) & wait; (echo b >> /run/w.log) & wait'
+
+        ! prop 'atomic-replace=*.conf' 'echo a > /run/app.conf; echo b > /run/app.conf'
+        grep -qE '^  atomic-replace: step [0-9]+: process [0-9]+ \(sh\) truncated /run/app.conf in place, which the run wrote at step [0-9]+' out
+        prop 'atomic-replace=*.conf' 'echo a > /run/app.conf; echo b > /run/new.conf; cat /run/new.conf > /dev/null'
+
+        ! prop writes-within=/run 'echo a > /run/ok; echo b > /stray'
+        grep -qE '^  writes-within: step [0-9]+: process [0-9]+ \(sh\) opened /stray for writing, outside /run$' out
+        prop writes-within=/run 'echo a > /run/ok; echo b > /dev/null'
+
+        # A properties file: comments skipped, a script taken from the
+        # file's directory, and the verdicts of both in the JSON.
+        mkdir props
+        printf '#!/bin/sh\nexit 0\n' > props/fine.sh
+        chmod +x props/fine.sh
+        printf '# what a correct run is\nno-orphans\n\nscript=fine.sh\n' > props/rewind.properties
+        ! rewind check -j 2 --clock exits --schedules 1 --all --no-narrow --json \
+          --properties props/rewind.properties --root ${busyboxRoot} -- sh -c 'sleep 100 & exit 0' > file.json
+        jq -e '.properties == ["no-orphans", "script=props/fine.sh"]' file.json
+        jq -e '.schedules | all(.violations | map(.property) == ["no-orphans"])' file.json
+        touch $out
+      '';
+
   # checks.threads: `rewind threads` says what held the CPU at each step
   # of a window, one slice a line: the thread of every event in the window
   # held it at the event's step, both of race's workers show up, the

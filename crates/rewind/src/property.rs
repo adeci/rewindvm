@@ -14,13 +14,30 @@ use std::str::FromStr;
 use anyhow::{Context, Result, bail};
 use rewind_core::{Home, Run};
 use rewind_trace::ending::Ending;
+use rewind_trace::properties::{self as trace_properties, Finding, Glob};
 
 use crate::show::{self, OutcomeKey};
 
 /// The word a property is named by on the command line.
 const SAME_OUTCOME: &str = "same-outcome";
 const EXIT_ZERO: &str = "exit-zero";
+const NO_CRASH: &str = "no-crash";
+const NO_ORPHANS: &str = "no-orphans";
+const SINGLE_WRITER: &str = "single-writer";
+const ATOMIC_REPLACE: &str = "atomic-replace";
+const WRITES_WITHIN: &str = "writes-within";
 const SCRIPT: &str = "script";
+
+/// Every property as the command line writes it, for the message that
+/// refuses an unknown one.
+const ALL: &str = "same-outcome, exit-zero, no-crash, no-orphans, single-writer=GLOB, \
+     atomic-replace=GLOB, writes-within=DIR:DIR and script=PATH";
+
+/// What separates the directories of writes-within.
+const DIR_SEPARATOR: char = ':';
+
+/// What starts a comment line in a properties file.
+const COMMENT: char = '#';
 
 /// What a property script's exit status means.
 const SCRIPT_HOLDS: i32 = 0;
@@ -39,6 +56,18 @@ pub enum Property {
     SameOutcome,
     /// The job exits 0 having made every output, before the time limit.
     ExitZero,
+    /// No process of the job crashed (see [`trace_properties::no_crash`]).
+    NoCrash,
+    /// Every process the job started had exited when the job did.
+    NoOrphans,
+    /// No two of the job's processes wrote a file matching the glob at
+    /// once.
+    SingleWriter(Glob),
+    /// No file matching the glob that the run had written was truncated
+    /// in place.
+    AtomicReplace(Glob),
+    /// The job wrote files only under these directories.
+    WritesWithin(Vec<String>),
     /// A program on this machine judges the run: exit 0 means the
     /// property holds, 1 that it is violated, and any other ending is an
     /// error that stops the search.
@@ -53,15 +82,31 @@ impl FromStr for Property {
             Some((name, arg)) => (name, Some(arg)),
             None => (s, None),
         };
+        let arg = arg.filter(|a| !a.is_empty());
         match (name, arg) {
             (SAME_OUTCOME, None) => Ok(Property::SameOutcome),
             (EXIT_ZERO, None) => Ok(Property::ExitZero),
-            (SCRIPT, Some(path)) if !path.is_empty() => Ok(Property::Script(PathBuf::from(path))),
-            (SAME_OUTCOME | EXIT_ZERO, Some(_)) => bail!("property {name} takes no argument"),
-            (SCRIPT, _) => bail!("property script needs a program: script=PATH"),
-            _ => bail!(
-                "no property {name}; the properties are {SAME_OUTCOME}, {EXIT_ZERO} and {SCRIPT}=PATH"
-            ),
+            (NO_CRASH, None) => Ok(Property::NoCrash),
+            (NO_ORPHANS, None) => Ok(Property::NoOrphans),
+            (SINGLE_WRITER, Some(glob)) => Ok(Property::SingleWriter(Glob::new(glob))),
+            (ATOMIC_REPLACE, Some(glob)) => Ok(Property::AtomicReplace(Glob::new(glob))),
+            (WRITES_WITHIN, Some(dirs)) => {
+                let dirs: Vec<String> = dirs.split(DIR_SEPARATOR).map(str::to_string).collect();
+                if let Some(relative) = dirs.iter().find(|d| !d.starts_with('/')) {
+                    bail!("property {WRITES_WITHIN} takes absolute directories, not {relative}");
+                }
+                Ok(Property::WritesWithin(dirs))
+            }
+            (SCRIPT, Some(path)) => Ok(Property::Script(PathBuf::from(path))),
+            (SAME_OUTCOME | EXIT_ZERO | NO_CRASH | NO_ORPHANS, Some(_)) => {
+                bail!("property {name} takes no argument")
+            }
+            (SINGLE_WRITER | ATOMIC_REPLACE, None) => {
+                bail!("property {name} needs the files it is about: {name}=GLOB")
+            }
+            (WRITES_WITHIN, None) => bail!("property {name} needs directories: {name}=DIR:DIR"),
+            (SCRIPT, None) => bail!("property script needs a program: script=PATH"),
+            _ => bail!("no property {name}; the properties are {ALL}"),
         }
     }
 }
@@ -72,6 +117,14 @@ impl fmt::Display for Property {
         match self {
             Property::SameOutcome => write!(f, "{SAME_OUTCOME}"),
             Property::ExitZero => write!(f, "{EXIT_ZERO}"),
+            Property::NoCrash => write!(f, "{NO_CRASH}"),
+            Property::NoOrphans => write!(f, "{NO_ORPHANS}"),
+            Property::SingleWriter(glob) => write!(f, "{SINGLE_WRITER}={}", glob.as_str()),
+            Property::AtomicReplace(glob) => write!(f, "{ATOMIC_REPLACE}={}", glob.as_str()),
+            Property::WritesWithin(dirs) => {
+                let dirs = dirs.join(&DIR_SEPARATOR.to_string());
+                write!(f, "{WRITES_WITHIN}={dirs}")
+            }
             Property::Script(path) => write!(f, "{SCRIPT}={}", path.display()),
         }
     }
@@ -79,15 +132,46 @@ impl fmt::Display for Property {
 
 impl Property {
     /// The short name a report calls the property by: a script by its
-    /// file name without its extension.
+    /// file name without its extension, and a property that takes an
+    /// argument without it.
     pub fn name(&self) -> String {
         match self {
             Property::Script(path) => path.file_stem().map_or_else(
                 || path.display().to_string(),
                 |s| s.to_string_lossy().into_owned(),
             ),
-            other => other.to_string(),
+            other => {
+                let spec = other.to_string();
+                spec.split_once('=')
+                    .map_or(spec.clone(), |(name, _)| name.to_string())
+            }
         }
+    }
+
+    /// The properties a file lists, one a line, without blank lines and
+    /// lines starting with `#`. A script's path is taken from the file's
+    /// directory, so a repository's file can name the scripts beside it.
+    pub fn read_file(path: &Path) -> Result<Vec<Property>> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading properties from {}", path.display()))?;
+        let dir = path.parent().unwrap_or(Path::new("."));
+        let mut properties = Vec::new();
+        for (i, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with(COMMENT) {
+                continue;
+            }
+            let property: Property = line
+                .parse()
+                .with_context(|| format!("{}:{}", path.display(), i + 1))?;
+            properties.push(match property {
+                Property::Script(script) if script.is_relative() => {
+                    Property::Script(dir.join(script))
+                }
+                other => other,
+            });
+        }
+        Ok(properties)
     }
 }
 
@@ -173,6 +257,7 @@ impl<'a> Judge<'a> {
             step,
             why,
         };
+        let found = |finding: Option<Finding>| finding.map(|f| violation(Some(f.step), f.why));
         match property {
             // The outcome against the unperturbed run's.
             Property::SameOutcome => {
@@ -202,6 +287,19 @@ impl<'a> Judge<'a> {
                     end_step(run).ok(),
                     format!("ended {ended}"),
                 )))
+            }
+
+            // What the trace says the job's processes did.
+            Property::NoCrash => Ok(found(trace_properties::no_crash(run.trace()?))),
+            Property::NoOrphans => Ok(found(trace_properties::no_orphans(run.trace()?))),
+            Property::SingleWriter(glob) => {
+                Ok(found(trace_properties::single_writer(run.trace()?, glob)))
+            }
+            Property::AtomicReplace(glob) => {
+                Ok(found(trace_properties::atomic_replace(run.trace()?, glob)))
+            }
+            Property::WritesWithin(dirs) => {
+                Ok(found(trace_properties::writes_within(run.trace()?, dirs)))
             }
 
             // A program's verdict on the run.
@@ -304,6 +402,20 @@ mod tests {
         for (given, property) in [
             ("same-outcome", Property::SameOutcome),
             ("exit-zero", Property::ExitZero),
+            ("no-crash", Property::NoCrash),
+            ("no-orphans", Property::NoOrphans),
+            (
+                "single-writer=*.log",
+                Property::SingleWriter(Glob::new("*.log")),
+            ),
+            (
+                "atomic-replace=*.conf",
+                Property::AtomicReplace(Glob::new("*.conf")),
+            ),
+            (
+                "writes-within=/build:/tmp",
+                Property::WritesWithin(vec!["/build".into(), "/tmp".into()]),
+            ),
             (
                 "script=./adds-up.sh",
                 Property::Script(PathBuf::from("./adds-up.sh")),
@@ -323,6 +435,34 @@ mod tests {
         assert!(error("exit-zero=1").contains("takes no argument"));
         assert!(error("script").contains("script=PATH"));
         assert!(error("script=").contains("script=PATH"));
+        assert!(error("atomic-replace").contains("atomic-replace=GLOB"));
+        assert!(error("writes-within=build").contains("absolute directories, not build"));
+    }
+
+    // A properties file skips blanks and comments, and takes a script's
+    // relative path from the file's directory.
+    #[test]
+    fn a_properties_file_lists_one_a_line() {
+        let dir = std::env::temp_dir().join(format!("rewind-properties-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("rewind.properties");
+        std::fs::write(
+            &file,
+            "# what correct means\nno-crash\n\n  script=checks/adds-up.sh\n",
+        )
+        .unwrap();
+        assert_eq!(
+            Property::read_file(&file).unwrap(),
+            vec![
+                Property::NoCrash,
+                Property::Script(dir.join("checks/adds-up.sh")),
+            ]
+        );
+
+        std::fs::write(&file, "no-crash\nexit-0\n").unwrap();
+        let error = format!("{:#}", Property::read_file(&file).unwrap_err());
+        assert!(error.contains("rewind.properties:2"), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     // A script is named by its file name, without directory or
@@ -332,6 +472,10 @@ mod tests {
         let p: Property = "script=properties/report-adds-up.sh".parse().unwrap();
         assert_eq!(p.name(), "report-adds-up");
         assert_eq!(Property::ExitZero.name(), "exit-zero");
+        assert_eq!(
+            Property::AtomicReplace(Glob::new("*.conf")).name(),
+            "atomic-replace"
+        );
     }
 
     // A script's first line is its reason, and a line that starts with
