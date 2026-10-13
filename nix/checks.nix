@@ -396,6 +396,8 @@ let
   '';
   # Programs in five languages for checks.gdb-languages.
   languagesRoot = import ./gdb-languages { inherit pkgs; };
+  # The Rewind SDK's libraries in use, for checks.sdk-languages.
+  sdkLanguages = import ./sdk-languages { inherit pkgs; };
 in
 {
   # House style, checked rather than remembered: no em dashes and none of
@@ -1576,6 +1578,76 @@ in
     ! grep -q 'HOME' out
     touch $out
   '';
+
+  # checks.sdk-languages: the Rewind SDK's libraries for C, Rust, Go,
+  # shell, Python with its pytest plugin, and Java with its JUnit 5
+  # extension, each built from sdk/ as a program would use it. Outside
+  # Rewind every call does nothing; in a run, each library writes exactly
+  # its lines, a failure made twice written once; and `rewind check`
+  # judges them by itself. Boots the VM, so it needs /dev/kvm.
+  sdk-languages =
+    pkgs.runCommand "rewind-sdk-languages"
+      {
+        nativeBuildInputs = [
+          rewind
+          pkgs.jq
+        ];
+        requiredSystemFeatures = [ "kvm" ];
+      }
+      ''
+        export REWIND_HOME=$TMPDIR/rewind
+
+        # Outside Rewind: no /dev/rewind, nothing written, nothing broken.
+        test ! -e /dev/rewind
+        ${sdkLanguages.demos} > outside 2>&1
+        cat outside
+
+        rewind run -q --clock exits --mem 2048 --name sdk --root ${sdkLanguages.root} -- /bin/sdk-demos
+        rewind events sdk --json \
+          | jq -r 'select(.kind.type == "mark" and .pid != 1) | .kind.text' \
+          | grep '^rewind-sdk ' > marks
+        cat marks
+
+        # Each line, written exactly once.
+        once() {
+          if [ "$(grep -cxF -- "rewind-sdk 1 $1" marks)" != 1 ]; then
+            echo "not written exactly once: rewind-sdk 1 $1"
+            exit 1
+          fi
+        }
+        for lang in c rust go sh python; do
+          once "test-begin $lang demo"
+          once "always pass $lang-holds"
+          once "always fail $lang-fails $lang said so"
+          once "sometimes miss $lang-sometimes"
+          once "unreachable $lang-unreachable reached"
+          once "test-end fail $lang demo"
+        done
+        once "test-begin test_demo.py::test_passes"
+        once "test-end pass test_demo.py::test_passes"
+        once "test-begin test_demo.py::test_fails"
+        once "test-end fail test_demo.py::test_fails"
+        once "always pass pytest-holds"
+        once "always fail pytest-fails pytest said so"
+        once "test-begin DemoTest.passes"
+        once "test-end pass DemoTest.passes"
+        once "test-begin DemoTest.fails"
+        once "test-end fail DemoTest.fails"
+        once "always pass java-holds"
+        once "always fail java-fails java said so"
+        once "sometimes miss java-sometimes"
+        once "unreachable java-unreachable reached"
+        test "$(wc -l < marks)" = 44
+
+        # check judges the marks without being asked: the first failure
+        # is C's, and no run made any sometimes true.
+        ! rewind check -j 2 --clock exits --mem 2048 --schedules 0 --json \
+          --root ${sdkLanguages.root} -- /bin/sdk-demos > checked.json
+        jq -e '.properties == ["same-outcome", "sdk"]' checked.json
+        jq -e '.schedules[0].violations[0].why == "always \"c-fails\" failed: c said so"' checked.json
+        jq -e '.sometimes_never == ["c-sometimes", "go-sometimes", "java-sometimes", "python-sometimes", "rust-sometimes", "sh-sometimes"]' checked.json
+        touch $out
+      '';
 
   # checks.gdb-languages: `rewind gdb` at a print of a program in each of
   # C++, Rust, Go, Python and Ruby, run from the store as a Nix build's

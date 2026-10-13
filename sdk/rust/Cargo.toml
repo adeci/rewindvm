@@ -1,0 +1,14 @@
+[package]
+name = "rewind-sdk"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Assertions and test marks for Rewind VM's rewind check"
+repository = "https://github.com/fzakaria/rewindvm"
+
+[lib]
+name = "rewind_sdk"
+path = "src/lib.rs"
+
+# Not part of the engine's workspace: a program depends on it alone.
+[workspace]
