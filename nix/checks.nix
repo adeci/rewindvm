@@ -1236,8 +1236,9 @@ in
   # counts the same schedules; a script that reads a file at the job's
   # exit with `rewind cat` sees the root's own file; a property schedule
   # 0 violates too is reported at its step; a script that fails stops
-  # the search; and --seeds finds a job decided by the kernel's
-  # randomness alone. Boots the VM, so it needs /dev/kvm.
+  # the search; --seeds finds a job decided by the kernel's randomness
+  # alone; and a shell job's Rewind SDK marks are judged without being
+  # asked for. Boots the VM, so it needs /dev/kvm.
   check-property =
     pkgs.runCommand "rewind-check-property"
       {
@@ -1319,6 +1320,36 @@ in
         # A recorded run keeps its seed.
         ! rewind check --run "$(rewind ls --json -n 1 | jq -r .id)" --seeds 2 2> refused
         grep -q -- '--seeds' refused
+
+        # The Rewind SDK from a shell: a job that asserts its random byte
+        # is even and marks a test, and exits 0 either way. check judges
+        # the marks by itself, finds the seed whose assertion fails, and
+        # names the sometimes no run made true.
+        cat > coin.sh <<'EOF'
+        sdk() { printf 'rewind-sdk 1 %s\n' "$*" > /dev/rewind; }
+        b=$(od -An -tu1 -N1 /dev/urandom)
+        b=$((b + 0))
+        sdk test-begin coin flip
+        if [ $((b % 2)) = 0 ]; then
+          sdk always pass even
+          sdk test-end pass coin flip
+        else
+          sdk always fail even byte $b is odd
+          sdk test-end fail coin flip
+        fi
+        if [ $b -gt 250 ]; then sdk sometimes hit huge-byte; else sdk sometimes miss huge-byte; fi
+        exit 0
+        EOF
+        ! rewind check -j 4 --clock exits --seeds 6 --schedules 0 --root ${busyboxRoot} -- sh -c "$(cat coin.sh)" > sdk
+        cat sdk
+        grep -q '^rewind: the job asserts with the Rewind SDK, so each run is judged by property sdk too$' sdk
+        grep -qE '^failing run violates sdk: step [0-9]+: always "even" failed: byte [0-9]+ is odd$' sdk
+        grep -q '^never true in any run: sometimes "huge-byte"$' sdk
+        ! rewind check -j 4 --clock exits --seeds 6 --schedules 0 --all --no-narrow --json \
+          --root ${busyboxRoot} -- sh -c "$(cat coin.sh)" > sdk.json
+        jq -e '.properties == ["same-outcome", "sdk"] and .sometimes_never == ["huge-byte"]' sdk.json
+        jq -e '[.schedules[].violations[] | select(.property == "sdk") | .why]
+          | all(test("^(always \"even\" failed: byte [0-9]+ is odd|test coin flip passed in the unperturbed run and failed here)$"))' sdk.json
 
         # A misspelled property is refused before anything boots.
         ! rewind check --property exit-0 --root ${raceRoot} -- /bin/race 2> refused

@@ -23,6 +23,7 @@ pub mod manifest;
 pub mod properties;
 pub mod prune;
 pub mod schedule;
+pub mod sdk;
 pub mod stop;
 
 use std::collections::BTreeMap;

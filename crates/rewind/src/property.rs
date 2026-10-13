@@ -6,6 +6,7 @@
 //! decides it. With no property given, check asks for the same outcome as
 //! the unperturbed run, which is what it asked before properties existed.
 
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -15,6 +16,7 @@ use anyhow::{Context, Result, bail};
 use rewind_core::{Home, Run};
 use rewind_trace::ending::Ending;
 use rewind_trace::properties::{self as trace_properties, Finding, Glob};
+use rewind_trace::sdk::{SdkMark, TestResult};
 
 use crate::show::{self, OutcomeKey};
 
@@ -26,12 +28,13 @@ const NO_ORPHANS: &str = "no-orphans";
 const SINGLE_WRITER: &str = "single-writer";
 const ATOMIC_REPLACE: &str = "atomic-replace";
 const WRITES_WITHIN: &str = "writes-within";
+const SDK: &str = "sdk";
 const SCRIPT: &str = "script";
 
 /// Every property as the command line writes it, for the message that
 /// refuses an unknown one.
 const ALL: &str = "same-outcome, exit-zero, no-crash, no-orphans, single-writer=GLOB, \
-     atomic-replace=GLOB, writes-within=DIR:DIR and script=PATH";
+     atomic-replace=GLOB, writes-within=DIR:DIR, sdk and script=PATH";
 
 /// What separates the directories of writes-within.
 const DIR_SEPARATOR: char = ':';
@@ -68,6 +71,10 @@ pub enum Property {
     AtomicReplace(Glob),
     /// The job wrote files only under these directories.
     WritesWithin(Vec<String>),
+    /// What the job asserted with the Rewind SDK held: no `always` failed,
+    /// no `unreachable` was reached, and every test that passed in the
+    /// unperturbed run passed (see [`rewind_trace::sdk`]).
+    Sdk,
     /// A program on this machine judges the run: exit 0 means the
     /// property holds, 1 that it is violated, and any other ending is an
     /// error that stops the search.
@@ -88,6 +95,7 @@ impl FromStr for Property {
             (EXIT_ZERO, None) => Ok(Property::ExitZero),
             (NO_CRASH, None) => Ok(Property::NoCrash),
             (NO_ORPHANS, None) => Ok(Property::NoOrphans),
+            (SDK, None) => Ok(Property::Sdk),
             (SINGLE_WRITER, Some(glob)) => Ok(Property::SingleWriter(Glob::new(glob))),
             (ATOMIC_REPLACE, Some(glob)) => Ok(Property::AtomicReplace(Glob::new(glob))),
             (WRITES_WITHIN, Some(dirs)) => {
@@ -98,7 +106,7 @@ impl FromStr for Property {
                 Ok(Property::WritesWithin(dirs))
             }
             (SCRIPT, Some(path)) => Ok(Property::Script(PathBuf::from(path))),
-            (SAME_OUTCOME | EXIT_ZERO | NO_CRASH | NO_ORPHANS, Some(_)) => {
+            (SAME_OUTCOME | EXIT_ZERO | NO_CRASH | NO_ORPHANS | SDK, Some(_)) => {
                 bail!("property {name} takes no argument")
             }
             (SINGLE_WRITER | ATOMIC_REPLACE, None) => {
@@ -119,6 +127,7 @@ impl fmt::Display for Property {
             Property::ExitZero => write!(f, "{EXIT_ZERO}"),
             Property::NoCrash => write!(f, "{NO_CRASH}"),
             Property::NoOrphans => write!(f, "{NO_ORPHANS}"),
+            Property::Sdk => write!(f, "{SDK}"),
             Property::SingleWriter(glob) => write!(f, "{SINGLE_WRITER}={}", glob.as_str()),
             Property::AtomicReplace(glob) => write!(f, "{ATOMIC_REPLACE}={}", glob.as_str()),
             Property::WritesWithin(dirs) => {
@@ -200,6 +209,8 @@ pub struct Judge<'a> {
     base_id: String,
     base_key: OutcomeKey,
     base_ending: Ending,
+    /// How each test the unperturbed run marked with the SDK ended.
+    base_tests: BTreeMap<String, TestResult>,
     properties: Vec<Property>,
 }
 
@@ -213,11 +224,20 @@ impl<'a> Judge<'a> {
             properties
         };
         let base_key = show::outcome_key(base)?;
+        let base_tests = base
+            .trace()?
+            .sdk_marks()
+            .filter_map(|(_, mark)| match mark {
+                SdkMark::TestEnd { name, result } => Some((name, result)),
+                _ => None,
+            })
+            .collect();
         Ok(Judge {
             home,
             base_id: base.manifest.id.to_string(),
             base_ending: ending(base, &base_key),
             base_key,
+            base_tests,
             properties,
         })
     }
@@ -302,6 +322,12 @@ impl<'a> Judge<'a> {
                 Ok(found(trace_properties::writes_within(run.trace()?, dirs)))
             }
 
+            // What the job asserted, and its tests against the unperturbed
+            // run's.
+            Property::Sdk => Ok(self
+                .sdk_violation(run)?
+                .map(|(step, why)| violation(step, why))),
+
             // A program's verdict on the run.
             Property::Script(path) => {
                 let end = end_step(run)?;
@@ -326,6 +352,107 @@ impl<'a> Judge<'a> {
             }
         }
     }
+}
+
+impl Judge<'_> {
+    /// The first thing `run` broke that it asserted with the SDK, by step:
+    /// an `always` that failed, an `unreachable` it reached, or a test
+    /// that passed in the unperturbed run and failed or never finished in
+    /// this one.
+    fn sdk_violation(&self, run: &Run) -> Result<Option<(Option<u64>, String)>> {
+        let mut broken: Vec<(Option<u64>, String)> = Vec::new();
+        let mut begun: HashMap<String, u64> = HashMap::new();
+        let mut ended: HashMap<String, (u64, TestResult)> = HashMap::new();
+        for (event, mark) in run.trace()?.sdk_marks() {
+            match mark {
+                SdkMark::Always {
+                    id,
+                    held: false,
+                    message,
+                } => broken.push((
+                    Some(event.step),
+                    said(&format!("always \"{id}\" failed"), &message),
+                )),
+                SdkMark::Unreachable { id, message } => {
+                    broken.push((
+                        Some(event.step),
+                        said(&format!("unreachable \"{id}\" reached"), &message),
+                    ));
+                }
+                SdkMark::TestBegin { name } => {
+                    begun.entry(name).or_insert(event.step);
+                }
+                SdkMark::TestEnd { name, result } => {
+                    ended.insert(name, (event.step, result));
+                }
+                SdkMark::Always { .. } | SdkMark::Sometimes { .. } => {}
+            }
+        }
+
+        // The tests the unperturbed run passed, as this run ended them.
+        for (name, base_result) in &self.base_tests {
+            if *base_result != TestResult::Pass {
+                continue;
+            }
+            match ended.get(name) {
+                Some((_, TestResult::Pass | TestResult::Skip)) => {}
+                Some((step, TestResult::Fail)) => broken.push((
+                    Some(*step),
+                    format!("test {name} passed in the unperturbed run and failed here"),
+                )),
+                None => broken.push((
+                    begun.get(name).copied(),
+                    format!("test {name} passed in the unperturbed run and did not finish here"),
+                )),
+            }
+        }
+        Ok(broken
+            .into_iter()
+            .min_by_key(|(step, _)| step.unwrap_or(u64::MAX)))
+    }
+}
+
+/// `what`, followed by what the program said about it when it said
+/// anything.
+fn said(what: &str, message: &str) -> String {
+    if message.is_empty() {
+        what.to_string()
+    } else {
+        format!("{what}: {message}")
+    }
+}
+
+/// The `sometimes` conditions of a search: each id any run checked, and
+/// whether any run made it true.
+#[derive(Default)]
+pub struct Coverage {
+    sometimes: BTreeMap<String, bool>,
+}
+
+impl Coverage {
+    /// Adds the `sometimes` checks `run` made.
+    pub fn add(&mut self, run: &Run) -> Result<()> {
+        for (_, mark) in run.trace()?.sdk_marks() {
+            if let SdkMark::Sometimes { id, hit } = mark {
+                *self.sometimes.entry(id).or_default() |= hit;
+            }
+        }
+        Ok(())
+    }
+
+    /// The ids no run made true, in order.
+    pub fn never(&self) -> Vec<&str> {
+        self.sometimes
+            .iter()
+            .filter(|(_, hit)| !**hit)
+            .map(|(id, _)| id.as_str())
+            .collect()
+    }
+}
+
+/// Whether `run` wrote any SDK mark, so the search judges them.
+pub fn writes_sdk_marks(run: &Run) -> Result<bool> {
+    Ok(run.trace()?.sdk_marks().next().is_some())
 }
 
 /// How `run` ended, as a run's line says it.
@@ -404,6 +531,7 @@ mod tests {
             ("exit-zero", Property::ExitZero),
             ("no-crash", Property::NoCrash),
             ("no-orphans", Property::NoOrphans),
+            ("sdk", Property::Sdk),
             (
                 "single-writer=*.log",
                 Property::SingleWriter(Glob::new("*.log")),

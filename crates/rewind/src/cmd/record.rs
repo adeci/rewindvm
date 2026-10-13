@@ -17,7 +17,7 @@ use rewind_init::{Job, Output, Root};
 use rewind_trace::compare::Comparison;
 use rewind_trace::located::Located;
 
-use crate::property::{Judge, Property, Violation};
+use crate::property::{self, Coverage, Judge, Property, Violation};
 use crate::{
     RUN_HELP, RUN_LONG_HELP, STEP_HELP, STEP_LONG_HELP, Terminal, clear_status, json, locate, show,
     status,
@@ -161,19 +161,23 @@ pub struct CheckArgs {
     /// made every output. no-crash: no process of the job died of a
     /// signal that dumps core, such as SIGSEGV, even one the job's exit
     /// status hides. no-orphans: every process the job started had exited
-    /// when the job did. single-writer=GLOB: no two of the job's
+    /// when its main process did. single-writer=GLOB: no two of the job's
     /// processes had a matching file open for writing at once.
     /// atomic-replace=GLOB: no matching file the run had written was
     /// truncated in place, where a reader can see it half written.
     /// writes-within=DIR:DIR: the job wrote, renamed and removed files
     /// only under these directories, besides /dev, /proc and /sys.
-    /// script=PATH: a program on this machine judges
-    /// each run, exiting 0 when the property holds and 1 when it is
-    /// violated, with the reason on its first line, which may start with
-    /// `step N:`. It finds the run in $REWIND_RUN, schedule 0 in
-    /// $REWIND_BASE and the step the job exited at in $REWIND_END, and
-    /// can read the run with `rewind cat`, `rewind events` and `rewind
-    /// log`.
+    ///
+    /// sdk: what the job asserted with the Rewind SDK held, and every
+    /// test it marked that passed under schedule 0 passed. On by itself
+    /// when the job writes SDK marks.
+    ///
+    /// script=PATH: a program on this machine judges each run, exiting 0
+    /// when the property holds and 1 when it is violated, with the reason
+    /// on its first line, which may start with `step N:`. It finds the
+    /// run in $REWIND_RUN, schedule 0 in $REWIND_BASE and the step the
+    /// job exited at in $REWIND_END, and can read the run with `rewind
+    /// cat`, `rewind events` and `rewind log`.
     #[arg(long = "property", value_name = "PROPERTY")]
     pub(crate) properties: Vec<Property>,
     /// A file of properties, one a line, as --property takes them; lines
@@ -430,9 +434,21 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         Subject::Job { .. } => name(first_seed, 0),
     };
 
+    // A job that asserts with the Rewind SDK is judged by its assertions
+    // and tests too, besides what was asked for or the default.
+    if !properties.contains(&Property::Sdk) && property::writes_sdk_marks(&base)? {
+        if properties.is_empty() {
+            properties.push(Property::SameOutcome);
+        }
+        properties.push(Property::Sdk);
+        say("rewind: the job asserts with the Rewind SDK, so each run is judged by property sdk too".to_string());
+    }
+
     // What each run is judged by, and schedule 0's verdict, which the
     // search looks for a run to differ from.
     let judge = Judge::new(home, &base, properties)?;
+    let mut coverage = Coverage::default();
+    coverage.add(&base)?;
     let base_violations = judge.violations(&base)?;
     say(format!(
         "{}: {}{}",
@@ -517,6 +533,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                 verdict_words(&judge, &violations)
             ));
             tried_runs.push(schedule_json(&seed_base, differs, &violations)?);
+            coverage.add(&seed_base)?;
             tried += 1;
             let subject = Subject::Job {
                 guest,
@@ -570,6 +587,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                     verdict_words(&judge, &violations)
                 ));
                 tried_runs.push(schedule_json(&run, differs, &violations)?);
+                coverage.add(&run)?;
                 tried += 1;
                 if differs {
                     differing += 1;
@@ -608,9 +626,19 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             "{base_words} violated a property; {differing} of {tried} {tried_words} held every one"
         ));
     }
+    // The `sometimes` conditions no run made true: the search never
+    // reached what they describe, so a clean result says less.
+    let never = coverage.never();
+    if !never.is_empty() {
+        say(format!(
+            "never true in any run: sometimes \"{}\"",
+            never.join("\", \"")
+        ));
+    }
     let search = |narrowed: serde_json::Value| {
         serde_json::json!({
             "properties": judge.properties().iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "sometimes_never": never,
             "seeds": seeds,
             "schedules": tried_runs,
             "tried": tried,
