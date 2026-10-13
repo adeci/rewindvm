@@ -332,6 +332,37 @@ pub fn writes_within(trace: &Trace, dirs: &[String]) -> Option<Finding> {
     None
 }
 
+/// The files matching `glob` that the job's processes wrote and that were
+/// still there when the job exited, in the order first written: a file
+/// renamed into place counts by its new name, and one removed or renamed
+/// away does not count. Devices are not files.
+pub fn written_files(trace: &Trace, glob: &Glob) -> Vec<String> {
+    let Some(job) = Job::of(trace) else {
+        return Vec::new();
+    };
+    let pids = job.pids();
+    let wanted = |path: &str| !under(path, &PSEUDO_DIRS) && glob.matches(path);
+    let mut files: Vec<String> = Vec::new();
+    for e in job_events(trace, &job) {
+        match &e.kind {
+            EventKind::Open { path, .. } if pids.contains(&e.pid) && wanted(path) => {
+                if !files.contains(path) {
+                    files.push(path.clone());
+                }
+            }
+            EventKind::Rename { from, to } => {
+                files.retain(|f| f != from);
+                if pids.contains(&e.pid) && wanted(to) && !files.contains(to) {
+                    files.push(to.clone());
+                }
+            }
+            EventKind::Unlink { path } => files.retain(|f| f != path),
+            _ => {}
+        }
+    }
+    files
+}
+
 /// Whether `path` is one of `dirs` or under one.
 fn under(path: &str, dirs: &[&str]) -> bool {
     dirs.iter().any(|dir| {
@@ -577,6 +608,41 @@ mod tests {
             open(200, JOB, "/dev/null", REWRITE),
         ]);
         assert_eq!(atomic_replace(&device, &Glob::new("**")), None);
+    }
+
+    // The files a job wrote and left in place: one renamed into place by
+    // its new name, and none removed, renamed away, or not matching.
+    #[test]
+    fn written_files_are_the_ones_left_in_place() {
+        let trace = job(vec![
+            open(100, JOB, "/build/reports/TEST-a.xml", CREATE),
+            open(110, JOB, "/build/reports/TEST-b.xml.tmp", CREATE),
+            event(
+                120,
+                JOB,
+                EventKind::Rename {
+                    from: "/build/reports/TEST-b.xml.tmp".into(),
+                    to: "/build/reports/TEST-b.xml".into(),
+                },
+            ),
+            open(130, JOB, "/build/reports/TEST-c.xml", CREATE),
+            event(
+                140,
+                JOB,
+                EventKind::Unlink {
+                    path: "/build/reports/TEST-c.xml".into(),
+                },
+            ),
+            open(150, JOB, "/build/notes.txt", CREATE),
+            open(160, JOB, "/build/reports/TEST-a.xml", CREATE),
+        ]);
+        assert_eq!(
+            written_files(&trace, &Glob::new("/build/reports/*.xml")),
+            vec![
+                "/build/reports/TEST-a.xml".to_string(),
+                "/build/reports/TEST-b.xml".to_string(),
+            ]
+        );
     }
 
     // A write outside the given directories is found; /dev/null and the

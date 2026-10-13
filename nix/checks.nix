@@ -1239,8 +1239,9 @@ in
   # exit with `rewind cat` sees the root's own file; a property schedule
   # 0 violates too is reported at its step; a script that fails stops
   # the search; --seeds finds a job decided by the kernel's randomness
-  # alone; and a shell job's Rewind SDK marks are judged without being
-  # asked for. Boots the VM, so it needs /dev/kvm.
+  # alone; a shell job's Rewind SDK marks are judged without being asked
+  # for; and junit= reads the JUnit report a job wrote. Boots the VM, so
+  # it needs /dev/kvm.
   check-property =
     pkgs.runCommand "rewind-check-property"
       {
@@ -1352,6 +1353,21 @@ in
         jq -e '.properties == ["same-outcome", "sdk"] and .sometimes_never == ["huge-byte"]' sdk.json
         jq -e '[.schedules[].violations[] | select(.property == "sdk") | .why]
           | all(test("^(always \"even\" failed: byte [0-9]+ is odd|test coin flip passed in the unperturbed run and failed here)$"))' sdk.json
+
+        # JUnit reports: a job that writes one, its coin.flip test failing
+        # when its random byte is odd. check reads the report each run
+        # wrote and names the test that passed under seed 0 and failed.
+        cat > report.sh <<'EOF'
+        b=$(od -An -tu1 -N1 /dev/urandom)
+        failure=""
+        if [ $((b % 2)) = 1 ]; then failure="<failure message=\"odd\"/>"; fi
+        mkdir -p /run/reports
+        printf '<testsuite><testcase classname="coin" name="flip">%s</testcase><testcase classname="coin" name="steady"/></testsuite>\n' "$failure" > /run/reports/TEST-coin.xml
+        EOF
+        ! rewind check -j 4 --clock exits --seeds 6 --schedules 0 --property 'junit=/run/reports/*.xml' \
+          --root ${busyboxRoot} -- sh -c "$(cat report.sh)" > junit
+        cat junit
+        grep -qE '^failing run violates junit: step [0-9]+: test coin.flip passed in the unperturbed run and failed here$' junit
 
         # A misspelled property is refused before anything boots.
         ! rewind check --property exit-0 --root ${raceRoot} -- /bin/race 2> refused

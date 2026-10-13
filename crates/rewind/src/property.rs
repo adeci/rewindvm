@@ -13,6 +13,7 @@ use std::process::{Command, Stdio};
 use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
+use rewind_core::inspect::{self, Inspection};
 use rewind_core::{Home, Run};
 use rewind_trace::ending::Ending;
 use rewind_trace::properties::{self as trace_properties, Finding, Glob};
@@ -29,12 +30,13 @@ const SINGLE_WRITER: &str = "single-writer";
 const ATOMIC_REPLACE: &str = "atomic-replace";
 const WRITES_WITHIN: &str = "writes-within";
 const SDK: &str = "sdk";
+const JUNIT: &str = "junit";
 const SCRIPT: &str = "script";
 
 /// Every property as the command line writes it, for the message that
 /// refuses an unknown one.
 const ALL: &str = "same-outcome, exit-zero, no-crash, no-orphans, single-writer=GLOB, \
-     atomic-replace=GLOB, writes-within=DIR:DIR, sdk and script=PATH";
+     atomic-replace=GLOB, writes-within=DIR:DIR, sdk, junit=GLOB and script=PATH";
 
 /// What separates the directories of writes-within.
 const DIR_SEPARATOR: char = ':';
@@ -75,6 +77,9 @@ pub enum Property {
     /// no `unreachable` was reached, and every test that passed in the
     /// unperturbed run passed (see [`rewind_trace::sdk`]).
     Sdk,
+    /// Every test that passed in the unperturbed run passed, as the JUnit
+    /// XML reports the job wrote to files matching the glob say.
+    Junit(Glob),
     /// A program on this machine judges the run: exit 0 means the
     /// property holds, 1 that it is violated, and any other ending is an
     /// error that stops the search.
@@ -98,6 +103,7 @@ impl FromStr for Property {
             (SDK, None) => Ok(Property::Sdk),
             (SINGLE_WRITER, Some(glob)) => Ok(Property::SingleWriter(Glob::new(glob))),
             (ATOMIC_REPLACE, Some(glob)) => Ok(Property::AtomicReplace(Glob::new(glob))),
+            (JUNIT, Some(glob)) => Ok(Property::Junit(Glob::new(glob))),
             (WRITES_WITHIN, Some(dirs)) => {
                 let dirs: Vec<String> = dirs.split(DIR_SEPARATOR).map(str::to_string).collect();
                 if let Some(relative) = dirs.iter().find(|d| !d.starts_with('/')) {
@@ -109,7 +115,7 @@ impl FromStr for Property {
             (SAME_OUTCOME | EXIT_ZERO | NO_CRASH | NO_ORPHANS | SDK, Some(_)) => {
                 bail!("property {name} takes no argument")
             }
-            (SINGLE_WRITER | ATOMIC_REPLACE, None) => {
+            (SINGLE_WRITER | ATOMIC_REPLACE | JUNIT, None) => {
                 bail!("property {name} needs the files it is about: {name}=GLOB")
             }
             (WRITES_WITHIN, None) => bail!("property {name} needs directories: {name}=DIR:DIR"),
@@ -130,6 +136,7 @@ impl fmt::Display for Property {
             Property::Sdk => write!(f, "{SDK}"),
             Property::SingleWriter(glob) => write!(f, "{SINGLE_WRITER}={}", glob.as_str()),
             Property::AtomicReplace(glob) => write!(f, "{ATOMIC_REPLACE}={}", glob.as_str()),
+            Property::Junit(glob) => write!(f, "{JUNIT}={}", glob.as_str()),
             Property::WritesWithin(dirs) => {
                 let dirs = dirs.join(&DIR_SEPARATOR.to_string());
                 write!(f, "{WRITES_WITHIN}={dirs}")
@@ -211,6 +218,9 @@ pub struct Judge<'a> {
     base_ending: Ending,
     /// How each test the unperturbed run marked with the SDK ended.
     base_tests: BTreeMap<String, TestResult>,
+    /// How each test in the unperturbed run's JUnit reports ended, by the
+    /// glob of the junit property that read them.
+    base_junit: HashMap<String, BTreeMap<String, TestResult>>,
     properties: Vec<Property>,
 }
 
@@ -232,12 +242,19 @@ impl<'a> Judge<'a> {
                 _ => None,
             })
             .collect();
+        let mut base_junit = HashMap::new();
+        for property in &properties {
+            if let Property::Junit(glob) = property {
+                base_junit.insert(glob.as_str().to_string(), junit_results(home, base, glob)?);
+            }
+        }
         Ok(Judge {
             home,
             base_id: base.manifest.id.to_string(),
             base_ending: ending(base, &base_key),
             base_key,
             base_tests,
+            base_junit,
             properties,
         })
     }
@@ -328,6 +345,14 @@ impl<'a> Judge<'a> {
                 .sdk_violation(run)?
                 .map(|(step, why)| violation(step, why))),
 
+            // The tests in the job's reports against the unperturbed run's.
+            Property::Junit(glob) => {
+                let base = &self.base_junit[glob.as_str()];
+                let here = junit_results(self.home, run, glob)?;
+                let end = end_step(run)?;
+                Ok(regressed(base, &here).map(|why| violation(Some(end), why)))
+            }
+
             // A program's verdict on the run.
             Property::Script(path) => {
                 let end = end_step(run)?;
@@ -410,6 +435,53 @@ impl Judge<'_> {
             .into_iter()
             .min_by_key(|(step, _)| step.unwrap_or(u64::MAX)))
     }
+}
+
+/// The first test, by name, that passed in `base` and failed or has no
+/// result in `here`.
+fn regressed(
+    base: &BTreeMap<String, TestResult>,
+    here: &BTreeMap<String, TestResult>,
+) -> Option<String> {
+    base.iter()
+        .filter(|(_, result)| **result == TestResult::Pass)
+        .find_map(|(name, _)| match here.get(name) {
+            Some(TestResult::Pass | TestResult::Skip) => None,
+            Some(TestResult::Fail) => Some(format!(
+                "test {name} passed in the unperturbed run and failed here"
+            )),
+            None => Some(format!(
+                "test {name} passed in the unperturbed run and has no result here"
+            )),
+        })
+}
+
+/// The tests in the JUnit reports `run`'s job wrote to files matching
+/// `glob`, read at the job's exit.
+fn junit_results(home: &Home, run: &Run, glob: &Glob) -> Result<BTreeMap<String, TestResult>> {
+    let files = trace_properties::written_files(run.trace()?, glob);
+    let mut found = BTreeMap::new();
+    if files.is_empty() {
+        return Ok(found);
+    }
+    let end = end_step(run)?;
+    let bytes = match inspect::files(home, run, end, None, &files)? {
+        Inspection::Contents(bytes) => bytes,
+        Inspection::NotFound(message) | Inspection::Failed(message) => {
+            bail!(
+                "reading the JUnit reports of run {}: {message}",
+                run.manifest.id
+            )
+        }
+    };
+    let sections = rewind_init::sections(&bytes)
+        .with_context(|| format!("reading the JUnit reports of run {}", run.manifest.id))?;
+    for (path, xml) in sections {
+        let report = crate::junit::results(&String::from_utf8_lossy(xml))
+            .with_context(|| format!("{path} in run {}", run.manifest.id))?;
+        found.extend(report);
+    }
+    Ok(found)
 }
 
 /// `what`, followed by what the program said about it when it said
@@ -532,6 +604,10 @@ mod tests {
             ("no-crash", Property::NoCrash),
             ("no-orphans", Property::NoOrphans),
             ("sdk", Property::Sdk),
+            (
+                "junit=/build/target/surefire-reports/*.xml",
+                Property::Junit(Glob::new("/build/target/surefire-reports/*.xml")),
+            ),
             (
                 "single-writer=*.log",
                 Property::SingleWriter(Glob::new("*.log")),

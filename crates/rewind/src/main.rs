@@ -5,6 +5,7 @@ mod doctor;
 mod downloads;
 mod gdb;
 mod json;
+mod junit;
 mod list;
 mod locate;
 mod property;

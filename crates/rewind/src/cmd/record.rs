@@ -170,7 +170,9 @@ pub struct CheckArgs {
     ///
     /// sdk: what the job asserted with the Rewind SDK held, and every
     /// test it marked that passed under schedule 0 passed. On by itself
-    /// when the job writes SDK marks.
+    /// when the job writes SDK marks. junit=GLOB: every test that passed
+    /// under schedule 0 passed, by the JUnit XML reports the job wrote to
+    /// files matching GLOB, which check reads at the job's exit.
     ///
     /// script=PATH: a program on this machine judges each run, exiting 0
     /// when the property holds and 1 when it is violated, with the reason
