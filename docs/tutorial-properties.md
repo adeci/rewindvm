@@ -79,8 +79,10 @@ deposit can overwrite another. It includes `rewind.h`, the C header of the
 Rewind SDK, and makes two assertions:
 
 ```c
-/* Another teller stored between this one's read and store. */
-REWIND_SOMETIMES(balance != seen, "deposits-overlapped");
+/* Another teller is mid-deposit: the case a lock around the read and
+ * store has to handle, and the only way to lose a deposit without one. */
+int others = atomic_fetch_add(&depositing, 1);
+REWIND_SOMETIMES(others > 0, "deposits-concurrent");
 ...
 REWIND_ALWAYS(balance == expected, "balance-adds-up", "balance %ld, expected %ld", balance,
 	      expected);
@@ -91,34 +93,93 @@ it is false violates the `sdk` property, and check prints the message.
 
 `REWIND_SOMETIMES` tests the search, not the program: its condition must be
 true in at least one of the runs check tries. It never fails a run. Here it
-asks whether any run made two deposits overlap, the only way to lose one.
+asks whether any run had both tellers mid-deposit at once.
 
-Under schedule 0 alone, `bank` passes. That is one run, the deposits never
-overlapped in it, and check reports the `sometimes` that never came true:
+Under schedule 0 alone, `bank` passes. That is one run, one teller always
+finished its deposit before the other started, and check reports the
+`sometimes` that never came true:
 
 ```console
 $ rewind check --epoch 1790985600 --schedules 0 github:fzakaria/rewindvm#bank
 ...
-schedule   0: exited:0       4558 steps  e9eff8d15d00  run 21cf5e28fa804c35  holds
-never true in any run: sometimes "deposits-overlapped"
+schedule   0: exited:0       4557 steps  2ffd6b62eb30  run 7316b2ee6b7b0cb6  holds
+never true in any run: sometimes "deposits-concurrent"
 every property held under the one schedule tried
 ```
 
-With its default 64 schedules, check makes the deposits overlap and finds a
-run that loses one:
+With its default 64 schedules, check puts both tellers mid-deposit and finds
+a run that loses a deposit:
 
 ```console
-$ rewind check --epoch 1790985600 github:fzakaria/rewindvm#bank | grep -E 'decides it|passing:|failing:|failing run violates sdk'
+$ rewind check --epoch 1790985600 github:fzakaria/rewindvm#bank | grep -E 'decides it|passing:|failing:|failing run violates sdk|^true in'
+true in 16 of 17 runs that checked it: sometimes "deposits-concurrent"
 step 3258 decides it: a reschedule there makes the run violate same-outcome, sdk
-passing: run 21cf5e28fa804c35, schedule 0
-failing: run 1cabfbed15ad58ec, schedule 1 over steps 3258..3259
-failing run violates sdk: step 3298: always "balance-adds-up" failed: balance 380, expected 400
+passing: run 7316b2ee6b7b0cb6, schedule 0
+failing: run 5257125bf4964a2a, schedule 1 over steps 3258..3259
+failing run violates sdk: step 3299: always "balance-adds-up" failed: balance 370, expected 400
 ```
 
 Outside Rewind the SDK's calls do nothing, so they can stay in the program.
 The [SDK](https://github.com/fzakaria/rewindvm/tree/main/sdk) has a small
 library for C, Rust, Go, Python, Java and shell, and a pytest plugin and a
 JUnit 5 extension that mark each test's result.
+
+## Check the fix
+
+Clone the repository to edit `bank`:
+
+```console
+$ git clone https://github.com/fzakaria/rewindvm
+$ cd rewindvm
+```
+
+In `examples/bank/bank.c`, hold a mutex from each deposit's read of the
+balance to its store:
+
+```diff
+@@ -25,6 +25,9 @@
+ /* How many tellers are inside deposit. */
+ static atomic_int depositing;
+
++/* Held from a deposit's read of the balance to its store. */
++static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
++
+ /* The race: the balance read here is stale by the time it is stored. */
+ static void deposit(int teller, long amount)
+ {
+@@ -33,6 +36,7 @@
+ 	int others = atomic_fetch_add(&depositing, 1);
+ 	REWIND_SOMETIMES(others > 0, "deposits-concurrent");
+
++	pthread_mutex_lock(&lock);
+ 	long seen = balance;
+ 	char line[64];
+ 	int n = snprintf(line, sizeof line, "teller %d: %ld + %ld\n", teller, seen, amount);
+@@ -40,6 +44,7 @@
+ 	if (write(1, line, n) == n) {
+ 		balance = seen + amount;
+ 	}
++	pthread_mutex_unlock(&lock);
+ 	atomic_fetch_sub(&depositing, 1);
+ }
+
+```
+
+```console
+$ rewind check --epoch 1790985600 .#bank | grep -E '^true in|^every property'
+rewind: packing 62 store paths for bank-0.1.0
+true in 64 of 65 runs that checked it: sometimes "deposits-concurrent"
+every property held under all 65 schedules
+```
+
+The balance adds up in all 65 runs, and in 64 of them both
+tellers were mid-deposit at once, so the search made them contend for the
+lock and the lock held. Without the `sometimes`, a clean search could also
+mean the tellers never overlapped.
+
+The `sometimes` marks the risky state rather than the bug. One true only
+when a deposit is lost would never come true once the lock is in, and
+check would report it as never reached on a correct program.
 
 ## Vary the randomness
 
@@ -148,10 +209,10 @@ seed, so one search varies the randomness and the timing together.
 Open the failing `bank` run beside the passing one, at the assertion:
 
 ```console
-$ rewind open 1cabfbed 3298 --compare 21cf5e28
+$ rewind open 5257125b 3299 --compare 7316b2ee
 ```
 
-![The app zoomed in around step 3298 of the failing bank run: a red mark above the track where always "balance-adds-up" failed, the test's span under the track in red, and the event card naming it](../site/img/app-assertion.png)
+![The app zoomed in around step 3299 of the failing bank run: a red mark above the track where always "balance-adds-up" failed, the test's span under the track in red, and the event card naming it](../site/img/app-assertion.png)
 
 The red mark above the track is the failed assertion; hover over it to see
 its message. The event card names it too, and Jump to failure goes to it.

@@ -69,6 +69,7 @@
         <ol>
           <li><a href="#catch-a-bug-on-the-first-run">Catch a bug on the first run</a></li>
           <li><a href="#assert-from-inside-the-program">Assert from inside the program</a></li>
+          <li><a href="#check-the-fix">Check the fix</a></li>
           <li><a href="#vary-the-randomness">Vary the randomness</a></li>
           <li><a href="#in-the-desktop-app">In the desktop app</a></li>
           <li><a href="#what-to-read-next">What to read next</a></li>
@@ -189,8 +190,10 @@ failing run violates no-read-while-written: step 3285: process 140 (config) open
         </p>
         <pre
           class="console source"
-        ><code><span class="comment">/* Another teller stored between this one's read and store. */</span>
-<span class="macro">REWIND_SOMETIMES</span>(balance != seen, <span class="string">"deposits-overlapped"</span>);
+        ><code><span class="comment">/* Another teller is mid-deposit: the case a lock around the read and</span>
+ * store has to handle, and the only way to lose a deposit without one. */
+<span class="keyword">int</span> others = atomic_fetch_add(&amp;depositing, <span class="number">1</span>);
+<span class="macro">REWIND_SOMETIMES</span>(others &gt; <span class="number">0</span>, <span class="string">"deposits-concurrent"</span>);
 <span class="elide">...</span>
 <span class="macro">REWIND_ALWAYS</span>(balance == expected, <span class="string">"balance-adds-up"</span>, <span class="string">"balance %ld, expected %ld"</span>, balance,
 	      expected);</code></pre>
@@ -201,35 +204,92 @@ failing run violates no-read-while-written: step 3285: process 140 (config) open
         <p>
           <code>REWIND_SOMETIMES</code> tests the search, not the program: its condition must be
           true in at least one of the runs check tries. It never fails a run. Here it asks whether
-          any run made two deposits overlap, the only way to lose one.
+          any run had both tellers mid-deposit at once.
         </p>
         <p>
-          Under schedule 0 alone, <code>bank</code> passes. That is one run, the deposits never
-          overlapped in it, and check reports the <code>sometimes</code> that never came true:
+          Under schedule 0 alone, <code>bank</code> passes. That is one run, one teller always
+          finished its deposit before the other started, and check reports the
+          <code>sometimes</code> that never came true:
         </p>
         <pre
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind check --epoch 1790985600 --schedules 0 github:fzakaria/rewindvm#bank</span>
 ...
-schedule   0: exited:0       4558 steps  e9eff8d15d00  run 21cf5e28fa804c35  holds
-never true in any run: sometimes "deposits-overlapped"
+schedule   0: exited:0       4557 steps  2ffd6b62eb30  run 7316b2ee6b7b0cb6  holds
+never true in any run: sometimes "deposits-concurrent"
 every property held under the one schedule tried</code></pre>
         <p>
-          With its default 64 schedules, check makes the deposits overlap and finds a run that loses
-          one:
+          With its default 64 schedules, check puts both tellers mid-deposit and finds a run that
+          loses a deposit:
         </p>
         <pre
           class="console"
-        ><code><span class="cmd"><span class="prompt">$</span> rewind check --epoch 1790985600 github:fzakaria/rewindvm#bank | grep -E 'decides it|passing:|failing:|failing run violates sdk'</span>
+        ><code><span class="cmd"><span class="prompt">$</span> rewind check --epoch 1790985600 github:fzakaria/rewindvm#bank | grep -E 'decides it|passing:|failing:|failing run violates sdk|^true in'</span>
+true in 16 of 17 runs that checked it: sometimes "deposits-concurrent"
 step 3258 decides it: a reschedule there makes the run violate same-outcome, sdk
-passing: run 21cf5e28fa804c35, schedule 0
-failing: run 1cabfbed15ad58ec, schedule 1 over steps 3258..3259
-failing run violates sdk: step 3298: always "balance-adds-up" failed: balance 380, expected 400</code></pre>
+passing: run 7316b2ee6b7b0cb6, schedule 0
+failing: run 5257125bf4964a2a, schedule 1 over steps 3258..3259
+failing run violates sdk: step 3299: always "balance-adds-up" failed: balance 370, expected 400</code></pre>
         <p>
           Outside Rewind the SDK's calls do nothing, so they can stay in the program. The
           <a href="https://github.com/fzakaria/rewindvm/tree/main/sdk">SDK</a> has a small library
           for C, Rust, Go, Python, Java and shell, and a pytest plugin and a JUnit 5 extension that
           mark each test's result.
+        </p>
+      </section>
+
+      <section class="step">
+        <h2 id="check-the-fix"><a class="anchor" href="#check-the-fix">Check the fix</a></h2>
+        <p>Clone the repository to edit <code>bank</code>:</p>
+        <pre
+          class="console"
+        ><code><span class="cmd"><span class="prompt">$</span> git clone https://github.com/fzakaria/rewindvm</span>
+<span class="cmd"><span class="prompt">$</span> cd rewindvm</span></code></pre>
+        <p>
+          In <code>examples/bank/bank.c</code>, hold a mutex from each deposit's read of the balance
+          to its store:
+        </p>
+        <pre class="console diff"><code><span class="hunk">@@ -25,6 +25,9 @@</span>
+<span class="ctx"> /* How many tellers are inside deposit. */</span>
+<span class="ctx"> static atomic_int depositing;</span>
+<span class="ctx"></span>
+<span class="add">+/* Held from a deposit's read of the balance to its store. */</span>
+<span class="add">+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;</span>
+<span class="add">+</span>
+<span class="ctx"> /* The race: the balance read here is stale by the time it is stored. */</span>
+<span class="ctx"> static void deposit(int teller, long amount)</span>
+<span class="ctx"> {</span>
+<span class="hunk">@@ -33,6 +36,7 @@</span>
+<span class="ctx"> 	int others = atomic_fetch_add(&amp;depositing, 1);</span>
+<span class="ctx"> 	REWIND_SOMETIMES(others &gt; 0, "deposits-concurrent");</span>
+<span class="ctx"></span>
+<span class="add">+	pthread_mutex_lock(&amp;lock);</span>
+<span class="ctx"> 	long seen = balance;</span>
+<span class="ctx"> 	char line[64];</span>
+<span class="ctx"> 	int n = snprintf(line, sizeof line, "teller %d: %ld + %ld\n", teller, seen, amount);</span>
+<span class="hunk">@@ -40,6 +44,7 @@</span>
+<span class="ctx"> 	if (write(1, line, n) == n) {</span>
+<span class="ctx"> 		balance = seen + amount;</span>
+<span class="ctx"> 	}</span>
+<span class="add">+	pthread_mutex_unlock(&amp;lock);</span>
+<span class="ctx"> 	atomic_fetch_sub(&amp;depositing, 1);</span>
+<span class="ctx"> }</span>
+<span class="ctx"></span></code></pre>
+        <pre
+          class="console"
+        ><code><span class="cmd"><span class="prompt">$</span> rewind check --epoch 1790985600 .#bank | grep -E '^true in|^every property'</span>
+rewind: packing 62 store paths for bank-0.1.0
+true in 64 of 65 runs that checked it: sometimes "deposits-concurrent"
+every property held under all 65 schedules</code></pre>
+        <p>
+          The balance adds up in all 65 runs, and in 64 of them both tellers were mid-deposit at
+          once, so the search made them contend for the lock and the lock held. Without the
+          <code>sometimes</code>, a clean search could also mean the tellers never overlapped.
+        </p>
+        <p>
+          The <code>sometimes</code> marks the risky state rather than the bug. One true only when a
+          deposit is lost would never come true once the lock is in, and check would report it as
+          never reached on a correct program.
         </p>
       </section>
 
@@ -268,7 +328,7 @@ failing: run b77e3df778b90b00, seed 1, schedule 0</code></pre>
         <p>Open the failing <code>bank</code> run beside the passing one, at the assertion:</p>
         <pre
           class="console"
-        ><code><span class="cmd"><span class="prompt">$</span> rewind open 1cabfbed 3298 --compare 21cf5e28</span></code></pre>
+        ><code><span class="cmd"><span class="prompt">$</span> rewind open 5257125b 3299 --compare 7316b2ee</span></code></pre>
         <figure class="shot">
           <picture>
             <source srcset="../img/app-assertion.webp" type="image/webp" />
@@ -277,11 +337,11 @@ failing: run b77e3df778b90b00, seed 1, schedule 0</code></pre>
               width="1440"
               height="900"
               loading="lazy"
-              alt='The app zoomed in around step 3298 of the failing bank run: a red mark above the track where always "balance-adds-up" failed, the test&#x27;s span under the track in red, and the event card naming it'
+              alt='The app zoomed in around step 3299 of the failing bank run: a red mark above the track where always "balance-adds-up" failed, the test&#x27;s span under the track in red, and the event card naming it'
             />
           </picture>
           <figcaption>
-            The app zoomed in around step 3298 of the failing bank run: a red mark above the track
+            The app zoomed in around step 3299 of the failing bank run: a red mark above the track
             where always &quot;balance-adds-up&quot; failed, the test&#x27;s span under the track in
             red, and the event card naming it
           </figcaption>

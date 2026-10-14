@@ -540,7 +540,7 @@ rewind: a shell at step 5105 of f0572500bc597078; exit it to leave
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind nix --cores 4 --epoch 1790985600 github:fzakaria/rewindvm#mylib</span>
 ...
-rewind: run 27a62ad4170c676c exited:0 after 6209 steps, 0.217s virtual, 1.206s wall (poweroff)
+rewind: run 27a62ad4170c676c exited:0 after 6209 steps, 0.217s virtual, 1.082s wall (poweroff)
 /nix/store/f6a9gy362szw6nxx3ikrklr8glr6rdln-mylib-0.3.0 a9d703ba89774f3d  matches your store, rewindvm.cachix.org</code></pre>
         <pre
           class="console"
@@ -566,22 +566,22 @@ rewind: a shell at step 2486 of 27a62ad4170c676c; exit it to leave
         <pre
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind fork f0572500 5005 --schedule 1 --quiet</span>
-rewind: run 3b8804c10ca07001 exited:2 after 5164 steps, 0.202s virtual, 0.300s wall (poweroff)
+rewind: run 3b8804c10ca07001 exited:2 after 5164 steps, 0.202s virtual, 0.472s wall (poweroff)
 rewind: the fork first differs from its parent at step 5026
 rewind: open it beside its parent in the desktop app: rewind open 3b8804c10ca07001 5026 --compare f0572500bc597078
 
 <span class="cmd"><span class="prompt">$</span> rewind fork f0572500 5005 --schedule 2 --quiet</span>
-rewind: run 62a024334bb23811 exited:0 after 6560 steps, 0.221s virtual, 0.375s wall (poweroff)
+rewind: run 62a024334bb23811 exited:0 after 6560 steps, 0.221s virtual, 0.343s wall (poweroff)
 rewind: the fork first differs from its parent at step 5024
 rewind: open it beside its parent in the desktop app: rewind open 62a024334bb23811 5024 --compare f0572500bc597078
 
 <span class="cmd"><span class="prompt">$</span> rewind fork f0572500 5005 --schedule 3 --quiet</span>
-rewind: run 64002726efc22ecb exited:2 after 5147 steps, 0.203s virtual, 0.289s wall (poweroff)
+rewind: run 64002726efc22ecb exited:2 after 5147 steps, 0.203s virtual, 0.275s wall (poweroff)
 rewind: the fork first differs from its parent at step 5090
 rewind: open it beside its parent in the desktop app: rewind open 64002726efc22ecb 5090 --compare f0572500bc597078
 
 <span class="cmd"><span class="prompt">$</span> rewind fork f0572500 5005 --schedule 4 --quiet</span>
-rewind: run 39aa9d79584a0c04 exited:0 after 6735 steps, 0.222s virtual, 0.358s wall (poweroff)
+rewind: run 39aa9d79584a0c04 exited:0 after 6735 steps, 0.222s virtual, 0.335s wall (poweroff)
 rewind: the fork first differs from its parent at step 5024
 rewind: open it beside its parent in the desktop app: rewind open 39aa9d79584a0c04 5024 --compare f0572500bc597078</code></pre>
         <p>
@@ -657,7 +657,7 @@ rewind: open it beside its parent in the desktop app: rewind open 39aa9d79584a0c
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind show @</span>
 39aa9d79584a0c04  exited:0          6735 steps  mylib-0.3.0 (fork of f0572500bc597078 at 5005, schedule 4)
-recorded by rewind 0.8.0 (a211b3d6fefe)
+recorded by rewind 0.8.0 (5cc6a5822020)
 rewind nix /nix/store/...-mylib-0.3.0.drv --epoch 1790985600 --schedule 3 --schedule-from 4821 --schedule-until 5081 --clock branches --name mylib-0.3.0  # f0572500bc597078
 rewind fork f0572500bc597078 5005 --schedule 4  # 39aa9d79584a0c04</code></pre>
         <p>The failing run's command makes it again, with the same id:</p>
@@ -665,7 +665,7 @@ rewind fork f0572500bc597078 5005 --schedule 4  # 39aa9d79584a0c04</code></pre>
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind show f0572500 | tail -1 | sh</span>
 ...
-rewind: run f0572500bc597078 exited:2 after 5145 steps, 0.203s virtual, 0.674s wall (poweroff)</code></pre>
+rewind: run f0572500bc597078 exited:2 after 5145 steps, 0.203s virtual, 0.623s wall (poweroff)</code></pre>
       </section>
 
       <section class="step">
@@ -807,7 +807,7 @@ exit 1</code></pre>
         ><code><span class="cmd"><span class="prompt">$</span> rewind check --epoch 1790985600 --property script=./adds-up.sh github:fzakaria/rewindvm#bank | grep -E 'decides it|failing run violates adds-up'</span>
 rewind: packing 62 store paths for bank-0.1.0
 step 3258 decides it: a reschedule there makes the run violate adds-up, sdk
-failing run violates adds-up: balance 380, expected 400</code></pre>
+failing run violates adds-up: balance 370, expected 400</code></pre>
         <p>
           <code>--properties</code> reads properties from a file, one a line, so a repository can
           keep them beside its tests. A script's path in the file is relative to the file's
@@ -945,7 +945,7 @@ failing: run 9db946d65544b3db, seed 1 from step 301, schedule 0</code></pre>
         <pre
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind export f0572500 --replayable -o crash.rwd</span>
-rewind: wrote crash.rwd (204.3 MB)
+rewind: wrote crash.rwd (201.3 MB)
 
 <span class="cmd"><span class="prompt">$</span> REWIND_HOME=elsewhere rewind import crash.rwd</span>
 f0572500bc597078  exited:2          5145 steps  mylib-0.3.0
@@ -997,7 +997,7 @@ runs will use counter time</code></pre>
         <pre
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind run --root spin --timeout 5 --name spin -- /bin/spin</span>
-rewind: run d887cc181cc8a557 timed-out after 309 steps, 0.002s virtual, 5.003s wall (timed out computing without exits for 2.7s, in user space in main+11 (spin.c:2), process 34 (spin))</code></pre>
+rewind: run d887cc181cc8a557 timed-out after 309 steps, 0.002s virtual, 5.008s wall (timed out computing without exits for 4.4s, in user space in main+15 (spin.c:2), process 34 (spin))</code></pre>
         <p>
           A run that timed out while still making exits was slow rather than stuck, and says so.
           <code>rewind check</code> gives each perturbed schedule ten times as long as schedule 0
