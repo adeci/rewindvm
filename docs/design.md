@@ -293,7 +293,11 @@ CPU instead of the host's:
 
 A host that lacks any of it refuses the run and names the missing bits. The
 model is part of a run's inputs, and `--cpu host` shows the host's features
-instead, for hosts older than the baseline. The guest boots with
+instead, for hosts older than the baseline. The extras slot `rewind shell
+--with` fills ends at 320 GiB, which needs the model's 39 address bits, and
+KVM refuses a memory slot past what the host's CPU reaches. On a CPU with 36
+bits, such as an Ivy Bridge, `--cpu host` records runs without the slot, so
+they cannot take `--with`. The guest boots with
 `mitigations=off`. Its processes need no protection from each other, and KVM
 still guards the host. With the fixed CPU, the mitigations the kernel had
 chosen more than doubled a build's time.

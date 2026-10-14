@@ -39,7 +39,10 @@ pub fn command(m: &Manifest) -> Result<Vec<String>, Unset> {
             spec.quantum
         )));
     }
-    if spec.extras != rewind_vmm::Extras::Reserved {
+    // A v3 run always reserves the extras slot. A host-model run leaves the
+    // slot out on a CPU that cannot reach the slot, and the same command
+    // leaves the slot out again on that CPU.
+    if spec.extras != rewind_vmm::Extras::Reserved && spec.cpu != rewind_vmm::CpuModel::Host {
         return Err(Unset(
             "a machine without the slot `shell --with` uses".into(),
         ));
@@ -341,5 +344,23 @@ pub(crate) mod tests {
         s.quantum = DEFAULT_QUANTUM + 1;
         let m = manifest("sh", Source::Image { root: "/r".into() }, s);
         assert!(command(&m).unwrap_err().0.contains("quantum"));
+    }
+
+    #[test]
+    fn a_host_model_run_without_the_extras_slot_is_made_again() {
+        // A host-model run recorded where the CPU's address bits cannot
+        // reach the extras slot: --cpu host on that host leaves the slot
+        // out again. A v3 run always has the slot, so one without it
+        // cannot be made again.
+        let mut s = spec(job(&["sh"], &[], "/"));
+        s.cpu = rewind_vmm::CpuModel::Host;
+        s.extras = rewind_vmm::Extras::Absent;
+        let m = manifest("sh", Source::Image { root: "/r".into() }, s.clone());
+        let args = command(&m).unwrap();
+        assert!(args.windows(2).any(|w| w == ["--cpu", "host"]), "{args:?}");
+
+        s.cpu = rewind_vmm::CpuModel::V3;
+        let m = manifest("sh", Source::Image { root: "/r".into() }, s);
+        assert!(command(&m).unwrap_err().0.contains("shell --with"));
     }
 }

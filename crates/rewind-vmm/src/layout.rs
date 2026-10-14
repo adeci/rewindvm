@@ -52,6 +52,10 @@ pub const PMEM_START: u64 = 0x1_0000_0000;
 pub const EXTRAS_START: u64 = 0x40_0000_0000;
 pub const EXTRAS_LEN: u64 = 64 << 30;
 
+/// The physical address bits that reach the extras slot's last byte. KVM
+/// refuses a memory slot that ends past what the host's CPU reaches.
+pub const EXTRAS_ADDRESS_BITS: u32 = u64::BITS - (EXTRAS_START + EXTRAS_LEN - 1).leading_zeros();
+
 /// The local APIC's architectural base, and the vector the monitor's
 /// interrupt arrives on (Linux's HYPERVISOR_CALLBACK_VECTOR).
 pub const APIC_BASE: u64 = 0xfee0_0000;

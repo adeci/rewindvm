@@ -48,6 +48,31 @@ const TSS_ADDRESS: usize = 0xfffb_d000;
 /// kernel's memory hotplug code expects of it.
 const PMEM_ALIGN: usize = 2 << 20;
 
+/// Whether a run on this host reserves the extras slot. The slot ends past
+/// what a CPU with 36 physical address bits reaches, such as an Ivy Bridge
+/// or a VM shown 36 bits, and KVM refuses a memory slot there.
+pub fn extras_for(cpu: CpuModel) -> Result<Extras> {
+    let kvm = kvm::open()?;
+    extras_for_bits(cpu, cpu::address_bits(&kvm)?)
+}
+
+/// The extras slot for `cpu` on a host whose CPU reaches `bits` physical
+/// address bits. The host model goes without the slot where the host
+/// cannot reach the slot. The v3 model promises the guest the same machine
+/// on every host, slot included, so a narrower host refuses the v3 model.
+fn extras_for_bits(cpu: CpuModel, bits: u32) -> Result<Extras> {
+    if bits >= EXTRAS_ADDRESS_BITS {
+        return Ok(Extras::Reserved);
+    }
+    match cpu {
+        CpuModel::Host => Ok(Extras::Absent),
+        CpuModel::V3 => bail!(
+            "this CPU reaches {bits} physical address bits, where the x86-64-v3 model needs \
+             {EXTRAS_ADDRESS_BITS}; run with --cpu host"
+        ),
+    }
+}
+
 /// Everything that determines a run. Two machines built from equal configs
 /// run identically.
 #[derive(Clone, Debug)]
@@ -320,6 +345,16 @@ impl Machine {
         let extras = match config.extras {
             Extras::Absent => None,
             Extras::Reserved => {
+                // A run recorded where the CPU reaches the slot, replayed
+                // where the CPU does not: name the address bits, where KVM
+                // would fail with a bare EINVAL.
+                let bits = cpu::address_bits(&kvm)?;
+                if bits < EXTRAS_ADDRESS_BITS {
+                    bail!(
+                        "this run reserves the extras slot, which needs {EXTRAS_ADDRESS_BITS} \
+                         physical address bits, and this CPU reaches {bits}"
+                    );
+                }
                 let slot = Mapping::anonymous(layout::EXTRAS_LEN as usize)?;
                 // SAFETY: the mapping outlives the VM; the slot is read-only.
                 unsafe {
@@ -987,6 +1022,25 @@ mod tests {
 
     const QUANTUM: u64 = 5000;
     const PAGE: usize = 4096;
+
+    #[test]
+    fn the_extras_slot_is_reserved_only_where_the_host_reaches_it() {
+        // Address widths on both sides of the slot's 39 bits: 36 is an Ivy
+        // Bridge's. A narrow host records the host model without the slot
+        // and refuses the v3 model, which shows the guest 39 bits.
+        assert_eq!(EXTRAS_ADDRESS_BITS, 39);
+        assert_eq!(extras_for_bits(CpuModel::V3, 39).unwrap(), Extras::Reserved);
+        assert_eq!(
+            extras_for_bits(CpuModel::Host, 48).unwrap(),
+            Extras::Reserved
+        );
+        assert_eq!(extras_for_bits(CpuModel::Host, 36).unwrap(), Extras::Absent);
+        let refused = extras_for_bits(CpuModel::V3, 36).unwrap_err().to_string();
+        assert!(
+            refused.contains("36") && refused.contains("--cpu host"),
+            "{refused}"
+        );
+    }
 
     /// The devices of a machine that has set up its shared page at 0.
     fn devices(now: u64) -> Devices {

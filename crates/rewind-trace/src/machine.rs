@@ -67,7 +67,8 @@ pub enum Preemption {
 
 /// Whether a machine reserves the extras slot, empty persistent memory a
 /// fork can fill with more Nix packages (`rewind shell --with`). Every run
-/// reserves it; the PMU's self-test machine does not.
+/// reserves it, except a host-model run on a CPU whose physical address
+/// bits do not reach it; the PMU's self-test machine does not.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Extras {

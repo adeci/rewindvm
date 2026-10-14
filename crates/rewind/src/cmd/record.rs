@@ -1721,7 +1721,7 @@ fn execute(
         } else {
             rewind_vmm::Preemption::AtExits
         },
-        extras: rewind_vmm::Extras::Reserved,
+        extras: rewind_vmm::extras_for(machine.cpu.into())?,
         cmdline: format!("{BASE_CMDLINE} {}", machine.kernel_args)
             .trim()
             .to_string(),

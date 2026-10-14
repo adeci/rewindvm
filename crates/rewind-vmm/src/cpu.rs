@@ -333,6 +333,19 @@ fn baseline(host: &[kvm_cpuid_entry2]) -> Result<Vec<kvm_cpuid_entry2>> {
     Ok(out)
 }
 
+/// The physical address bits this host's memory slots can reach: the
+/// PhysAddrSize KVM reports in leaf 0x80000008. Since Linux 5.18, KVM
+/// refuses a slot that ends past them.
+pub fn address_bits(kvm: &Kvm) -> Result<u32> {
+    let supported = kvm.get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)?;
+    let leaf = supported
+        .as_slice()
+        .iter()
+        .find(|e| e.function == 0x8000_0008)
+        .context("no CPUID leaf 0x80000008")?;
+    Ok(leaf.eax & 0xff)
+}
+
 /// The host's CPUID, filtered down to what a deterministic guest may see.
 fn host_cpuid(kvm: &Kvm) -> Result<Vec<kvm_cpuid_entry2>> {
     let supported = kvm.get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)?;
