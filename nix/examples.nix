@@ -7,7 +7,8 @@
 # see a config half rewritten, and waiter's parent sleeps through the
 # signal that should wake it; each fails only under some interleavings.
 # hash-order's test expects a HashSet's order, which Rust draws from the
-# system's randomness, so it fails only under some seeds.
+# system's randomness, so it fails only under some seeds. bank-java is bank
+# as a JUnit 5 suite marked with the Rewind SDK's extension.
 { pkgs }:
 {
   mylib = pkgs.stdenv.mkDerivation {
@@ -35,6 +36,19 @@
     makeFlags = [ "PREFIX=$(out)" ];
     doCheck = true;
     meta.description = "Two tellers and one account, losing a deposit under some interleavings";
+  };
+
+  bank-java = pkgs.stdenv.mkDerivation {
+    pname = "bank-java";
+    version = "0.1.0";
+    src = ../examples/bank-java;
+    nativeBuildInputs = [ pkgs.jdk_headless ];
+    makeFlags = [
+      "PREFIX=$(out)"
+      "JUNIT=${import ./junit.nix { inherit pkgs; }}"
+    ];
+    doCheck = true;
+    meta.description = "bank as a JUnit 5 suite, losing a deposit under some interleavings";
   };
 
   config-reload = pkgs.stdenv.mkDerivation {

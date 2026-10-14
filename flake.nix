@@ -179,6 +179,10 @@
           # two tellers losing a deposit, a lost update (nix/examples.nix)
           bank = p.examples.bank;
 
+          # bank as a JUnit 5 suite marked with the Rewind SDK's extension
+          # (nix/examples.nix)
+          bank-java = p.examples.bank-java;
+
           # a config read while it is rewritten, a file race between
           # processes (nix/examples.nix)
           config-reload = p.examples.config-reload;

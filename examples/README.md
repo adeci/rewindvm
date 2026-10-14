@@ -50,6 +50,20 @@ $ make -C bank check                       # plain, on the host
 $ nix build github:fzakaria/rewindvm#bank  # as a derivation
 ```
 
+## bank-java
+
+`bank` in Java, as a JUnit 5 suite: one teller, two tellers, and a new
+account. The two-tellers test loses a deposit the same way, and fails its
+`assertEquals`. The suite is marked with the Rewind SDK's JUnit extension,
+through a copy of [`sdk/java`](../sdk/java), so `rewind check` sees each
+test's start and result, and JUnit writes its XML reports to `reports/`
+for the `junit` property.
+
+```console
+$ make -C bank-java check JUNIT=junit-platform-console-standalone.jar  # plain, on the host
+$ nix build github:fzakaria/rewindvm#bank-java                         # as a derivation
+```
+
 ## config-reload
 
 One process rewrites a config file in place, truncating it and writing its
