@@ -404,6 +404,8 @@ in
   # library as sdk/ has it.
   sdk-copies = pkgs.runCommand "rewind-sdk-copies" { } ''
     cmp ${../sdk/c/rewind.h} ${../examples/bank/rewind.h}
+    cmp ${../sdk/java/dev/rewindvm/sdk/Rewind.java} ${../examples/bank-java/dev/rewindvm/sdk/Rewind.java}
+    cmp ${../sdk/java/dev/rewindvm/sdk/RewindExtension.java} ${../examples/bank-java/dev/rewindvm/sdk/RewindExtension.java}
     touch $out
   '';
 
@@ -1328,8 +1330,11 @@ in
         jq -e '.seeds == 6 and ([.schedules[].seed] | unique) == [0, 1, 2, 3, 4, 5]' seeds.json
         jq -e '.differing > 0 and ([.schedules[] | select(.differs)] | length) == .differing' seeds.json
         # A recorded run tried under other seeds: each a fork of it at the
-        # job's start, its RNG reseeded there.
-        rewind run -q --clock exits --name coin --root ${busyboxRoot} -- sh -c "$coin"
+        # job's start, its RNG reseeded there. The coin may land either
+        # way under the run's own seed, so its job exits 0 or 1.
+        status=0
+        rewind run -q --clock exits --name coin --root ${busyboxRoot} -- sh -c "$coin" || status=$?
+        [ "$status" -le 1 ]
         ! rewind check --run coin --seeds 6 --schedules 0 > reseeded
         cat reseeded
         grep -qE '^seed [0-9]+ decides it: unperturbed, seed [0-9]+ passes and seed [0-9]+ fails$' reseeded
@@ -1374,12 +1379,13 @@ in
           | all(test("^(always \"even\" failed: byte [0-9]+ is odd|test coin flip passed in the unperturbed run and failed here)$"))' sdk.json
 
         # JUnit reports: a job that writes one, its coin.flip test failing
-        # when its random byte is odd. check reads the report each run
-        # wrote and names the test that passed under seed 0 and failed.
+        # when its random byte is even. Seed 0's byte is odd, so the test
+        # passes in the base run. check reads the report each run wrote
+        # and names the test that passed under seed 0 and failed.
         cat > report.sh <<'EOF'
         b=$(od -An -tu1 -N1 /dev/urandom)
         failure=""
-        if [ $((b % 2)) = 1 ]; then failure="<failure message=\"odd\"/>"; fi
+        if [ $((b % 2)) = 0 ]; then failure="<failure message=\"even\"/>"; fi
         mkdir -p /run/reports
         printf '<testsuite><testcase classname="coin" name="flip">%s</testcase><testcase classname="coin" name="steady"/></testsuite>\n' "$failure" > /run/reports/TEST-coin.xml
         EOF
@@ -1387,6 +1393,14 @@ in
           --root ${busyboxRoot} -- sh -c "$(cat report.sh)" > junit
         cat junit
         grep -qE '^failing run violates junit: step [0-9]+: test coin.flip passed in the unperturbed run and failed here$' junit
+
+        # A junit pattern that matches no report schedule 0 wrote stops
+        # the search, where it would hold on every run: * stays within one
+        # directory, so */reports/*.xml misses /run/reports.
+        ! rewind check -j 4 --clock exits --schedules 0 --property 'junit=*/reports/*.xml' \
+          --root ${busyboxRoot} -- sh -c "$(cat report.sh)" 2> unmatched
+        cat unmatched
+        grep -q 'junit=\*/reports/\*.xml matched no JUnit report schedule 0 wrote' unmatched
 
         # A misspelled property is refused before anything boots.
         ! rewind check --property exit-0 --root ${raceRoot} -- /bin/race 2> refused

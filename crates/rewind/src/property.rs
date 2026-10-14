@@ -258,11 +258,23 @@ impl<'a> Judge<'a> {
                 _ => None,
             })
             .collect();
+        // Each junit pattern must find a report in the base run: one that
+        // finds none would hold on every run and hide the tests.
         let mut base_junit = HashMap::new();
         for property in &properties {
-            if let Property::Junit(glob) = property {
-                base_junit.insert(glob.as_str().to_string(), junit_results(home, base, glob)?);
+            let Property::Junit(glob) = property else {
+                continue;
+            };
+            let results = junit_results(home, base, glob)?;
+            if results.is_empty() {
+                bail!(
+                    "{JUNIT}={} matched no JUnit report schedule 0 wrote; a pattern without a / \
+                     matches a file name, as TEST-*.xml does, * stays within one directory and \
+                     ** crosses them",
+                    glob.as_str()
+                );
             }
+            base_junit.insert(glob.as_str().to_string(), results);
         }
         Ok(Judge {
             home,
