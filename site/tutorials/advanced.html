@@ -773,28 +773,25 @@ schedule 8: exit 0</code></pre>
           <a class="anchor" href="#judge-runs-by-properties">Judge runs by properties</a>
         </h2>
         <p>
-          By default <code>check</code> calls a run failing when it ends differently from schedule
-          0. <code>--property</code> judges runs by what they did on the way instead, and replaces
-          the default; repeat it for several. <code>no-crash</code> fails a run in which any process
-          died of a signal such as SIGSEGV, even one a retry hid, and
-          <code>single-writer=GLOB</code> one in which two processes had a matching file open for
-          writing at once. The <a href="properties.html">properties tutorial</a> covers each
-          built-in property, and <code>rewind check --help</code> lists them.
+          By default <code>check</code> fails a run that ends differently from schedule 0.
+          <code>--property</code> replaces that test with others, such as <code>no-crash</code> or
+          <code>single-writer=GLOB</code>, and can be repeated.
+          <code>rewind check --help</code> lists the built-in properties, and the
+          <a href="properties.html">properties tutorial</a> explains each one.
         </p>
         <p>
-          A program can also judge itself with the
-          <a href="https://github.com/fzakaria/rewindvm/tree/main/sdk">Rewind SDK</a>:
-          <code>always</code> for what must hold every time, <code>sometimes</code> for what some
-          run must reach, and marks for each test's start and result. When schedule 0 writes such
-          marks, check adds the <code>sdk</code> property by itself, and the app shows a failed
-          assertion as a red mark above the track.
+          A program that calls the
+          <a href="https://github.com/fzakaria/rewindvm/tree/main/sdk">Rewind SDK</a> asserts from
+          the inside: <code>always</code> must hold every time it runs, and
+          <code>sometimes</code> must hold in at least one run. Check adds the
+          <code>sdk</code> property when schedule 0 calls the SDK, and the app marks each failed
+          assertion in red above the track.
         </p>
         <p>
-          A property can also be a program on this machine. Check gives it the run in
-          <code>$REWIND_RUN</code>, and the program exits 0 when the run is correct and 1 when it is
-          not, with the reason on its first line. It can read the run with <code>rewind log</code>,
-          <code>rewind events --json</code> and <code>rewind cat</code>. This one checks that
-          <code>bank</code>'s deposits add up:
+          A property can also be a script. It gets the run in <code>$REWIND_RUN</code>, can read it
+          with <code>rewind log</code>, <code>rewind events --json</code> or
+          <code>rewind cat</code>, and exits 0 when the run is correct or 1 with the reason on its
+          first line. This one checks that <code>bank</code>'s deposits add up:
         </p>
         <pre
           class="console"

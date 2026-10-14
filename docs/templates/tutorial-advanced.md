@@ -376,26 +376,22 @@ $ rewind diff {{passing|short}} {{failing|short}} --json | jq -c '.divergence | 
 
 ## Judge runs by properties
 
-By default `check` calls a run failing when it ends differently from
-schedule 0. `--property` judges runs by what they did on the way instead,
-and replaces the default; repeat it for several. `no-crash` fails a run in
-which any process died of a signal such as SIGSEGV, even one a retry hid,
-and `single-writer=GLOB` one in which two processes had a matching file open
-for writing at once. The [properties tutorial](tutorial-properties.md)
-covers each built-in property, and `rewind check --help` lists them.
+By default `check` fails a run that ends differently from schedule 0.
+`--property` replaces that test with others, such as `no-crash` or
+`single-writer=GLOB`, and can be repeated. `rewind check --help` lists the
+built-in properties, and the [properties tutorial](tutorial-properties.md)
+explains each one.
 
-A program can also judge itself with the [Rewind
-SDK](https://github.com/fzakaria/rewindvm/tree/main/sdk): `always` for what
-must hold every time, `sometimes` for what some run must reach, and marks
-for each test's start and result. When schedule 0 writes such marks, check
-adds the `sdk` property by itself, and the app shows a failed assertion as
-a red mark above the track.
+A program that calls the [Rewind
+SDK](https://github.com/fzakaria/rewindvm/tree/main/sdk) asserts from the
+inside: `always` must hold every time it runs, and `sometimes` must hold in
+at least one run. Check adds the `sdk` property when schedule 0 calls the
+SDK, and the app marks each failed assertion in red above the track.
 
-A property can also be a program on this machine. Check gives it the run in
-`$REWIND_RUN`, and the program exits 0 when the run is correct and 1 when it
-is not, with the reason on its first line. It can read the run with `rewind
-log`, `rewind events --json` and `rewind cat`. This one checks that `bank`'s
-deposits add up:
+A property can also be a script. It gets the run in `$REWIND_RUN`, can read
+it with `rewind log`, `rewind events --json` or `rewind cat`, and exits 0
+when the run is correct or 1 with the reason on its first line. This one
+checks that `bank`'s deposits add up:
 
 <!-- run: printf '%s\n' '#!/bin/sh' '# The deposits add up: bank prints its balance and what it expected.' 'line=$(rewind log "$REWIND_RUN" | grep "^balance ")' 'test "$line" = "balance 400, expected 400" && exit 0' 'echo "$line"' 'exit 1' > adds-up.sh && chmod +x adds-up.sh -->
 <!-- run: printf '%s\n' '# What a correct bank run is.' 'no-crash' 'script=adds-up.sh' > rewind.properties -->
