@@ -67,7 +67,7 @@ deterministic virtual machine:
 $ rewind nix --epoch 1790985600 github:fzakaria/rewindvm#mylib
 rewind: packing 62 store paths for mylib-0.3.0
 ...
-rewind: run 6450dcda364da381 exited:0 after 6198 steps, 0.217s virtual, 2.081s wall (poweroff)
+rewind: run 6450dcda364da381 exited:0 after 6198 steps, 0.217s virtual, 4.598s wall (poweroff)
 /nix/store/f6a9gy362szw6nxx3ikrklr8glr6rdln-mylib-0.3.0 a9d703ba89774f3d  matches your store, rewindvm.cachix.org
 ```
 
@@ -128,7 +128,7 @@ open both in the desktop app: rewind open f0572500bc597078 5105 --compare 541aee
 Schedules 3, 4, 7, 8, 13 and 14 fail. `check` narrows schedule 3's failure to one step, 5080. The passing run perturbs the same steps less that one, so the two
 runs are the same until 5080, and only the failing one gets
 a 1280 µs stall there. The last block shows where the test's own output then
-differs. The search took 14 seconds.
+differs. The search took 30 seconds.
 
 `--all` tries every schedule, which measures how flaky a build is:
 
@@ -214,9 +214,9 @@ rewind: gdb at step 5080 of f0572500bc597078
 Downloading 10.70 K separate debug info for /nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libpthread.so.0...
 Downloading 4.35 M separate debug info for /nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libc.so.6...
 Downloading 658.16 K separate debug info for /nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2...
-Downloading 3.12 K source file /build/linux-7.2.8/./arch/x86/include/asm/irqflags.h...
-arch_local_irq_restore (flags=518) at ./arch/x86/include/asm/irqflags.h:146
-146		return !(flags & X86_EFLAGS_IF);
+Downloading 740.00 B source file /build/linux-7.2.8/./arch/x86/include/asm/shared/io.h...
+0xffffffff8128688b in __outl (value=<optimized out>, port=1504) at ./arch/x86/include/asm/shared/io.h:24
+24	BUILDIO(l,  , u32)
 [Switching to thread 4 (Thread 1.174)]
 Downloading 1.79 K source file /build/glibc-2.44/nptl/../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S...
 #0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
@@ -253,7 +253,7 @@ $ rewind replay f0572500
 identical: 1756 events over 5145 steps
 
 $ rewind replay f0572500 --from 4821
-identical from the keyframe at step 1288 to the end (0.61s)
+identical from the keyframe at step 4699 to the end (0.54s)
 ```
 
 `--from` starts at the nearest keyframe before the step. A run replays on any
@@ -265,22 +265,22 @@ A fork is its parent up to a step, then another schedule:
 
 ```console
 $ rewind fork 6450dcda 4821 --schedule 5 --quiet
-rewind: run bf85e775c549d334 exited:0 after 6504 steps, 0.220s virtual, 0.426s wall (poweroff)
+rewind: run bf85e775c549d334 exited:0 after 6504 steps, 0.220s virtual, 0.410s wall (poweroff)
 rewind: the fork first differs from its parent at step 4834
 rewind: open it beside its parent in the desktop app: rewind open bf85e775c549d334 4834 --compare 6450dcda364da381
 
 $ rewind fork 6450dcda 4821 --schedule 6 --quiet
-rewind: run 09556a4db8782ded exited:0 after 6530 steps, 0.224s virtual, 0.416s wall (poweroff)
+rewind: run 09556a4db8782ded exited:0 after 6530 steps, 0.224s virtual, 0.433s wall (poweroff)
 rewind: the fork first differs from its parent at step 4834
 rewind: open it beside its parent in the desktop app: rewind open 09556a4db8782ded 4834 --compare 6450dcda364da381
 
 $ rewind fork 6450dcda 4821 --schedule 7 --quiet
-rewind: run 9c43524f0f937ed1 exited:2 after 5002 steps, 0.201s virtual, 0.361s wall (poweroff)
+rewind: run 9c43524f0f937ed1 exited:2 after 5002 steps, 0.201s virtual, 0.501s wall (poweroff)
 rewind: the fork first differs from its parent at step 4835
 rewind: open it beside its parent in the desktop app: rewind open 9c43524f0f937ed1 4835 --compare 6450dcda364da381
 
 $ rewind fork 6450dcda 4821 --schedule 8 --quiet
-rewind: run 477c2d3c1715e961 exited:2 after 5015 steps, 0.201s virtual, 0.358s wall (poweroff)
+rewind: run 477c2d3c1715e961 exited:2 after 5015 steps, 0.201s virtual, 0.646s wall (poweroff)
 rewind: the fork first differs from its parent at step 4833
 rewind: open it beside its parent in the desktop app: rewind open 477c2d3c1715e961 4833 --compare 6450dcda364da381
 ```

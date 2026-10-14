@@ -93,8 +93,8 @@ $ rewind gdb f0572500 5105 --tid 166 --frame 7 -- -batch -ex 'p p->queue'
 rewind: process 166 at step 5105; loading symbols for 4 of its files
 rewind: read 3 source files fetched from the VM earlier
 rewind: gdb at step 5105 of f0572500bc597078
-0xffffffff81286afc in __outl (value=<optimized out>, port=1504) at ./arch/x86/include/asm/shared/io.h:24
-24	BUILDIO(l,  , u32)
+arch_local_irq_restore (flags=6) at ./arch/x86/include/asm/irqflags.h:146
+146		return !(flags & X86_EFLAGS_IF);
 [Switching to thread 2 (Thread 1.166)]
 #0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
 56		ret
@@ -215,8 +215,8 @@ $ rewind gdb f0572500 5059 -- -batch -ex 'break src/pool.c:74' -ex continue -ex 
 rewind: step 5059 ran in process 166; loading symbols for 4 of its files
 rewind: read 3 source files fetched from the VM earlier
 rewind: gdb at step 5059 of f0572500bc597078
-0xffffffff8128688b in __outl (value=<optimized out>, port=1504) at ./arch/x86/include/asm/shared/io.h:24
-24	BUILDIO(l,  , u32)
+arch_local_irq_restore (flags=518) at ./arch/x86/include/asm/irqflags.h:146
+146		return !(flags & X86_EFLAGS_IF);
 [Switching to thread 4 (Thread 1.174)]
 #0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
 56		ret
@@ -264,8 +264,8 @@ $ rewind gdb f0572500 5080 -- -batch -ex 'break force_sig_fault' -ex continue -e
 rewind: step 5080 ran in process 166; loading symbols for 4 of its files
 rewind: read 3 source files fetched from the VM earlier
 rewind: gdb at step 5080 of f0572500bc597078
-0xffffffff8128688b in __outl (value=<optimized out>, port=1504) at ./arch/x86/include/asm/shared/io.h:24
-24	BUILDIO(l,  , u32)
+arch_local_irq_restore (flags=518) at ./arch/x86/include/asm/irqflags.h:146
+146		return !(flags & X86_EFLAGS_IF);
 [Switching to thread 4 (Thread 1.174)]
 #0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
 56		ret
@@ -336,8 +336,8 @@ interleave on the one vCPU:
 ```console
 $ rewind nix --cores 4 --epoch 1790985600 github:fzakaria/rewindvm#mylib
 ...
-rewind: run 27a62ad4170c676c exited:0 after 6209 steps, 0.217s virtual, 1.535s wall (poweroff)
-/nix/store/f6a9gy362szw6nxx3ikrklr8glr6rdln-mylib-0.3.0 a9d703ba89774f3d  matches rewindvm.cachix.org
+rewind: run 27a62ad4170c676c exited:0 after 6209 steps, 0.217s virtual, 1.206s wall (poweroff)
+/nix/store/f6a9gy362szw6nxx3ikrklr8glr6rdln-mylib-0.3.0 a9d703ba89774f3d  matches your store, rewindvm.cachix.org
 ```
 
 ```console
@@ -358,22 +358,22 @@ spins waiting for a thread that never runs.
 
 ```console
 $ rewind fork f0572500 5005 --schedule 1 --quiet
-rewind: run 3b8804c10ca07001 exited:2 after 5164 steps, 0.202s virtual, 0.370s wall (poweroff)
+rewind: run 3b8804c10ca07001 exited:2 after 5164 steps, 0.202s virtual, 0.300s wall (poweroff)
 rewind: the fork first differs from its parent at step 5026
 rewind: open it beside its parent in the desktop app: rewind open 3b8804c10ca07001 5026 --compare f0572500bc597078
 
 $ rewind fork f0572500 5005 --schedule 2 --quiet
-rewind: run 62a024334bb23811 exited:0 after 6560 steps, 0.221s virtual, 0.457s wall (poweroff)
+rewind: run 62a024334bb23811 exited:0 after 6560 steps, 0.221s virtual, 0.375s wall (poweroff)
 rewind: the fork first differs from its parent at step 5024
 rewind: open it beside its parent in the desktop app: rewind open 62a024334bb23811 5024 --compare f0572500bc597078
 
 $ rewind fork f0572500 5005 --schedule 3 --quiet
-rewind: run 64002726efc22ecb exited:2 after 5147 steps, 0.203s virtual, 0.359s wall (poweroff)
+rewind: run 64002726efc22ecb exited:2 after 5147 steps, 0.203s virtual, 0.289s wall (poweroff)
 rewind: the fork first differs from its parent at step 5090
 rewind: open it beside its parent in the desktop app: rewind open 64002726efc22ecb 5090 --compare f0572500bc597078
 
 $ rewind fork f0572500 5005 --schedule 4 --quiet
-rewind: run 39aa9d79584a0c04 exited:0 after 6735 steps, 0.222s virtual, 0.454s wall (poweroff)
+rewind: run 39aa9d79584a0c04 exited:0 after 6735 steps, 0.222s virtual, 0.358s wall (poweroff)
 rewind: the fork first differs from its parent at step 5024
 rewind: open it beside its parent in the desktop app: rewind open 39aa9d79584a0c04 5024 --compare f0572500bc597078
 ```
@@ -425,7 +425,7 @@ schedule 4 fork:
 ```console
 $ rewind show @
 39aa9d79584a0c04  exited:0          6735 steps  mylib-0.3.0 (fork of f0572500bc597078 at 5005, schedule 4)
-recorded by rewind 0.7.0 (90342533a0bb)
+recorded by rewind 0.8.0 (a211b3d6fefe)
 rewind nix /nix/store/...-mylib-0.3.0.drv --epoch 1790985600 --schedule 3 --schedule-from 4821 --schedule-until 5081 --clock branches --name mylib-0.3.0  # f0572500bc597078
 rewind fork f0572500bc597078 5005 --schedule 4  # 39aa9d79584a0c04
 ```
@@ -435,7 +435,7 @@ The failing run's command makes it again, with the same id:
 ```console
 $ rewind show f0572500 | tail -1 | sh
 ...
-rewind: run f0572500bc597078 exited:2 after 5145 steps, 0.203s virtual, 1.080s wall (poweroff)
+rewind: run f0572500bc597078 exited:2 after 5145 steps, 0.203s virtual, 0.674s wall (poweroff)
 ```
 
 ## Compare any two runs
@@ -484,11 +484,13 @@ schedule 7: exit 0
 schedule 8: exit 0
 ```
 
-`check` exits 1 when a schedule ends differently and 0 when none does, `diff`
+`check` exits 1 when a run fails a property, by default by ending
+differently from schedule 0, and 0 when none does, `diff`
 1 when the runs differ, `cat` 3 when the file did not exist at the step, and
 `doctor` 1 when this machine cannot record runs. With `--json`, commands
 print JSON for a program to read in place of their text: one object, or from
-`ls` and `events` one a line.
+`ls` and `events` one a line. `check --json` lists each run it tried under
+`schedules`, with the properties the run violated under `violations`.
 
 ```console
 $ rewind ls --forks-of f0572500 --status failed --json | jq -r .id
@@ -497,6 +499,60 @@ $ rewind ls --forks-of f0572500 --status failed --json | jq -r .id
 
 $ rewind diff 541aee7b f0572500 --json | jq -c '.divergence | {left_step, right_step}'
 {"left_step":5081,"right_step":5103}
+```
+
+## Judge runs by properties
+
+By default `check` calls a run failing when it ends differently from
+schedule 0. `--property` judges runs by what they did on the way instead,
+and replaces the default; repeat it for several. `no-crash` fails a run in
+which any process died of a signal such as SIGSEGV, even one a retry hid,
+and `single-writer=GLOB` one in which two processes had a matching file open
+for writing at once. The [properties tutorial](tutorial-properties.md)
+covers each built-in property, and `rewind check --help` lists them.
+
+A program can also judge itself with the [Rewind
+SDK](https://github.com/fzakaria/rewindvm/tree/main/sdk): `always` for what
+must hold every time, `sometimes` for what some run must reach, and marks
+for each test's start and result. When schedule 0 writes such marks, check
+adds the `sdk` property by itself, and the app shows a failed assertion as
+a red mark above the track.
+
+A property can also be a program on this machine. Check gives it the run in
+`$REWIND_RUN`, and the program exits 0 when the run is correct and 1 when it
+is not, with the reason on its first line. It can read the run with `rewind
+log`, `rewind events --json` and `rewind cat`. This one checks that `bank`'s
+deposits add up:
+
+```console
+$ cat adds-up.sh
+#!/bin/sh
+# The deposits add up: bank prints its balance and what it expected.
+line=$(rewind log "$REWIND_RUN" | grep "^balance ")
+test "$line" = "balance 400, expected 400" && exit 0
+echo "$line"
+exit 1
+```
+
+```console
+$ rewind check --epoch 1790985600 --property script=./adds-up.sh github:fzakaria/rewindvm#bank | grep -E 'decides it|failing run violates adds-up'
+rewind: packing 62 store paths for bank-0.1.0
+step 3258 decides it: a reschedule there makes the run violate adds-up, sdk
+failing run violates adds-up: balance 380, expected 400
+```
+
+`--properties` reads properties from a file, one a line, so a repository
+can keep them beside its tests. A script's path in the file is relative to
+the file's directory:
+
+```console
+$ cat rewind.properties
+# What a correct bank run is.
+no-crash
+script=adds-up.sh
+
+$ rewind check --epoch 1790985600 --properties rewind.properties github:fzakaria/rewindvm#bank | grep 'decides it'
+step 3258 decides it: a reschedule there makes the run violate adds-up, sdk
 ```
 
 ## Count the schedules that fail from a step
@@ -537,51 +593,13 @@ with or open its run:
 
 ![The app after Check from here at step 5080 of the passing run: a card counting how the 16 schedules ended, a cell per schedule, the first picked with its run and Compare and Open](../site/img/app-check.png)
 
-## Judge runs with a script
-
-A property can be a program on this machine, given the run in
-`$REWIND_RUN`: exit 0 when the run is correct, 1 when it is not, with the
-reason on its first line. It reads the run with `rewind log`, `rewind
-events --json` and `rewind cat`. For `bank`, the deposits add up:
-
-```console
-$ cat adds-up.sh
-#!/bin/sh
-# The deposits add up: bank prints its balance and what it expected.
-line=$(rewind log "$REWIND_RUN" | grep "^balance ")
-test "$line" = "balance 400, expected 400" && exit 0
-echo "$line"
-exit 1
-```
-
-```console
-$ rewind check --epoch 1790985600 --property script=./adds-up.sh github:fzakaria/rewindvm#bank | grep -E 'decides it|failing run violates adds-up'
-rewind: packing 62 store paths for bank-0.1.0
-step 3258 decides it: a reschedule there makes the run violate adds-up, sdk
-failing run violates adds-up: balance 380, expected 400
-```
-
-`--properties` reads them from a file, one a line, so a repository keeps
-its properties beside its tests; a script's path is taken from the file's
-directory:
-
-```console
-$ cat rewind.properties
-# What a correct bank run is.
-no-crash
-script=adds-up.sh
-
-$ rewind check --epoch 1790985600 --properties rewind.properties github:fzakaria/rewindvm#bank | grep 'decides it'
-step 3258 decides it: a reschedule there makes the run violate adds-up, sdk
-```
-
 ## Try other seeds from a step
 
-A fork keeps its parent's randomness unless told otherwise. `rewind fork
---seed` reseeds the VM's randomness at the fork's step, and `check --run
---seeds` tries several, each a fork of the run reseeded at
-`--schedule-from`, beside the run's own. `hash-order`'s test depends on a
-`HashSet`'s order, which Rust draws from that randomness:
+A fork keeps its parent's randomness unless you reseed it. `rewind fork
+--seed` reseeds the VM's randomness at the fork's step. `check --run
+--seeds` tries the run's own seed and several others, each a fork of the
+run reseeded at `--schedule-from`. `hash-order`'s test depends on the order
+of a Rust `HashSet`, which Rust draws from that randomness:
 
 ```console
 $ rewind nix -q --epoch 1790985600 --name hash-order github:fzakaria/rewindvm#hash-order
@@ -608,7 +626,7 @@ zoom the timeline. The ? key lists them all:
 
 ```console
 $ rewind export f0572500 --replayable -o crash.rwd
-rewind: wrote crash.rwd (201.3 MB)
+rewind: wrote crash.rwd (204.3 MB)
 
 $ REWIND_HOME=elsewhere rewind import crash.rwd
 f0572500bc597078  exited:2          5145 steps  mylib-0.3.0
@@ -655,7 +673,7 @@ $ nix shell nixpkgs#pkgsStatic.stdenv.cc -c x86_64-unknown-linux-musl-cc -static
 
 ```console
 $ rewind run --root spin --timeout 5 --name spin -- /bin/spin
-rewind: run d155848566e5177b timed-out after 309 steps, 0.002s virtual, 5.000s wall (timed out computing without exits for 4.1s, in user space in main+15 (spin.c:2), process 34 (spin))
+rewind: run d887cc181cc8a557 timed-out after 309 steps, 0.002s virtual, 5.003s wall (timed out computing without exits for 2.7s, in user space in main+11 (spin.c:2), process 34 (spin))
 ```
 
 A run that timed out while still making exits was slow rather than stuck, and
@@ -665,7 +683,7 @@ way. `--status timed-out` lists such runs:
 
 ```console
 $ rewind ls --status timed-out
-d155848566e5177b  timed-out          309 steps  spin
+d887cc181cc8a557  timed-out          309 steps  spin
 ```
 
 ## Keep the run directory tidy

@@ -1,20 +1,34 @@
-# Tutorial: say what a correct run is
+# Tutorial: property-based testing
 
-`rewind check` tries a job under many thread schedules and looks for one
-that ends differently from schedule 0. This tutorial tells it what a correct
-run is instead: properties it judges every run by, assertions the program
-makes about itself, and seeds that vary the program's randomness as well as
-its schedule. It uses three small examples from
-[examples](https://github.com/fzakaria/rewindvm/tree/main/examples) and the
-install from the [Nix tutorial](tutorial-nix.md).
+By default `rewind check` judges a run by how it ends. It runs the job
+under many thread schedules and calls a schedule failing when it ends
+differently from schedule 0, the run with nothing perturbed: another exit
+status, a signal, or an output with another hash. A test that exits 0 on
+schedule 0 and 1 on schedule 5 is the bug the [Nix tutorial](tutorial-nix.md)
+finds.
 
-## A bug on schedule 0
+You can also state properties that every run must have, and check judges
+each schedule by them. A property can be one of Rewind's built-in checks on
+the files and processes a run touched, an assertion the program makes about
+itself with the Rewind SDK, or a script of your own. Check can also vary the
+program's randomness with seeds, as well as its schedule.
 
-`config-reload` rewrites its config in place, truncating it and writing its
-two lines one at a time, while another process rereads it. Its own check
-fails only when a read lands between the truncate and the last write.
-`atomic-replace` judges what the program did rather than how it ended, so it
-finds the bug on schedule 0, with no search:
+The examples are three small programs from
+[examples](https://github.com/fzakaria/rewindvm/tree/main/examples):
+`config-reload`, `bank` and `hash-order`. Install Rewind as the
+[Nix tutorial](tutorial-nix.md) does.
+
+## Catch a bug on the first run
+
+`config-reload` rewrites its config file in place: it truncates the file,
+then writes the two lines one at a time. Another process rereads the file
+meanwhile. The program's own test fails only when a read lands between the
+truncate and the last write, which few schedules do.
+
+The `atomic-replace` property fails a run that truncates a file in place,
+where it should write a new file and rename it over the old one. The
+property looks at what the program did, not at how the run ended, so
+schedule 0 already violates it and check finds the bug with no search:
 
 ```console
 $ rewind check --epoch 1790985600 --schedules 8 --property 'atomic-replace=*.conf' github:fzakaria/rewindvm#config-reload
@@ -27,10 +41,11 @@ every schedule violated a property, as schedule 0 did
 open it at the step: rewind open d83eda44b1eee197 3238
 ```
 
-The same file has a property for the failure itself. The VM's kernel records
-an open for reading only when some process has the file open for writing,
-the moment a reader can see it half written, and
-`no-read-while-written` fails a run where that happens:
+`atomic-replace` flags the unsafe write whether or not a reader saw the
+half-written file. `no-read-while-written` flags the reader: it fails a run
+in which a process opens the file for reading while another process has it
+open for writing. Only some schedules do that, so check searches for one and
+narrows it to the step that decides it:
 
 ```console
 $ rewind check --epoch 1790985600 --property 'no-read-while-written=*.conf' github:fzakaria/rewindvm#config-reload | grep -E 'decides it|failing run'
@@ -38,16 +53,30 @@ step 3274 decides it: a reschedule there makes the run violate no-read-while-wri
 failing run violates no-read-while-written: step 3285: process 140 (config) opened /build/config-reload/app.conf for reading while process 139 (config), which opened it for writing at step 3274, had not closed it
 ```
 
-`rewind check --help` lists the others: `no-crash` for a child that died of
-SIGSEGV while a retry hid it, `no-orphans` for a process left running,
-`single-writer` for two processes writing one file at once, `writes-within`
-for a test writing outside its directory, `junit` for a test runner's
-reports, and `script` for a program of your own.
+`--property` replaces the default, and you can repeat it to judge runs by
+several properties. Rewind includes these:
 
-## Assertions from inside the program
+| Property                     | A run violates it when                                                 |
+| ---------------------------- | ---------------------------------------------------------------------- |
+| `same-outcome`               | it ends differently from schedule 0; the default                       |
+| `exit-zero`                  | the job does not exit 0 with every output made                         |
+| `no-crash`                   | a process dies of a signal such as SIGSEGV, even if a retry hid it     |
+| `no-orphans`                 | a process the job started is still running when the job exits          |
+| `single-writer=GLOB`         | two processes have a matching file open for writing at once            |
+| `atomic-replace=GLOB`        | a matching file the run wrote is truncated in place                    |
+| `no-read-while-written=GLOB` | a matching file is opened for reading while another process writes it  |
+| `writes-within=DIR:DIR`      | the job writes outside these directories                               |
+| `sdk`                        | an assertion made with the Rewind SDK fails                            |
+| `junit=GLOB`                 | a test that passed on schedule 0 fails, by the job's JUnit XML reports |
+| `script=PATH`                | a program of yours exits 1                                             |
 
-`bank` has two threads deposit into one balance without a lock. It includes
-`rewind.h`, the Rewind SDK's header for C, and says two things about itself:
+`rewind check --help` describes each in full.
+
+## Assert from inside the program
+
+`bank` has two threads deposit into one balance without a lock, so one
+deposit can overwrite another. It includes `rewind.h`, the C header of the
+Rewind SDK, and makes two assertions:
 
 ```c
 /* Another teller stored between this one's read and store. */
@@ -57,9 +86,15 @@ REWIND_ALWAYS(balance == expected, "balance-adds-up", "balance %ld, expected %ld
 	      expected);
 ```
 
-`always` must hold every time. `sometimes` must be true in some run: it
-checks the search, not the program. Checked under schedule 0 alone, `bank`
-passes, and check says why that means little:
+`REWIND_ALWAYS` must be true every time the program reaches it. A run where
+it is false violates the `sdk` property, and check prints the message.
+
+`REWIND_SOMETIMES` tests the search, not the program: its condition must be
+true in at least one of the runs check tries. It never fails a run. Here it
+asks whether any run made two deposits overlap, the only way to lose one.
+
+Under schedule 0 alone, `bank` passes. That is one run, the deposits never
+overlapped in it, and check reports the `sometimes` that never came true:
 
 ```console
 $ rewind check --epoch 1790985600 --schedules 0 github:fzakaria/rewindvm#bank
@@ -69,8 +104,8 @@ never true in any run: sometimes "deposits-overlapped"
 every property held under the one schedule tried
 ```
 
-No run made two deposits overlap, so no run could lose one. With its 64
-schedules, check finds the run that does:
+With its default 64 schedules, check makes the deposits overlap and finds a
+run that loses one:
 
 ```console
 $ rewind check --epoch 1790985600 github:fzakaria/rewindvm#bank | grep -E 'decides it|passing:|failing:|failing run violates sdk'
@@ -80,17 +115,19 @@ failing: run 1cabfbed15ad58ec, schedule 1 over steps 3258..3259
 failing run violates sdk: step 3298: always "balance-adds-up" failed: balance 380, expected 400
 ```
 
-The SDK is a line written to `/dev/rewind` per call, and outside Rewind every
-call does nothing, so the calls can stay in the program.
-[sdk](https://github.com/fzakaria/rewindvm/tree/main/sdk) has it for C, Rust,
-Go, Python with a pytest plugin, Java with a JUnit extension, and shell.
+Outside Rewind the SDK's calls do nothing, so they can stay in the program.
+The [SDK](https://github.com/fzakaria/rewindvm/tree/main/sdk) has a small
+library for C, Rust, Go, Python, Java and shell, and a pytest plugin and a
+JUnit 5 extension that mark each test's result.
 
 ## Vary the randomness
 
-`hash-order` tests a function that collects tags through a Rust `HashSet`,
-and expects them in one order. Rust seeds each `HashSet` from the system's
-randomness, which in the VM is a function of `--seed`, so no schedule
-changes the order and every one passes. `--seeds` tries other seeds:
+`hash-order` tests a function that collects tags in a Rust `HashSet` and
+expects them back in a fixed order. A `HashSet`'s order depends on a random
+key that Rust draws from the system when it makes the set. In the VM, the
+system's randomness comes from the run's `--seed`, so the key is the same on
+every schedule, every schedule passes, and no number of schedules finds the
+bug. `--seeds 8` runs the job under 8 seeds:
 
 ```console
 $ rewind check --epoch 1790985600 --seeds 8 --schedules 0 github:fzakaria/rewindvm#hash-order | grep -E '^seed|decides it|passing:|failing:'
@@ -102,9 +139,9 @@ passing: run 4274b5643f737d4b, seed 0, schedule 0
 failing: run b77e3df778b90b00, seed 1, schedule 0
 ```
 
-Seed 1 orders the tags the other way. Every seed is tried
-unperturbed and then under `--schedules` perturbed schedules, so one search
-covers both.
+Seed 1 puts the tags in the other order and the test fails.
+With `--schedules` above 0, check also perturbs the schedule under each
+seed, so one search varies the randomness and the timing together.
 
 ## In the desktop app
 
@@ -116,16 +153,17 @@ $ rewind open 1cabfbed 3298 --compare 21cf5e28
 
 ![The app zoomed in around step 3298 of the failing bank run: a red mark above the track where always "balance-adds-up" failed, the test's span under the track in red, and the event card naming it](../site/img/app-assertion.png)
 
-The red mark above the track is the assertion that broke, and pointing at it
-says what broke. The event card names it, and Jump to failure goes to it.
-`bank` marks its test with the SDK too, as the pytest and JUnit plugins mark
-theirs, and the strip under the track has a span per test, green passed and
-red failed.
+The red mark above the track is the failed assertion; hover over it to see
+its message. The event card names it too, and Jump to failure goes to it.
+`bank` also marks its test's start and result with the SDK, as the pytest
+and JUnit plugins do for each test. The strip under the track has a span per
+test: green if it passed, red if it failed.
 
 The chevron beside Fork from here also offers Check from here with 8 seeds
-of 8 schedules, each seed after the run's own reseeding a fork of it at the
-playhead. From the start of `hash-order`'s passing run, a row of cells per
-seed, blue where the seed made the test fail:
+of 8 schedules. It tries 8 schedules under the run's own seed, and 8 under
+each of 7 other seeds, as forks reseeded at the playhead. At the start of
+`hash-order`'s passing run it shows a row of cells per seed, blue where the
+test failed:
 
 ![The app after Check from here with 8 seeds of 8 schedules at the start of hash-order's passing run: a card with a row of cells per seed, the seeds that made the test fail in blue](../site/img/app-seeds.png)
 

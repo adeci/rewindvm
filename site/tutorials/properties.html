@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <title>Tutorial: say what a correct run is: Rewind VM</title>
+    <title>Tutorial: property-based testing: Rewind VM</title>
     <meta
       name="description"
-      content="Tell rewind check what a correct run is: properties it judges every run by, assertions a program makes with the Rewind SDK, and seeds that vary a program's randomness as well as its schedule."
+      content="Property-based testing with rewind check: properties every run must have, assertions a program makes with the Rewind SDK, and seeds that vary a program's randomness as well as its schedule."
     />
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -43,23 +43,32 @@
          which is the file to edit. -->
     <main class="wrap article">
       <p class="eyebrow">Tutorial &middot; Properties</p>
-      <h1>Tutorial: say what a correct run is</h1>
+      <h1>Tutorial: property-based testing</h1>
       <p>
-        <code>rewind check</code> tries a job under many thread schedules and looks for one that
-        ends differently from schedule 0. This tutorial tells it what a correct run is instead:
-        properties it judges every run by, assertions the program makes about itself, and seeds that
-        vary the program's randomness as well as its schedule. It uses three small examples from
-        <a href="https://github.com/fzakaria/rewindvm/tree/main/examples">examples</a> and the
-        install from the <a href="nix.html">Nix tutorial</a>.
+        By default <code>rewind check</code> judges a run by how it ends. It runs the job under many
+        thread schedules and calls a schedule failing when it ends differently from schedule 0, the
+        run with nothing perturbed: another exit status, a signal, or an output with another hash. A
+        test that exits 0 on schedule 0 and 1 on schedule 5 is the bug the
+        <a href="nix.html">Nix tutorial</a> finds.
+      </p>
+      <p>
+        You can also state properties that every run must have, and check judges each schedule by
+        them. A property can be one of Rewind's built-in checks on the files and processes a run
+        touched, an assertion the program makes about itself with the Rewind SDK, or a script of
+        your own. Check can also vary the program's randomness with seeds, as well as its schedule.
+      </p>
+      <p>
+        The examples are three small programs from
+        <a href="https://github.com/fzakaria/rewindvm/tree/main/examples">examples</a>:
+        <code>config-reload</code>, <code>bank</code> and <code>hash-order</code>. Install Rewind as
+        the <a href="nix.html">Nix tutorial</a> does.
       </p>
 
       <nav class="toc" aria-label="Steps">
         <p class="toc-head">Steps</p>
         <ol>
-          <li><a href="#a-bug-on-schedule-0">A bug on schedule 0</a></li>
-          <li>
-            <a href="#assertions-from-inside-the-program">Assertions from inside the program</a>
-          </li>
+          <li><a href="#catch-a-bug-on-the-first-run">Catch a bug on the first run</a></li>
+          <li><a href="#assert-from-inside-the-program">Assert from inside the program</a></li>
           <li><a href="#vary-the-randomness">Vary the randomness</a></li>
           <li><a href="#in-the-desktop-app">In the desktop app</a></li>
           <li><a href="#what-to-read-next">What to read next</a></li>
@@ -67,15 +76,20 @@
       </nav>
 
       <section class="step">
-        <h2 id="a-bug-on-schedule-0">
-          <a class="anchor" href="#a-bug-on-schedule-0">A bug on schedule 0</a>
+        <h2 id="catch-a-bug-on-the-first-run">
+          <a class="anchor" href="#catch-a-bug-on-the-first-run">Catch a bug on the first run</a>
         </h2>
         <p>
-          <code>config-reload</code> rewrites its config in place, truncating it and writing its two
-          lines one at a time, while another process rereads it. Its own check fails only when a
-          read lands between the truncate and the last write. <code>atomic-replace</code> judges
-          what the program did rather than how it ended, so it finds the bug on schedule 0, with no
-          search:
+          <code>config-reload</code> rewrites its config file in place: it truncates the file, then
+          writes the two lines one at a time. Another process rereads the file meanwhile. The
+          program's own test fails only when a read lands between the truncate and the last write,
+          which few schedules do.
+        </p>
+        <p>
+          The <code>atomic-replace</code> property fails a run that truncates a file in place, where
+          it should write a new file and rename it over the old one. The property looks at what the
+          program did, not at how the run ended, so schedule 0 already violates it and check finds
+          the bug with no search:
         </p>
         <pre
           class="console"
@@ -88,9 +102,11 @@ schedule   8: exited:2       3778 steps    run 5ed6470d27365add  violates atomic
 every schedule violated a property, as schedule 0 did
 open it at the step: rewind open d83eda44b1eee197 3238</code></pre>
         <p>
-          The same file has a property for the failure itself. The VM's kernel records an open for
-          reading only when some process has the file open for writing, the moment a reader can see
-          it half written, and <code>no-read-while-written</code> fails a run where that happens:
+          <code>atomic-replace</code> flags the unsafe write whether or not a reader saw the
+          half-written file. <code>no-read-while-written</code> flags the reader: it fails a run in
+          which a process opens the file for reading while another process has it open for writing.
+          Only some schedules do that, so check searches for one and narrows it to the step that
+          decides it:
         </p>
         <pre
           class="console"
@@ -98,34 +114,98 @@ open it at the step: rewind open d83eda44b1eee197 3238</code></pre>
 step 3274 decides it: a reschedule there makes the run violate no-read-while-written
 failing run violates no-read-while-written: step 3285: process 140 (config) opened /build/config-reload/app.conf for reading while process 139 (config), which opened it for writing at step 3274, had not closed it</code></pre>
         <p>
-          <code>rewind check --help</code> lists the others: <code>no-crash</code> for a child that
-          died of SIGSEGV while a retry hid it, <code>no-orphans</code> for a process left running,
-          <code>single-writer</code> for two processes writing one file at once,
-          <code>writes-within</code> for a test writing outside its directory,
-          <code>junit</code> for a test runner's reports, and <code>script</code> for a program of
-          your own.
+          <code>--property</code> replaces the default, and you can repeat it to judge runs by
+          several properties. Rewind includes these:
         </p>
+        <div class="table">
+          <table>
+            <thead>
+              <tr>
+                <th>Property</th>
+                <th>A run violates it when</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>same-outcome</code></td>
+                <td>it ends differently from schedule 0; the default</td>
+              </tr>
+              <tr>
+                <td><code>exit-zero</code></td>
+                <td>the job does not exit 0 with every output made</td>
+              </tr>
+              <tr>
+                <td><code>no-crash</code></td>
+                <td>a process dies of a signal such as SIGSEGV, even if a retry hid it</td>
+              </tr>
+              <tr>
+                <td><code>no-orphans</code></td>
+                <td>a process the job started is still running when the job exits</td>
+              </tr>
+              <tr>
+                <td><code>single-writer=GLOB</code></td>
+                <td>two processes have a matching file open for writing at once</td>
+              </tr>
+              <tr>
+                <td><code>atomic-replace=GLOB</code></td>
+                <td>a matching file the run wrote is truncated in place</td>
+              </tr>
+              <tr>
+                <td><code>no-read-while-written=GLOB</code></td>
+                <td>a matching file is opened for reading while another process writes it</td>
+              </tr>
+              <tr>
+                <td><code>writes-within=DIR:DIR</code></td>
+                <td>the job writes outside these directories</td>
+              </tr>
+              <tr>
+                <td><code>sdk</code></td>
+                <td>an assertion made with the Rewind SDK fails</td>
+              </tr>
+              <tr>
+                <td><code>junit=GLOB</code></td>
+                <td>a test that passed on schedule 0 fails, by the job's JUnit XML reports</td>
+              </tr>
+              <tr>
+                <td><code>script=PATH</code></td>
+                <td>a program of yours exits 1</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p><code>rewind check --help</code> describes each in full.</p>
       </section>
 
       <section class="step">
-        <h2 id="assertions-from-inside-the-program">
-          <a class="anchor" href="#assertions-from-inside-the-program"
-            >Assertions from inside the program</a
+        <h2 id="assert-from-inside-the-program">
+          <a class="anchor" href="#assert-from-inside-the-program"
+            >Assert from inside the program</a
           >
         </h2>
         <p>
-          <code>bank</code> has two threads deposit into one balance without a lock. It includes
-          <code>rewind.h</code>, the Rewind SDK's header for C, and says two things about itself:
+          <code>bank</code> has two threads deposit into one balance without a lock, so one deposit
+          can overwrite another. It includes <code>rewind.h</code>, the C header of the Rewind SDK,
+          and makes two assertions:
         </p>
-        <pre class="console"><code>/* Another teller stored between this one's read and store. */
-REWIND_SOMETIMES(balance != seen, "deposits-overlapped");
-...
-REWIND_ALWAYS(balance == expected, "balance-adds-up", "balance %ld, expected %ld", balance,
+        <pre
+          class="console source"
+        ><code><span class="comment">/* Another teller stored between this one's read and store. */</span>
+<span class="macro">REWIND_SOMETIMES</span>(balance != seen, <span class="string">"deposits-overlapped"</span>);
+<span class="elide">...</span>
+<span class="macro">REWIND_ALWAYS</span>(balance == expected, <span class="string">"balance-adds-up"</span>, <span class="string">"balance %ld, expected %ld"</span>, balance,
 	      expected);</code></pre>
         <p>
-          <code>always</code> must hold every time. <code>sometimes</code> must be true in some run:
-          it checks the search, not the program. Checked under schedule 0 alone,
-          <code>bank</code> passes, and check says why that means little:
+          <code>REWIND_ALWAYS</code> must be true every time the program reaches it. A run where it
+          is false violates the <code>sdk</code> property, and check prints the message.
+        </p>
+        <p>
+          <code>REWIND_SOMETIMES</code> tests the search, not the program: its condition must be
+          true in at least one of the runs check tries. It never fails a run. Here it asks whether
+          any run made two deposits overlap, the only way to lose one.
+        </p>
+        <p>
+          Under schedule 0 alone, <code>bank</code> passes. That is one run, the deposits never
+          overlapped in it, and check reports the <code>sometimes</code> that never came true:
         </p>
         <pre
           class="console"
@@ -135,8 +215,8 @@ schedule   0: exited:0       4558 steps  e9eff8d15d00  run 21cf5e28fa804c35  hol
 never true in any run: sometimes "deposits-overlapped"
 every property held under the one schedule tried</code></pre>
         <p>
-          No run made two deposits overlap, so no run could lose one. With its 64 schedules, check
-          finds the run that does:
+          With its default 64 schedules, check makes the deposits overlap and finds a run that loses
+          one:
         </p>
         <pre
           class="console"
@@ -146,10 +226,10 @@ passing: run 21cf5e28fa804c35, schedule 0
 failing: run 1cabfbed15ad58ec, schedule 1 over steps 3258..3259
 failing run violates sdk: step 3298: always "balance-adds-up" failed: balance 380, expected 400</code></pre>
         <p>
-          The SDK is a line written to <code>/dev/rewind</code> per call, and outside Rewind every
-          call does nothing, so the calls can stay in the program.
-          <a href="https://github.com/fzakaria/rewindvm/tree/main/sdk">sdk</a> has it for C, Rust,
-          Go, Python with a pytest plugin, Java with a JUnit extension, and shell.
+          Outside Rewind the SDK's calls do nothing, so they can stay in the program. The
+          <a href="https://github.com/fzakaria/rewindvm/tree/main/sdk">SDK</a> has a small library
+          for C, Rust, Go, Python, Java and shell, and a pytest plugin and a JUnit 5 extension that
+          mark each test's result.
         </p>
       </section>
 
@@ -158,11 +238,12 @@ failing run violates sdk: step 3298: always "balance-adds-up" failed: balance 38
           <a class="anchor" href="#vary-the-randomness">Vary the randomness</a>
         </h2>
         <p>
-          <code>hash-order</code> tests a function that collects tags through a Rust
-          <code>HashSet</code>, and expects them in one order. Rust seeds each
-          <code>HashSet</code> from the system's randomness, which in the VM is a function of
-          <code>--seed</code>, so no schedule changes the order and every one passes.
-          <code>--seeds</code> tries other seeds:
+          <code>hash-order</code> tests a function that collects tags in a Rust
+          <code>HashSet</code> and expects them back in a fixed order. A <code>HashSet</code>'s
+          order depends on a random key that Rust draws from the system when it makes the set. In
+          the VM, the system's randomness comes from the run's <code>--seed</code>, so the key is
+          the same on every schedule, every schedule passes, and no number of schedules finds the
+          bug. <code>--seeds 8</code> runs the job under 8 seeds:
         </p>
         <pre
           class="console"
@@ -174,8 +255,9 @@ seed 1 decides it: unperturbed, seed 0 passes and seed 1 fails
 passing: run 4274b5643f737d4b, seed 0, schedule 0
 failing: run b77e3df778b90b00, seed 1, schedule 0</code></pre>
         <p>
-          Seed 1 orders the tags the other way. Every seed is tried unperturbed and then under
-          <code>--schedules</code> perturbed schedules, so one search covers both.
+          Seed 1 puts the tags in the other order and the test fails. With
+          <code>--schedules</code> above 0, check also perturbs the schedule under each seed, so one
+          search varies the randomness and the timing together.
         </p>
       </section>
 
@@ -205,16 +287,16 @@ failing: run b77e3df778b90b00, seed 1, schedule 0</code></pre>
           </figcaption>
         </figure>
         <p>
-          The red mark above the track is the assertion that broke, and pointing at it says what
-          broke. The event card names it, and Jump to failure goes to it. <code>bank</code> marks
-          its test with the SDK too, as the pytest and JUnit plugins mark theirs, and the strip
-          under the track has a span per test, green passed and red failed.
+          The red mark above the track is the failed assertion; hover over it to see its message.
+          The event card names it too, and Jump to failure goes to it. <code>bank</code> also marks
+          its test's start and result with the SDK, as the pytest and JUnit plugins do for each
+          test. The strip under the track has a span per test: green if it passed, red if it failed.
         </p>
         <p>
-          The chevron beside Fork from here also offers Check from here with 8 seeds of 8 schedules,
-          each seed after the run's own reseeding a fork of it at the playhead. From the start of
-          <code>hash-order</code>'s passing run, a row of cells per seed, blue where the seed made
-          the test fail:
+          The chevron beside Fork from here also offers Check from here with 8 seeds of 8 schedules.
+          It tries 8 schedules under the run's own seed, and 8 under each of 7 other seeds, as forks
+          reseeded at the playhead. At the start of <code>hash-order</code>'s passing run it shows a
+          row of cells per seed, blue where the test failed:
         </p>
         <figure class="shot">
           <picture>
