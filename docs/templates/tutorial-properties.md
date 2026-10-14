@@ -77,8 +77,10 @@ deposit can overwrite another. It includes `rewind.h`, the C header of the
 Rewind SDK, and makes two assertions:
 
 ```c
-/* Another teller stored between this one's read and store. */
-REWIND_SOMETIMES(balance != seen, "deposits-overlapped");
+/* Another teller is mid-deposit: the case a lock around the read and
+ * store has to handle, and the only way to lose a deposit without one. */
+int others = atomic_fetch_add(&depositing, 1);
+REWIND_SOMETIMES(others > 0, "deposits-concurrent");
 ...
 REWIND_ALWAYS(balance == expected, "balance-adds-up", "balance %ld, expected %ld", balance,
 	      expected);
@@ -89,33 +91,66 @@ it is false violates the `sdk` property, and check prints the message.
 
 `REWIND_SOMETIMES` tests the search, not the program: its condition must be
 true in at least one of the runs check tries. It never fails a run. Here it
-asks whether any run made two deposits overlap, the only way to lose one.
+asks whether any run had both tellers mid-deposit at once.
 
-Under schedule 0 alone, `bank` passes. That is one run, the deposits never
-overlapped in it, and check reports the `sometimes` that never came true:
+Under schedule 0 alone, `bank` passes. That is one run, one teller always
+finished its deposit before the other started, and check reports the
+`sometimes` that never came true:
 
 ```console run name=alone show=-3:
 $ rewind check --epoch {{epoch}} --schedules 0 {{repo}}#bank
 ```
 
-<!-- assert: grep -q '^never true in any run: sometimes "deposits-overlapped"$' {{out:alone}} && grep -q '^every property held under the one schedule tried$' {{out:alone}} -->
+<!-- assert: grep -q '^never true in any run: sometimes "deposits-concurrent"$' {{out:alone}} && grep -q '^every property held under the one schedule tried$' {{out:alone}} -->
 
-With its default 64 schedules, check makes the deposits overlap and finds a
-run that loses one:
+With its default 64 schedules, check puts both tellers mid-deposit and finds
+a run that loses a deposit:
 
 ```console run name=bank
-$ rewind check --epoch {{epoch}} {{repo}}#bank | grep -E 'decides it|passing:|failing:|failing run violates sdk'
+$ rewind check --epoch {{epoch}} {{repo}}#bank | grep -E 'decides it|passing:|failing:|failing run violates sdk|^true in'
 ```
 
 <!-- capture bank_passing: passing: run (\w+) -->
 <!-- capture bank_failing: failing: run (\w+) -->
 <!-- capture assert_step: failing run violates sdk: step (\d+): -->
 <!-- assert: grep -qE 'failing run violates sdk: step [0-9]+: always "balance-adds-up" failed: balance [0-9]+, expected 400' {{out:bank}} -->
+<!-- assert: grep -qE '^true in [1-9][0-9]* of [0-9]+ runs that checked it: sometimes "deposits-concurrent"$' {{out:bank}} -->
 
 Outside Rewind the SDK's calls do nothing, so they can stay in the program.
 The [SDK](https://github.com/fzakaria/rewindvm/tree/main/sdk) has a small
 library for C, Rust, Go, Python, Java and shell, and a pytest plugin and a
 JUnit 5 extension that mark each test's result.
+
+## Check the fix
+
+Clone the repository to edit `bank`:
+
+```console run hide
+$ git clone https://github.com/fzakaria/rewindvm
+$ cd rewindvm
+```
+
+In `examples/bank/bank.c`, hold a mutex from each deposit's read of the
+balance to its store:
+
+<!-- diff: bank-fix.patch -->
+<!-- run: patch -p1 < {{dir}}/bank-fix.patch -->
+
+```console run name=fixed
+$ rewind check --epoch {{epoch}} .#bank | grep -E '^true in|^every property'
+```
+
+<!-- capture fixed_hits: true in (\d+) of -->
+<!-- assert: grep -qE '^true in [1-9][0-9]* of 65 runs that checked it: sometimes "deposits-concurrent"$' {{out:fixed}} && grep -q '^every property held under all 65 schedules$' {{out:fixed}} -->
+
+The balance adds up in all 65 runs, and in {{fixed_hits}} of them both
+tellers were mid-deposit at once, so the search made them contend for the
+lock and the lock held. Without the `sometimes`, a clean search could also
+mean the tellers never overlapped.
+
+The `sometimes` marks the risky state rather than the bug. One true only
+when a deposit is lost would never come true once the lock is in, and
+check would report it as never reached on a correct program.
 
 ## Vary the randomness
 

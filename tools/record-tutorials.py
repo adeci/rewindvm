@@ -60,9 +60,11 @@ the story differently is noticed rather than published.
 
 The pages name workloads by GitHub, as `github:fzakaria/rewindvm#bank`.
 With --local, the commands build them from the recorded commit instead,
+and `git clone https://github.com/fzakaria/rewindvm` clones that commit,
 while the page still shows GitHub: a page about an example that is not
 pushed yet can be recorded, and the runs are the ones a reader's build of
-the same source makes.
+the same source makes. Such a clone prints what a local clone does, so its
+block should be `hide`.
 """
 
 import argparse
@@ -83,6 +85,9 @@ TEMPLATES = REPO / "docs" / "templates"
 
 # The repository as the pages name it.
 GITHUB_FLAKE = re.compile(r"github:fzakaria/rewindvm(\?[^#\s'\"]*)?")
+
+# A page's clone of the repository, and the directory it clones into.
+GITHUB_CLONE = re.compile(r"git clone https://github\.com/fzakaria/rewindvm(?: (\S+))?")
 
 # The flake outputs a recording runs: the command and the app, the
 # release tarballs the container tutorial installs, and the guest every
@@ -141,11 +146,11 @@ class Recording:
     """One tutorial being recorded: its values, its shell's directory and
     environment, and the page so far."""
 
-    def __init__(self, name, work, home, paths, local=None):
+    def __init__(self, name, work, home, paths, commit=None):
         self.name = name
-        # The flake the commands build `github:fzakaria/rewindvm` from
-        # instead, with --local.
-        self.local = local
+        # The commit the commands build and clone `github:fzakaria/rewindvm`
+        # from instead, with --local.
+        self.commit = commit
         self.work = work
         self.cwd = work
         self.values = {
@@ -199,14 +204,21 @@ class Recording:
         return VALUE.sub(one, text)
 
     def localize(self, command):
-        """`command` with the repository's GitHub flake replaced by the
-        recorded commit, with --local, keeping any query it has."""
-        if self.local is None:
+        """`command` with the repository's GitHub flake and clone replaced
+        by the recorded commit, with --local, keeping any query it has."""
+        if self.commit is None:
             return command
+
+        # A clone of the repository checks out the recorded commit.
+        if m := GITHUB_CLONE.fullmatch(command):
+            into = shlex.quote(m.group(1) or "rewindvm")
+            return f"git clone -q {shlex.quote(str(REPO))} {into} && git -C {into} checkout -q {self.commit}"
+
+        local = f"git+file://{REPO}?rev={self.commit}"
 
         def one(m):
             query = m.group(1)
-            return self.local + ("&" + query[1:] if query else "")
+            return local + ("&" + query[1:] if query else "")
 
         return GITHUB_FLAKE.sub(one, command)
 
@@ -459,10 +471,10 @@ def check_guest(home, paths):
                 )
 
 
-def record(name, work, home, paths, local=None):
+def record(name, work, home, paths, commit=None):
     """Records one tutorial and writes its page."""
     template = TEMPLATES / f"tutorial-{name}.md"
-    rec = Recording(name, work, home, paths, local)
+    rec = Recording(name, work, home, paths, commit)
     lines = template.read_text().splitlines()
     page = []
     i = 0
@@ -542,8 +554,7 @@ def main():
         work = args.work / name
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
-        local = f"git+file://{REPO}?rev={commit}" if args.local else None
-        record(name, work, home, paths, local)
+        record(name, work, home, paths, commit if args.local else None)
 
     lines = [
         "# The guest the tutorials were recorded with, by tools/record-tutorials.py.",
