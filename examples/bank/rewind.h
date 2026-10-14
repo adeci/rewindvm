@@ -10,7 +10,7 @@
  *
  *	REWIND_ALWAYS(balance == expected, "balance-conserved",
  *		      "balance=%ld expected=%ld", balance, expected);
- *	REWIND_SOMETIMES(seen != balance, "deposits-overlapped");
+ *	REWIND_SOMETIMES(others > 0, "deposits-concurrent");
  *	REWIND_UNREACHABLE("pay-after-close", "account %d", id);
  *
  * An id is a string literal without spaces. The message, a printf format

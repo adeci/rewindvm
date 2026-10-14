@@ -7,10 +7,11 @@
  *
  * rewind.h is the Rewind SDK's header, copied from sdk/c in Rewind VM's
  * repository: it tells `rewind check` that the balance must add up, and
- * that some run should make two deposits overlap, and marks the test's
- * start and result. Outside Rewind its calls do nothing.
+ * that some run should have both tellers mid-deposit at once, and marks
+ * the test's start and result. Outside Rewind its calls do nothing.
  */
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <unistd.h>
 
@@ -21,18 +22,25 @@
 
 static long balance;
 
+/* How many tellers are inside deposit. */
+static atomic_int depositing;
+
 /* The race: the balance read here is stale by the time it is stored. */
 static void deposit(int teller, long amount)
 {
+	/* Another teller is mid-deposit: the case a lock around the read and
+	 * store has to handle, and the only way to lose a deposit without one. */
+	int others = atomic_fetch_add(&depositing, 1);
+	REWIND_SOMETIMES(others > 0, "deposits-concurrent");
+
 	long seen = balance;
 	char line[64];
 	int n = snprintf(line, sizeof line, "teller %d: %ld + %ld\n", teller, seen, amount);
 
-	if (write(1, line, n) != n)
-		return;
-	/* Another teller stored between this one's read and store. */
-	REWIND_SOMETIMES(balance != seen, "deposits-overlapped");
-	balance = seen + amount;
+	if (write(1, line, n) == n) {
+		balance = seen + amount;
+	}
+	atomic_fetch_sub(&depositing, 1);
 }
 
 static void *teller(void *arg)

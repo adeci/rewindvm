@@ -43,7 +43,7 @@ store has its deposit written over. `make check` fails when the balance
 comes up short. Holding a mutex across the read and the store fixes it.
 It asserts with the Rewind SDK, through a copy of
 [`sdk/c/rewind.h`](../sdk/c/rewind.h): the balance adds up, and some run
-should have two deposits overlap.
+should have both tellers mid-deposit at once.
 
 ```console
 $ make -C bank check                       # plain, on the host

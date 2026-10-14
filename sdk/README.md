@@ -20,10 +20,13 @@ queue never holds more than its capacity.
 
 `sometimes(condition, id)` says some run should make the condition true
 here. It never fails a run. After the search, check lists each one no run
-made true. Use it to check the search itself: if you wrote a test for two
-deposits overlapping, `sometimes(deposits overlapped)` tells you whether
-any schedule made them overlap. If none did, "no failure found" says
-nothing about that case, and you need more schedules or a different test.
+made true. Use it to check the search itself, on a state that is legal but
+risky: two tellers mid-deposit at once, a read racing a cache's
+invalidation. `always` says the program handled that state, and
+`sometimes` says the search reached it. If no run did, "no failure found"
+says nothing about that case, and you need more schedules or a different
+test. Mark the risky state rather than the bug: a condition true only when
+the bug happens is never true once the bug is fixed.
 
 `unreachable(id)` says no run should get here. A run that does violates
 the `sdk` property at that step. Use it for branches that mean a bug: a

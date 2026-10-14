@@ -1,0 +1,28 @@
+--- a/examples/bank/bank.c
++++ b/examples/bank/bank.c
+@@ -25,6 +25,9 @@
+ /* How many tellers are inside deposit. */
+ static atomic_int depositing;
+ 
++/* Held from a deposit's read of the balance to its store. */
++static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
++
+ /* The race: the balance read here is stale by the time it is stored. */
+ static void deposit(int teller, long amount)
+ {
+@@ -33,6 +36,7 @@
+ 	int others = atomic_fetch_add(&depositing, 1);
+ 	REWIND_SOMETIMES(others > 0, "deposits-concurrent");
+ 
++	pthread_mutex_lock(&lock);
+ 	long seen = balance;
+ 	char line[64];
+ 	int n = snprintf(line, sizeof line, "teller %d: %ld + %ld\n", teller, seen, amount);
+@@ -40,6 +44,7 @@
+ 	if (write(1, line, n) == n) {
+ 		balance = seen + amount;
+ 	}
++	pthread_mutex_unlock(&lock);
+ 	atomic_fetch_sub(&depositing, 1);
+ }
+ 
