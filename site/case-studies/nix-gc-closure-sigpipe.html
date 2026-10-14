@@ -114,10 +114,10 @@ rewind: packing 217 store paths for nix-functional-gc-closure-2.36pre20260912_20
 ...
 1/1 main - nix-functional-tests:gc-closure FAIL             0.26s   (exit status 141 or signal 13 SIGPIPE)
 ...
-rewind: run f1584358a5e13e59 exited:1 after 33576 steps, 1.416s virtual, 5.997s wall (poweroff)
+rewind: run d6deb54e63ee7a3b exited:1 after 37507 steps, 1.436s virtual, 6.449s wall (poweroff)
 
-<span class="cmd"><span class="prompt">$</span> rewind replay f1584358</span>
-identical: 6180 events over 33576 steps</code></pre>
+<span class="cmd"><span class="prompt">$</span> rewind replay d6deb54e</span>
+identical: 9809 events over 37507 steps</code></pre>
         <p><code>input2_out</code> got the right value, and the test still died of signal 13.</p>
       </section>
 
@@ -126,20 +126,21 @@ identical: 6180 events over 33576 steps</code></pre>
         <p>The events around the failure, and the processes just before it:</p>
         <pre
           class="console"
-        ><code><span class="cmd"><span class="prompt">$</span> rewind events f1584358 --from 33313 --to 33413</span>
-     33323   359/359   fork() = 416
-     33326   416/416   fork() = 417
-     33329   416/416   fork() = 418
-     33359   418/418   execve("/nix/store/2gfxiwls9hbgwdwcy43mprchwsq36mg6-coreutils-9.11/bin/head", ["head", "-n1"])
-     33382   418/418   exit_group(head) exited:0
-     33388   417/417   SIGPIPE code=0 addr=0x0
-     33389   417/417   exit_group(bash) killed:SIGPIPE
-     33391   416/416   SIGCHLD code=1 addr=0x0
-     33392   416/416   exit_group(bash) exited:141
-     33395   359/359   SIGCHLD code=1 addr=0x0
-     33408   359/359   exit_group(bash) exited:141
+        ><code><span class="cmd"><span class="prompt">$</span> rewind events d6deb54e --from 37240 --to 37340</span>
+     37250   359/359   fork() = 416
+     37253   416/416   fork() = 417
+     37256   416/416   fork() = 418
+     37286   418/418   execve("/nix/store/2gfxiwls9hbgwdwcy43mprchwsq36mg6-coreutils-9.11/bin/head", ["head", "-n1"])
+     37309   418/418   exit_group(head) exited:0
+     37315   417/417   SIGPIPE code=0 addr=0x0
+     37316   417/417   exit_group(bash) killed:SIGPIPE
+     37318   416/416   SIGCHLD code=1 addr=0x0
+     37319   416/416   exit_group(bash) exited:141
+     37322   359/359   SIGCHLD code=1 addr=0x0
+     37335   359/359   exit_group(bash) exited:141
+     37339   358/358   close("anon_inode:[pidfd]")
 
-<span class="cmd"><span class="prompt">$</span> rewind ps f1584358 33365</span>
+<span class="cmd"><span class="prompt">$</span> rewind ps d6deb54e 37292</span>
 ...
    359       /nix/store/10dxp0qxqxxsyiljrh2kp0xqhz6arhcx-bash-5.3p15/bin/bash -x -e -u -o pipefail gc-closure.sh
    416         /nix/store/10dxp0qxqxxsyiljrh2kp0xqhz6arhcx-bash-5.3p15/bin/bash -x -e -u -o pipefail gc-closure.sh (fork)
@@ -162,29 +163,29 @@ identical: 6180 events over 33576 steps</code></pre>
         </p>
         <pre
           class="console"
-        ><code><span class="cmd"><span class="prompt">$</span> for step in 33378 33382 33388; do</span>
+        ><code><span class="cmd"><span class="prompt">$</span> for step in 37305 37309 37315; do</span>
 <span class="cmd"><span class="prompt">&gt;</span>   echo "step $step"</span>
-<span class="cmd"><span class="prompt">&gt;</span>   rewind cat f1584358 $step /proc/417/io | grep -E '^(wchar|syscw)' | sed 's/^/  417 /'</span>
-<span class="cmd"><span class="prompt">&gt;</span>   rewind cat f1584358 $step /proc/418/io | grep -E '^(wchar|syscw)' | sed 's/^/  418 /'</span>
+<span class="cmd"><span class="prompt">&gt;</span>   rewind cat d6deb54e $step /proc/417/io | grep -E '^(wchar|syscw)' | sed 's/^/  417 /'</span>
+<span class="cmd"><span class="prompt">&gt;</span>   rewind cat d6deb54e $step /proc/418/io | grep -E '^(wchar|syscw)' | sed 's/^/  418 /'</span>
 <span class="cmd"><span class="prompt">&gt;</span> done</span>
-step 33378
+step 37305
   417 wchar: 224
   417 syscw: 1
   418 wchar: 30
   418 syscw: 1
-step 33382
+step 37309
   417 wchar: 316
   417 syscw: 2
   418 wchar: 122
   418 syscw: 2
-step 33388
+step 37315
   417 wchar: 316
   417 syscw: 3
 rewind: /proc/418/io: no such file at this step</code></pre>
         <p>
-          The first write of each is its <code>bash -x</code> trace line. By 33382
+          The first write of each is its <code>bash -x</code> trace line. By 37309
           <code>printf</code> has written the first store path (92 bytes) and <code>head</code> has
-          echoed it and exited. At 33388 <code>printf</code>'s third write adds no bytes: the pipe
+          echoed it and exited. At 37315 <code>printf</code>'s third write adds no bytes: the pipe
           has no reader left.
         </p>
       </section>
@@ -218,25 +219,25 @@ rewind: /proc/418/io: no such file at this step</code></pre>
         </p>
         <pre
           class="console"
-        ><code><span class="cmd"><span class="prompt">$</span> rewind threads f1584358 --from 33357 --to 33393</span>
-     33357      33357       358/358  meson
-     33358      33358       418/418  bash
-     33359      33374       418/418  head
-     33375      33379       417/417  bash
-     33380      33380     kernel 11  ksoftirqd/0
-     33381      33382       418/418  head
-     33383      33383     kernel 11  ksoftirqd/0
-     33384      33385       359/359  bash
-     33386      33386       416/416  bash
-     33387      33387     kernel 11  ksoftirqd/0
-     33388      33389       417/417  bash
-     33390      33390     kernel 11  ksoftirqd/0
-     33391      33392       416/416  bash
-     33393      33393     kernel 11  ksoftirqd/0</code></pre>
+        ><code><span class="cmd"><span class="prompt">$</span> rewind threads d6deb54e --from 37284 --to 37320</span>
+     37284      37284       358/358  meson
+     37285      37285       418/418  bash
+     37286      37301       418/418  head
+     37302      37306       417/417  bash
+     37307      37307     kernel 11  ksoftirqd/0
+     37308      37309       418/418  head
+     37310      37310     kernel 11  ksoftirqd/0
+     37311      37312       359/359  bash
+     37313      37313       416/416  bash
+     37314      37314     kernel 11  ksoftirqd/0
+     37315      37316       417/417  bash
+     37317      37317     kernel 11  ksoftirqd/0
+     37318      37319       416/416  bash
+     37320      37320     kernel 11  ksoftirqd/0</code></pre>
         <p>
-          <code>head</code> blocks in <code>read</code> by 33374. <code>printf</code> makes its
-          first write at 33375, which wakes <code>head</code>. <code>head</code> runs at 33381 and
-          exits, and <code>printf</code> only gets the CPU back at 33388.
+          <code>head</code> blocks in <code>read</code> by 37301. <code>printf</code> makes its
+          first write at 37302, which wakes <code>head</code>. <code>head</code> runs at 37308 and
+          exits, and <code>printf</code> only gets the CPU back at 37315.
         </p>
       </section>
 
@@ -247,76 +248,83 @@ rewind: /proc/418/io: no such file at this step</code></pre>
         <pre
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind check --all --schedules 256 'github:fzakaria/rewindvm?dir=examples/case-studies#nix-git-gc-closure'</span>
-schedule   0: exited:1      33576 steps    run f1584358a5e13e59
-schedule   1: exited:0      89128 steps  a50a5ab6d992  run 382fb99cb0bac3e9
+schedule   0: exited:1      37507 steps    run d6deb54e63ee7a3b
+schedule   1: exited:0      94453 steps  a50a5ab6d992  run 801b25958028b8e7
 ...
-schedule  51: exited:1      78929 steps    run 83f4f7129a70792d
+schedule  41: exited:1      43328 steps    run f3a81773fc0c51e5
 ...
-schedule 130: exited:1      38958 steps    run 90d4b6513ee1a5da
+schedule 214: exited:1      84959 steps    run efad69daaa21e8b5
 ...
 schedule 0 failed; 254 of 256 perturbed schedules ended differently
 
 schedule 1 passes where schedule 0 fails; narrowing the steps it perturbs
-perturbing only steps 33377..33820 still ends differently
-step 33819 decides it: a 80 µs stall there makes the run pass
+perturbing only steps 37303..37872 still ends differently
+step 37871 decides it: a timer 49.9 µs late there makes the run pass
 
-passing: run c50d1724631c3213, schedule 1 over steps 33377..33820
-failing: run 2c347a1c2bcc5dbd, schedule 1 over steps 33377..33819
-the two are the same run until step 33819
+passing: run 9ab082205f1b42d3, schedule 1 over steps 37303..37872
+failing: run 2b1a9ab1f5e313b8, schedule 1 over steps 37303..37871
+the two are the same run until step 37871
 
 where /nix/store/10dxp0qxqxxsyiljrh2kp0xqhz6arhcx-bash-5.3p15/bin/bash -x -e -u -o pipefail gc-closure.sh first behaves differently:
-  both          70479   359/359   fork() = 534
-  both          70482   534/534   fork() = 535
-  both          70485   534/534   fork() = 536
-  failing       70544   535/535   SIGPIPE code=0 addr=0x0
-  failing       70545   535/535   exit_group(bash) killed:SIGPIPE
-  failing       70547   534/534   SIGCHLD code=1 addr=0x0
-  failing       70548   534/534   exit_group(bash) exited:141
-  passing       70541   535/535   exit_group(bash) exited:0
-  passing       70582   534/534   SIGCHLD code=1 addr=0x0
-  passing       70583   534/534   exit_group(bash) exited:0
-  passing       70585   359/359   SIGCHLD code=1 addr=0x0
+  both          74565   359/359   fork() = 534
+  both          74568   534/534   fork() = 535
+  both          74571   534/534   fork() = 536
+  failing       74630   535/535   SIGPIPE code=0 addr=0x0
+  failing       74631   535/535   exit_group(bash) killed:SIGPIPE
+  failing       74633   534/534   SIGCHLD code=1 addr=0x0
+  failing       74634   534/534   exit_group(bash) exited:141
+  passing       74578   535/535   exit_group(bash) exited:0
+  passing       74609   534/534   SIGCHLD code=1 addr=0x0
+  passing       74610   534/534   exit_group(bash) exited:0
+  passing       74612   359/359   SIGCHLD code=1 addr=0x0
 
-open both in the desktop app: rewind open 2c347a1c2bcc5dbd 70544 --compare c50d1724631c3213</code></pre>
+open both in the desktop app: rewind open 2b1a9ab1f5e313b8 74630 --compare 9ab082205f1b42d3</code></pre>
         <p>
-          Schedules 0, 51 and 130 fail; the other 254 pass. Here the unperturbed schedule happens to
+          Schedules 0, 41 and 214 fail; the other 254 pass. Here the unperturbed schedule happens to
           be the failing order. The test runs the pipeline three times, so the narrowed pair parts
-          at a later call, step 70544.
+          at a later call, step 74630.
         </p>
         <p>
-          Perturbing only from step 33326, where the pipeline forks <code>printf</code>, moves every
-          schedule off the failing order:
+          Perturbing only from step 37253, where the pipeline forks <code>printf</code>, moves 62 of
+          64 schedules off the failing order:
         </p>
         <pre
           class="console"
-        ><code><span class="cmd"><span class="prompt">$</span> rewind check --run f1584358 --schedule-from 33326 --schedules 64 --all --no-narrow</span>
-schedule   0: exited:1      33576 steps    run f1584358a5e13e59
-schedule   1: exited:0      84277 steps  a50a5ab6d992  run df96737be58721b5
-schedule   2: exited:0      84078 steps  a50a5ab6d992  run 2077f6a462ff1a94
+        ><code><span class="cmd"><span class="prompt">$</span> rewind check --run d6deb54e --schedule-from 37253 --schedules 64 --all --no-narrow</span>
+schedule   0: exited:1      37507 steps    run d6deb54e63ee7a3b
+schedule   1: exited:0      88436 steps  a50a5ab6d992  run 6ab3f5362d555a76
+schedule   2: exited:0      88329 steps  a50a5ab6d992  run 682fe8225b49e35b
 ...
-schedule  64: exited:0      84170 steps  a50a5ab6d992  run b357175957408f04
-run f1584358a5e13e59 failed; 64 of 64 perturbed schedules ended differently</code></pre>
+schedule  30: exited:1      37529 steps    run e416ba8b839efea7
+...
+schedule  36: exited:1      37536 steps    run 0326b5b03deeac5a
+...
+schedule  64: exited:0      88360 steps  a50a5ab6d992  run 47af11d7e52a9cc2
+run d6deb54e63ee7a3b failed; 62 of 64 perturbed schedules ended differently</code></pre>
         <p>
-          Nix 2.35.2 from nixpkgs has the same line. It passes schedule 0 and fails 6 of 1024
-          others:
+          Schedules 30 and 36 fail the same way, in the same pipeline: <code>head</code> exits
+          between <code>printf</code>'s two writes, and <code>printf</code> dies of SIGPIPE at step
+          37330 and 37333.
+        </p>
+        <p>
+          Nix 2.35.2 from nixpkgs has the same line. It fails schedule 0 too, and 5 of its 1025 runs
+          fail, all with SIGPIPE:
         </p>
         <pre
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind check --all --schedules 1024 'github:fzakaria/rewindvm?dir=examples/case-studies#nix-gc-closure'</span>
 ...
-schedule  56: exited:1      38326 steps    run ad4747353113f0a3
+schedule   0: exited:1      36645 steps    run 923e38ffd8c63851
 ...
-schedule 247: exited:1      78119 steps    run 123fbc351cd90351
+schedule 380: exited:1      42327 steps    run ecd1ae341b746262
 ...
-schedule 374: exited:1      58491 steps    run 3232d0d7c38c2471
+schedule 598: exited:1      64405 steps    run ec597c4d82c5cf3f
 ...
-schedule 785: exited:1      78226 steps    run 8d9b2e1d58327204
+schedule 843: exited:1      82981 steps    run e164c79070f367cd
 ...
-schedule 801: exited:1      37936 steps    run 9a0622457d90b486
+schedule 894: exited:1      82957 steps    run 836489d5467dfbec
 ...
-schedule 930: exited:1      77942 steps    run 2f337a4cd5ab9669
-...
-6 of 1024 perturbed schedules ended differently</code></pre>
+schedule 0 failed; 1020 of 1024 perturbed schedules ended differently</code></pre>
         <p>On the host it fails only when the writer is made the low-priority task on its CPU:</p>
         <div class="table">
           <table>
@@ -370,8 +378,8 @@ schedule 930: exited:1      77942 steps    run 2f337a4cd5ab9669
         <pre
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind check --all 'github:fzakaria/rewindvm?dir=examples/case-studies#nix-git-gc-closure-fixed'</span>
-schedule   0: exited:0      79839 steps  a50a5ab6d992  run 185bad3553dd45dd
-schedule   1: exited:0      89344 steps  a50a5ab6d992  run f8e21cdc537a2573
+schedule   0: exited:0      83722 steps  a50a5ab6d992  run e6deae8939c0328e
+schedule   1: exited:0      94498 steps  a50a5ab6d992  run ea7dfcb0b2d8cdfe
 ...
 0 of 64 perturbed schedules ended differently
 same result under all 65 schedules</code></pre>
@@ -391,7 +399,7 @@ same result under all 65 schedules</code></pre>
               href="https://github.com/fzakaria/rewindvm/releases/download/case-studies/nix-gc-closure-sigpipe.rwd"
               >nix-gc-closure-sigpipe.rwd</a
             >
-            (71.3 KB), the trace, for <code>rewind events</code>, <code>rewind log</code> and the
+            (94.1 KB), the trace, for <code>rewind events</code>, <code>rewind log</code> and the
             app.
           </li>
           <li>
@@ -399,15 +407,15 @@ same result under all 65 schedules</code></pre>
               href="https://github.com/fzakaria/rewindvm/releases/download/case-studies/nix-gc-closure-sigpipe-replayable.rwd"
               >nix-gc-closure-sigpipe-replayable.rwd</a
             >
-            (535.5 MB), with the kernel, input image and keyframes, for
+            (535.0 MB), with the kernel, input image and keyframes, for
             <code>rewind replay</code> and <code>rewind shell</code> on an AMD Zen 2 or later.
           </li>
         </ul>
         <pre
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind import https://github.com/fzakaria/rewindvm/releases/download/case-studies/nix-gc-closure-sigpipe-replayable.rwd</span>
-<span class="cmd"><span class="prompt">$</span> rewind replay f1584358</span>
-<span class="cmd"><span class="prompt">$</span> rewind shell f1584358 &lt;step&gt;</span>
+<span class="cmd"><span class="prompt">$</span> rewind replay d6deb54e</span>
+<span class="cmd"><span class="prompt">$</span> rewind shell d6deb54e &lt;step&gt;</span>
 <span class="cmd"><span class="prompt">$</span> rewind-app https://github.com/fzakaria/rewindvm/releases/download/case-studies/nix-gc-closure-sigpipe.rwd</span></code></pre>
         <p>
           The run ids above come from the derivations in the
