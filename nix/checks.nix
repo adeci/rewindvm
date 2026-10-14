@@ -337,8 +337,11 @@ let
   # A root with a static program whose two threads add to a total without
   # a lock: each reads it, writes a dot, which is an exit a schedule can
   # reschedule at, and stores what it read plus one. A reschedule between
-  # the read and the store loses an add, and the program exits 1. The
-  # source is in the root under /src, the directory its DWARF names.
+  # the read and the store loses an add, and the program exits 1. main
+  # writes the total itself, with dprintf, so the write is main's at a
+  # line of race.c; printf's would wait in stdio's buffer for exit to
+  # write it, after main had returned. The source is in the root under
+  # /src, the directory its DWARF names.
   raceRoot =
     pkgs.runCommand "rewind-race-root"
       {
@@ -376,7 +379,7 @@ let
             pthread_create(&t[i], 0, add, 0);
           for (int i = 0; i < WORKERS; i++)
             pthread_join(t[i], 0);
-          printf("\ntotal %ld\n", total);
+          dprintf(1, "\ntotal %ld\n", total);
           return total != WORKERS * ADDS;
         }
         EOF
