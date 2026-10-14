@@ -336,7 +336,7 @@ interleave on the one vCPU:
 ```console
 $ rewind nix --cores 4 --epoch 1790985600 github:fzakaria/rewindvm#mylib
 ...
-rewind: run 27a62ad4170c676c exited:0 after 6209 steps, 0.217s virtual, 1.082s wall (poweroff)
+rewind: run 27a62ad4170c676c exited:0 after 6209 steps, 0.217s virtual, 1.254s wall (poweroff)
 /nix/store/f6a9gy362szw6nxx3ikrklr8glr6rdln-mylib-0.3.0 a9d703ba89774f3d  matches your store, rewindvm.cachix.org
 ```
 
@@ -358,17 +358,17 @@ spins waiting for a thread that never runs.
 
 ```console
 $ rewind fork f0572500 5005 --schedule 1 --quiet
-rewind: run 3b8804c10ca07001 exited:2 after 5164 steps, 0.202s virtual, 0.472s wall (poweroff)
+rewind: run 3b8804c10ca07001 exited:2 after 5164 steps, 0.202s virtual, 0.506s wall (poweroff)
 rewind: the fork first differs from its parent at step 5026
 rewind: open it beside its parent in the desktop app: rewind open 3b8804c10ca07001 5026 --compare f0572500bc597078
 
 $ rewind fork f0572500 5005 --schedule 2 --quiet
-rewind: run 62a024334bb23811 exited:0 after 6560 steps, 0.221s virtual, 0.343s wall (poweroff)
+rewind: run 62a024334bb23811 exited:0 after 6560 steps, 0.221s virtual, 0.359s wall (poweroff)
 rewind: the fork first differs from its parent at step 5024
 rewind: open it beside its parent in the desktop app: rewind open 62a024334bb23811 5024 --compare f0572500bc597078
 
 $ rewind fork f0572500 5005 --schedule 3 --quiet
-rewind: run 64002726efc22ecb exited:2 after 5147 steps, 0.203s virtual, 0.275s wall (poweroff)
+rewind: run 64002726efc22ecb exited:2 after 5147 steps, 0.203s virtual, 0.282s wall (poweroff)
 rewind: the fork first differs from its parent at step 5090
 rewind: open it beside its parent in the desktop app: rewind open 64002726efc22ecb 5090 --compare f0572500bc597078
 
@@ -425,7 +425,7 @@ schedule 4 fork:
 ```console
 $ rewind show @
 39aa9d79584a0c04  exited:0          6735 steps  mylib-0.3.0 (fork of f0572500bc597078 at 5005, schedule 4)
-recorded by rewind 0.8.0 (5cc6a5822020)
+...
 rewind nix /nix/store/...-mylib-0.3.0.drv --epoch 1790985600 --schedule 3 --schedule-from 4821 --schedule-until 5081 --clock branches --name mylib-0.3.0  # f0572500bc597078
 rewind fork f0572500bc597078 5005 --schedule 4  # 39aa9d79584a0c04
 ```
@@ -435,7 +435,7 @@ The failing run's command makes it again, with the same id:
 ```console
 $ rewind show f0572500 | tail -1 | sh
 ...
-rewind: run f0572500bc597078 exited:2 after 5145 steps, 0.203s virtual, 0.623s wall (poweroff)
+rewind: run f0572500bc597078 exited:2 after 5145 steps, 0.203s virtual, 0.646s wall (poweroff)
 ```
 
 ## Compare any two runs
@@ -669,7 +669,7 @@ $ nix shell nixpkgs#pkgsStatic.stdenv.cc -c x86_64-unknown-linux-musl-cc -static
 
 ```console
 $ rewind run --root spin --timeout 5 --name spin -- /bin/spin
-rewind: run d887cc181cc8a557 timed-out after 309 steps, 0.002s virtual, 5.008s wall (timed out computing without exits for 4.4s, in user space in main+15 (spin.c:2), process 34 (spin))
+rewind: run d887cc181cc8a557 timed-out after 309 steps, 0.002s virtual, 5.008s wall (timed out computing without exits for 4.4s, in user space in main+11 (spin.c:2), process 34 (spin))
 ```
 
 A run that timed out while still making exits was slow rather than stuck, and
