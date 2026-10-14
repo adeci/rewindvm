@@ -309,7 +309,7 @@ including the epoch, which defaults to the start of the day the run was made.
 For a fork it prints its parents' commands first. `@`, the newest run, is the
 schedule 4 fork:
 
-```console run name=show elide
+```console run name=show elide show=:1,2:
 $ rewind show @
 ```
 
