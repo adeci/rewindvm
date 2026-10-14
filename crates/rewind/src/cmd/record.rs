@@ -694,6 +694,15 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             "{base_words} violated a property; {differing} of {tried} {tried_words} held every one"
         ));
     }
+    // The `sometimes` conditions some run made true: the search reached
+    // what they describe, as often as this.
+    for (id, reach) in coverage.reached() {
+        say(format!(
+            "true in {} of {} runs that checked it: sometimes \"{id}\"",
+            reach.hits, reach.runs
+        ));
+    }
+
     // The `sometimes` conditions no run made true: the search never
     // reached what they describe, so a clean result says less.
     let never = coverage.never();
@@ -707,6 +716,11 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         serde_json::json!({
             "properties": judge.properties().iter().map(ToString::to_string).collect::<Vec<_>>(),
             "sometimes_never": never,
+            "sometimes_true": coverage.reached().iter().map(|(id, reach)| serde_json::json!({
+                "id": id,
+                "runs": reach.runs,
+                "true": reach.hits,
+            })).collect::<Vec<_>>(),
             "seeds": seeds,
             "schedules": tried_runs,
             "tried": tried,

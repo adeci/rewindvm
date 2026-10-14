@@ -525,30 +525,63 @@ fn said(what: &str, message: &str) -> String {
     }
 }
 
+/// How many of a search's runs checked one `sometimes` condition, and how
+/// many of those made it true.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reach {
+    pub runs: u64,
+    pub hits: u64,
+}
+
 /// The `sometimes` conditions of a search: each id any run checked, and
-/// whether any run made it true.
+/// how many runs reached it and made it true.
 #[derive(Default)]
 pub struct Coverage {
-    sometimes: BTreeMap<String, bool>,
+    sometimes: BTreeMap<String, Reach>,
 }
 
 impl Coverage {
     /// Adds the `sometimes` checks `run` made.
     pub fn add(&mut self, run: &Run) -> Result<()> {
-        for (_, mark) in run.trace()?.sdk_marks() {
-            if let SdkMark::Sometimes { id, hit } = mark {
-                *self.sometimes.entry(id).or_default() |= hit;
+        self.add_marks(run.trace()?.sdk_marks().map(|(_, mark)| mark));
+        Ok(())
+    }
+
+    /// Adds one run's `sometimes` checks, from its SDK marks. The run
+    /// counts once per id, and as a hit if any check of the id was true.
+    fn add_marks(&mut self, marks: impl IntoIterator<Item = SdkMark>) {
+        let mut checked: BTreeMap<String, bool> = BTreeMap::new();
+        for mark in marks {
+            let SdkMark::Sometimes { id, hit } = mark else {
+                continue;
+            };
+            *checked.entry(id).or_default() |= hit;
+        }
+
+        for (id, hit) in checked {
+            let reach = self.sometimes.entry(id).or_default();
+            reach.runs += 1;
+            if hit {
+                reach.hits += 1;
             }
         }
-        Ok(())
     }
 
     /// The ids no run made true, in order.
     pub fn never(&self) -> Vec<&str> {
         self.sometimes
             .iter()
-            .filter(|(_, hit)| !**hit)
+            .filter(|(_, reach)| reach.hits == 0)
             .map(|(id, _)| id.as_str())
+            .collect()
+    }
+
+    /// The ids some run made true, in order, with how often.
+    pub fn reached(&self) -> Vec<(&str, Reach)> {
+        self.sometimes
+            .iter()
+            .filter(|(_, reach)| reach.hits > 0)
+            .map(|(id, reach)| (id.as_str(), *reach))
             .collect()
     }
 }
@@ -746,6 +779,27 @@ mod tests {
         assert_eq!(
             script_witness("step later: no number"),
             (None, "step later: no number".to_string())
+        );
+    }
+
+    // A search counts, for each `sometimes` id, the runs that checked it
+    // and the runs that made it true: a run counts once however often it
+    // checked, and as a hit if any of its checks was true.
+    #[test]
+    fn coverage_counts_the_runs_that_reach_and_hit_a_sometimes() {
+        let sometimes = |id: &str, hit| SdkMark::Sometimes {
+            id: id.to_string(),
+            hit,
+        };
+        let mut coverage = Coverage::default();
+        coverage.add_marks([sometimes("contended", false), sometimes("contended", true)]);
+        coverage.add_marks([sometimes("contended", false), sometimes("huge", false)]);
+        coverage.add_marks([sometimes("contended", true)]);
+
+        assert_eq!(coverage.never(), vec!["huge"]);
+        assert_eq!(
+            coverage.reached(),
+            vec![("contended", Reach { runs: 3, hits: 2 })]
         );
     }
 }

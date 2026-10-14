@@ -1350,8 +1350,9 @@ in
 
         # The Rewind SDK from a shell: a job that asserts its random byte
         # is even and marks a test, and exits 0 either way. check judges
-        # the marks by itself, finds the seed whose assertion fails, and
-        # names the sometimes no run made true.
+        # the marks by itself, finds the seed whose assertion fails, names
+        # the sometimes no run made true, and counts the runs that made
+        # the other true.
         cat > coin.sh <<'EOF'
         sdk() { printf 'rewind-sdk 1 %s\n' "$*" > /dev/rewind; }
         b=$(od -An -tu1 -N1 /dev/urandom)
@@ -1365,6 +1366,7 @@ in
           sdk test-end fail coin flip
         fi
         if [ $b -gt 250 ]; then sdk sometimes hit huge-byte; else sdk sometimes miss huge-byte; fi
+        if [ $((b % 2)) = 0 ]; then sdk sometimes hit even-byte; else sdk sometimes miss even-byte; fi
         exit 0
         EOF
         ! rewind check -j 4 --clock exits --seeds 6 --schedules 0 --root ${busyboxRoot} -- sh -c "$(cat coin.sh)" > sdk
@@ -1372,9 +1374,11 @@ in
         grep -q '^rewind: the job asserts with the Rewind SDK, so each run is judged by property sdk too$' sdk
         grep -qE '^failing run violates sdk: step [0-9]+: always "even" failed: byte [0-9]+ is odd$' sdk
         grep -q '^never true in any run: sometimes "huge-byte"$' sdk
+        grep -qE '^true in [1-9][0-9]* of [0-9]+ runs that checked it: sometimes "even-byte"$' sdk
         ! rewind check -j 4 --clock exits --seeds 6 --schedules 0 --all --no-narrow --json \
           --root ${busyboxRoot} -- sh -c "$(cat coin.sh)" > sdk.json
         jq -e '.properties == ["same-outcome", "sdk"] and .sometimes_never == ["huge-byte"]' sdk.json
+        jq -e '.sometimes_true | length == 1 and .[0].id == "even-byte" and .[0].runs == 6 and .[0].true >= 1' sdk.json
         jq -e '[.schedules[].violations[] | select(.property == "sdk") | .why]
           | all(test("^(always \"even\" failed: byte [0-9]+ is odd|test coin flip passed in the unperturbed run and failed here)$"))' sdk.json
 

@@ -19,8 +19,8 @@ the step it was false. Use it for invariants: the ledger balances, the
 queue never holds more than its capacity.
 
 `sometimes(condition, id)` says some run should make the condition true
-here. It never fails a run. After the search, check lists each one no run
-made true. Use it to check the search itself, on a state that is legal but
+here. It never fails a run. After the search, check counts the runs that made
+each one true and lists each one no run made true. Use it to check the search itself, on a state that is legal but
 risky: two tellers mid-deposit at once, a read racing a cache's
 invalidation. `always` says the program handled that state, and
 `sometimes` says the search reached it. If no run did, "no failure found"

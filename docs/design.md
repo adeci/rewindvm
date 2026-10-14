@@ -753,7 +753,8 @@ reads. Only init's marks count as init's, so a program cannot pose as it.
 `check` adds the `sdk` property by itself when schedule 0 writes SDK marks:
 a run violates it where an `always` failed, an `unreachable` was reached, or
 a test that passed in schedule 0 failed or never finished. A `sometimes`
-fails no run; after the search `check` names each one no run made true. The
+fails no run; after the search `check` counts the runs that made each one
+true and names each one no run made true. The
 libraries in `sdk/` write each pass or failure once per id and process,
 since every line is an exit.
 
