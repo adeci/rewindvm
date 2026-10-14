@@ -1458,6 +1458,7 @@ impl Scrubber {
             .flex_grow(layout::FILL)
             .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(&self.at_step_scroll)
             .gap(px(size::SECTION_GAP))
             .p(px(size::PANEL_PAD_X))
             .child(self.with_callout(event_card, Anchor::EventCard, cx));
@@ -1480,11 +1481,14 @@ impl Scrubber {
                     div().text_color(rgb(theme::SOFT)).child(text)
                 });
             }
-            column = column.child(selects(divergence, Surface::Divergence, cx));
-            column = column.child(
+            // The card ends with its way to the Compare tab, so the link
+            // goes with the card rather than below it.
+            divergence = divergence.child(
                 crate::ui::bookmarks::link("compare-open", "Compare side by side")
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, _, cx| this.select_tab(RightTab::Compare, cx))),
             );
+            column = column.child(selects(divergence, Surface::Divergence, cx));
         }
 
         // The latest fork made from the playhead.
@@ -1585,6 +1589,35 @@ impl Scrubber {
             )
             .child(grid);
 
+        // A fade over the foot of the cards while more of them is scrolled
+        // out of view below, since the column draws no scrollbar. The
+        // handle's offset is negative as the column scrolls down.
+        let scroll = &self.at_step_scroll;
+        let hidden_below = scroll.max_offset().y + scroll.offset().y > px(SCROLL_SLACK);
+        let panel = gpui::Hsla::from(rgb(theme::PANEL));
+        let cards = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_grow(layout::FILL)
+            .min_h_0()
+            .child(column)
+            .when(hidden_below, |cards| {
+                cards.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .h(px(size::SCROLL_FADE_HEIGHT))
+                        .bg(gpui::linear_gradient(
+                            FADE_DOWNWARD,
+                            gpui::linear_color_stop(panel.opacity(0.0), 0.0),
+                            gpui::linear_color_stop(panel, 1.0),
+                        )),
+                )
+            });
+
         div()
             .flex()
             .flex_col()
@@ -1592,7 +1625,7 @@ impl Scrubber {
             .min_h_0()
             .flex_basis(relative(0.0))
             .bg(rgb(theme::PANEL))
-            .child(column)
+            .child(cards)
             .child(inspect)
     }
 
@@ -2119,6 +2152,11 @@ const COMPARED_NOTE: &str = "The run it is compared with, here the run it was fo
 const COMPARED_PINNED_NOTE: &str = "The run you chose to compare against, which stays the comparison as you open other runs. Right-click in the Runs panel and choose Compare each run with its parent to go back.";
 
 /// What the inspect buttons do, for their hover notes.
+/// How far, in pixels, the At this step column may be from its end and
+/// still count as scrolled to it.
+const SCROLL_SLACK: f32 = 1.0;
+/// The angle of a gradient running from the top down, in degrees.
+const FADE_DOWNWARD: f32 = 180.0;
 const SOURCE_NOTE: &str = "The line of the program's own code the thread at the playhead was on, past the C library and other libraries, with the frames that called it. Rewind finds it in gdb on a throwaway copy of the VM at this step, and again when the playhead rests elsewhere. Key: s.";
 const GDB_NOTE: &str = "gdb on a throwaway copy of the VM at this step, with the symbols and sources of the kernel and the process. It starts in the thread and frame the source panel shows, or else in the thread that ran at this step. Breakpoints and watchpoints in user space stop only in that process. Breakpoints, step and continue run the copy forward; the recording does not change.";
 const SHELL_NOTE: &str = "A shell inside a throwaway copy of the VM at this step, in the process's directory with its environment, while everything else in the VM stays where it was. Nothing done in it changes the recording.";

@@ -171,6 +171,8 @@ pub mod size {
     /// How wide the dashed mark where two runs' schedules part answers
     /// the pointer, wider than the line it draws.
     pub const SPLIT_MARK_HIT_WIDTH: f32 = 9.0;
+    /// The fade over the foot of a column with more below it.
+    pub const SCROLL_FADE_HEIGHT: f32 = 36.0;
     pub const FAILURE_WIDTH: f32 = 3.0;
     /// The dashed line where this run was forked from its parent.
     pub const FORK_MARK_WIDTH: f32 = 2.0;

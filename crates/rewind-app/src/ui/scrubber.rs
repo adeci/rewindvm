@@ -328,6 +328,9 @@ pub struct Scrubber {
     pub(super) log_filter: LogFilter,
     pub(super) log_scroll: UniformListScrollHandle,
     pub(super) files_scroll: UniformListScrollHandle,
+    /// The At this step column's scroll, which tells whether cards are
+    /// hidden below its foot.
+    pub(super) at_step_scroll: gpui::ScrollHandle,
     /// The playhead and line count the log last followed, so that a
     /// render that does not move the playhead leaves the user's scroll.
     pub(super) log_followed: Option<(u64, LogFilter)>,
@@ -432,6 +435,7 @@ impl Scrubber {
             log_filter: LogFilter::Output,
             log_scroll: UniformListScrollHandle::new(),
             files_scroll: UniformListScrollHandle::new(),
+            at_step_scroll: gpui::ScrollHandle::new(),
             log_followed: None,
             files_followed: None,
             dragging: Rc::new(Cell::new(false)),
