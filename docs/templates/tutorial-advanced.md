@@ -359,11 +359,13 @@ $ for s in 5 6 7 8; do rewind fork {{failing|short}} {{fork_from}} --schedule $s
 
 <!-- assert: test $(grep -c '^schedule [5-8]: exit [0-9]*$' {{out:loop}}) -eq 4 -->
 
-`check` exits 1 when a schedule ends differently and 0 when none does, `diff`
+`check` exits 1 when a run fails a property, by default by ending
+differently from schedule 0, and 0 when none does, `diff`
 1 when the runs differ, `cat` 3 when the file did not exist at the step, and
 `doctor` 1 when this machine cannot record runs. With `--json`, commands
 print JSON for a program to read in place of their text: one object, or from
-`ls` and `events` one a line.
+`ls` and `events` one a line. `check --json` lists each run it tried under
+`schedules`, with the properties the run violated under `violations`.
 
 ```console run name=json
 $ rewind ls --forks-of {{failing|short}} --status failed --json | jq -r .id
@@ -371,6 +373,53 @@ $ rewind diff {{passing|short}} {{failing|short}} --json | jq -c '.divergence | 
 ```
 
 <!-- assert: grep -q '"left_step":[0-9]*,"right_step":[0-9]*' {{out:json}} -->
+
+## Judge runs by properties
+
+By default `check` calls a run failing when it ends differently from
+schedule 0. `--property` judges runs by what they did on the way instead,
+and replaces the default; repeat it for several. `no-crash` fails a run in
+which any process died of a signal such as SIGSEGV, even one a retry hid,
+and `single-writer=GLOB` one in which two processes had a matching file open
+for writing at once. The [properties tutorial](tutorial-properties.md)
+covers each built-in property, and `rewind check --help` lists them.
+
+A program can also judge itself with the [Rewind
+SDK](https://github.com/fzakaria/rewindvm/tree/main/sdk): `always` for what
+must hold every time, `sometimes` for what some run must reach, and marks
+for each test's start and result. When schedule 0 writes such marks, check
+adds the `sdk` property by itself, and the app shows a failed assertion as
+a red mark above the track.
+
+A property can also be a program on this machine. Check gives it the run in
+`$REWIND_RUN`, and the program exits 0 when the run is correct and 1 when it
+is not, with the reason on its first line. It can read the run with `rewind
+log`, `rewind events --json` and `rewind cat`. This one checks that `bank`'s
+deposits add up:
+
+<!-- run: printf '%s\n' '#!/bin/sh' '# The deposits add up: bank prints its balance and what it expected.' 'line=$(rewind log "$REWIND_RUN" | grep "^balance ")' 'test "$line" = "balance 400, expected 400" && exit 0' 'echo "$line"' 'exit 1' > adds-up.sh && chmod +x adds-up.sh -->
+<!-- run: printf '%s\n' '# What a correct bank run is.' 'no-crash' 'script=adds-up.sh' > rewind.properties -->
+
+```console run name=script_cat
+$ cat adds-up.sh
+```
+
+```console run name=script
+$ rewind check --epoch {{epoch}} --property script=./adds-up.sh github:fzakaria/rewindvm#bank | grep -E 'decides it|failing run violates adds-up'
+```
+
+<!-- assert: grep -qE '^failing run violates adds-up: balance [0-9]+, expected 400$' {{out:script}} -->
+
+`--properties` reads properties from a file, one a line, so a repository
+can keep them beside its tests. A script's path in the file is relative to
+the file's directory:
+
+```console run name=properties
+$ cat rewind.properties
+$ rewind check --epoch {{epoch}} --properties rewind.properties github:fzakaria/rewindvm#bank | grep 'decides it'
+```
+
+<!-- assert: grep -q ' decides it: ' {{out:properties}} -->
 
 ## Count the schedules that fail from a step
 
@@ -397,44 +446,13 @@ with or open its run:
 
 ![The app after Check from here at step {{deciding}} of the passing run: a card counting how the 16 schedules ended, a cell per schedule, the first picked with its run and Compare and Open](../site/img/app-check.png)
 
-## Judge runs with a script
-
-A property can be a program on this machine, given the run in
-`$REWIND_RUN`: exit 0 when the run is correct, 1 when it is not, with the
-reason on its first line. It reads the run with `rewind log`, `rewind
-events --json` and `rewind cat`. For `bank`, the deposits add up:
-
-<!-- run: printf '%s\n' '#!/bin/sh' '# The deposits add up: bank prints its balance and what it expected.' 'line=$(rewind log "$REWIND_RUN" | grep "^balance ")' 'test "$line" = "balance 400, expected 400" && exit 0' 'echo "$line"' 'exit 1' > adds-up.sh && chmod +x adds-up.sh -->
-<!-- run: printf '%s\n' '# What a correct bank run is.' 'no-crash' 'script=adds-up.sh' > rewind.properties -->
-
-```console run name=script_cat
-$ cat adds-up.sh
-```
-
-```console run name=script
-$ rewind check --epoch {{epoch}} --property script=./adds-up.sh github:fzakaria/rewindvm#bank | grep -E 'decides it|failing run violates adds-up'
-```
-
-<!-- assert: grep -qE '^failing run violates adds-up: balance [0-9]+, expected 400$' {{out:script}} -->
-
-`--properties` reads them from a file, one a line, so a repository keeps
-its properties beside its tests; a script's path is taken from the file's
-directory:
-
-```console run name=properties
-$ cat rewind.properties
-$ rewind check --epoch {{epoch}} --properties rewind.properties github:fzakaria/rewindvm#bank | grep 'decides it'
-```
-
-<!-- assert: grep -q ' decides it: ' {{out:properties}} -->
-
 ## Try other seeds from a step
 
-A fork keeps its parent's randomness unless told otherwise. `rewind fork
---seed` reseeds the VM's randomness at the fork's step, and `check --run
---seeds` tries several, each a fork of the run reseeded at
-`--schedule-from`, beside the run's own. `hash-order`'s test depends on a
-`HashSet`'s order, which Rust draws from that randomness:
+A fork keeps its parent's randomness unless you reseed it. `rewind fork
+--seed` reseeds the VM's randomness at the fork's step. `check --run
+--seeds` tries the run's own seed and several others, each a fork of the
+run reseeded at `--schedule-from`. `hash-order`'s test depends on the order
+of a Rust `HashSet`, which Rust draws from that randomness:
 
 ```console run name=hash_run show=-1:
 $ rewind nix -q --epoch {{epoch}} --name hash-order github:fzakaria/rewindvm#hash-order

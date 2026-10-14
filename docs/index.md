@@ -5,7 +5,7 @@
    fork it, and check the fix.
 2. [Tutorial: a flaky test in a container](tutorial-container.md): the same
    with a Docker image and no Nix.
-3. [Tutorial: say what a correct run is](tutorial-properties.md): properties,
+3. [Tutorial: property-based testing](tutorial-properties.md): properties,
    assertions from inside the program with the Rewind SDK, and seeds.
 4. [Tutorial: advanced features](tutorial-advanced.md): the rest of the tools,
    recipe by recipe.

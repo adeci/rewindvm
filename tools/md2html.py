@@ -150,14 +150,14 @@ PAGES = [
         next=(
             "tutorials/properties.html",
             "Tutorial &middot; Properties",
-            "Say what a correct run is",
-            "Properties, assertions from inside the program, and seeds.",
+            "Property-based testing",
+            "Properties every run must have, assertions from inside the program, and seeds.",
         ),
     ),
     dict(
         source="docs/tutorial-properties.md",
         eyebrow="Tutorial &middot; Properties",
-        description="Tell rewind check what a correct run is: properties it judges every run by, assertions a program makes with the Rewind SDK, and seeds that vary a program's randomness as well as its schedule.",
+        description="Property-based testing with rewind check: properties every run must have, assertions a program makes with the Rewind SDK, and seeds that vary a program's randomness as well as its schedule.",
         toc="Steps",
         figure=None,
         next=(
@@ -398,12 +398,34 @@ RUST_TOKEN = re.compile(
     r"|(?P<number>\b\d[\d_]*\b)"
 )
 
+# C tokens, tried the same way. A macro is a name in capitals, as
+# REWIND_ALWAYS is; a type is one of C's own or a name ending in _t.
+C_KEYWORDS = (
+    "break case char const continue default do double else enum extern float for "
+    "goto if int long return short signed sizeof static struct switch typedef "
+    "union unsigned void volatile while"
+).split()
+C_TOKEN = re.compile(
+    r"(?P<comment>//.*|/\*.*?(?:\*/|$))"
+    r'|(?P<string>"(?:\\.|[^"\\])*")'
+    r"|(?P<attr>^\s*#\s*\w+)"
+    r"|(?P<elide>\.\.\.)"
+    r"|(?P<keyword>\b(?:" + "|".join(C_KEYWORDS) + r")\b)"
+    r"|(?P<macro>\b[A-Z][A-Z0-9_]+\b)"
+    r"|(?P<type>\b[a-z_][a-z0-9_]*_t\b)"
+    r"|(?P<number>\b\d+[lLuU]*\b)"
+)
 
-def rust_line(line):
-    """One line of Rust as HTML, each token in a span named for its kind."""
+# The languages a fenced block is highlighted in, by the name after its
+# fence.
+SOURCE_TOKENS = {"rust": RUST_TOKEN, "c": C_TOKEN}
+
+
+def source_line(line, tokens):
+    """One line of source as HTML, each token in a span named for its kind."""
     out = []
     pos = 0
-    for m in RUST_TOKEN.finditer(line):
+    for m in tokens.finditer(line):
         out.append(html.escape(line[pos : m.start()], quote=False))
         out.append(
             f'<span class="{m.lastgroup}">'
@@ -415,15 +437,16 @@ def rust_line(line):
     return "".join(out)
 
 
-def rust(lines, marked):
-    """A Rust block, highlighted; the 1-based lines in MARKED get a band."""
+def highlighted(lines, marked, tokens):
+    """A block of source, highlighted; the 1-based lines in MARKED get a
+    band."""
     body = []
     for n, line in enumerate(lines, start=1):
-        text = rust_line(line)
+        text = source_line(line, tokens)
         if n in marked:
             text = f'<span class="mark">{text}</span>'
         body.append(text)
-    return '<pre class="console rust"><code>' + "\n".join(body) + "</code></pre>\n"
+    return '<pre class="console source"><code>' + "\n".join(body) + "</code></pre>\n"
 
 
 def plain(lines):
@@ -614,8 +637,8 @@ def convert(cfg):
             out.append(console(code))
         elif lang == "diff":
             out.append(diff(code))
-        elif lang == "rust":
-            out.append(rust(code, marked))
+        elif lang in SOURCE_TOKENS:
+            out.append(highlighted(code, marked, SOURCE_TOKENS[lang]))
         else:
             out.append(plain(code))
     if in_section:
