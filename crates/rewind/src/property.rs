@@ -293,6 +293,14 @@ impl<'a> Judge<'a> {
         self.properties == [Property::SameOutcome]
     }
 
+    /// Whether a property reads a run's files where its job exited: junit
+    /// reads its reports there, and a script is given that step.
+    pub fn reads_files_at_exit(&self) -> bool {
+        self.properties
+            .iter()
+            .any(|p| matches!(p, Property::Junit(_) | Property::Script(_)))
+    }
+
     /// The properties, as the command line names them.
     pub fn properties(&self) -> &[Property] {
         &self.properties

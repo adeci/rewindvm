@@ -1249,8 +1249,9 @@ in
   # 0 violates too is reported at its step; a script that fails stops
   # the search; --seeds finds a job decided by the kernel's randomness
   # alone; a shell job's Rewind SDK marks are judged without being asked
-  # for; and junit= reads the JUnit report a job wrote. Boots the VM, so
-  # it needs /dev/kvm.
+  # for; and junit= reads the JUnit report a job wrote, from a keyframe
+  # each run took where its job exited. Boots the VM, so it needs
+  # /dev/kvm.
   check-property =
     pkgs.runCommand "rewind-check-property"
       {
@@ -1393,10 +1394,27 @@ in
         mkdir -p /run/reports
         printf '<testsuite><testcase classname="coin" name="flip">%s</testcase><testcase classname="coin" name="steady"/></testsuite>\n' "$failure" > /run/reports/TEST-coin.xml
         EOF
-        ! rewind check -j 4 --clock exits --seeds 6 --schedules 0 --property 'junit=/run/reports/*.xml' \
-          --root ${busyboxRoot} -- sh -c "$(cat report.sh)" > junit
+        # The search has a home of its own, holding only its runs.
+        junit_home=$TMPDIR/junit-home
+        ! REWIND_HOME=$junit_home rewind check -j 4 --clock exits --seeds 6 --schedules 0 \
+          --property 'junit=/run/reports/*.xml' --root ${busyboxRoot} -- sh -c "$(cat report.sh)" > junit
         cat junit
         grep -qE '^failing run violates junit: step [0-9]+: test coin.flip passed in the unperturbed run and failed here$' junit
+
+        # Each other seed's run took a keyframe where its job exited, where
+        # check read its report, and replays as recorded all the same. The
+        # failing run check reports has keyframes before then besides.
+        exit_step() { REWIND_HOME=$junit_home rewind events $1 | awk '/mark "rewind-exit / { print $1 }'; }
+        base=$(grep -m1 -oE 'run [0-9a-f]{16}' junit | cut -d' ' -f2)
+        for dir in $junit_home/runs/*; do
+          id=$(basename $dir)
+          REWIND_HOME=$junit_home rewind replay $id | grep '^identical'
+          if [ $id = $base ]; then continue; fi
+          test -e $dir/keyframes/$(printf %016d $(exit_step $id)).kf
+        done
+        failing=$(sed -n 's/^failing: run \([0-9a-f]*\),.*/\1/p' junit)
+        first=$(ls $junit_home/runs/$failing/keyframes | awk -F. '/\.kf$/ && !seen++ { print $1 + 0 }')
+        test "$first" -lt "$(exit_step $failing)"
 
         # A junit pattern that matches no report schedule 0 wrote stops
         # the search, where it would hold on every run: * stays within one

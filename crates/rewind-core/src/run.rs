@@ -187,6 +187,12 @@ pub enum Keyframes {
     /// Skip them: the run is only being compared. Running the same spec
     /// again with [`Keyframes::Take`] adds them, since it is the same run.
     Skip,
+    /// Take one only, of every page, where init reports the job's exit:
+    /// the run is only being compared, by files it left that are read
+    /// there afterwards, as `rewind check`'s junit and script properties
+    /// read them. Reading them then restores that keyframe instead of
+    /// replaying the run from boot.
+    AtExit,
 }
 
 /// What happens to the guest's output while a run executes.
@@ -291,6 +297,8 @@ struct Recorder {
     progress: ProgressLine,
     status: Option<i32>,
     error: Option<anyhow::Error>,
+    /// Whether the machine pauses once init reports the job's exit.
+    pause_at_exit: bool,
 }
 
 impl Observer for Recorder {
@@ -321,6 +329,10 @@ impl Observer for Recorder {
             }
             _ => {}
         }
+    }
+
+    fn stop(&self) -> bool {
+        self.pause_at_exit && self.status.is_some()
     }
 }
 
@@ -623,15 +635,17 @@ impl Run {
             crate::image::write_atomic(&dir.join(MANIFEST), &serde_json::to_vec_pretty(m)?)
         };
 
-        // Keyframes from a finished earlier execution of the same run stay,
-        // since other runs may read them, and this execution takes none.
-        // Unreadable ones, from an older format, are replaced. Ones left by
-        // an execution that never finished are as good as new ones, which
-        // land beside them.
+        // Keyframes a finished earlier execution of the same run took as
+        // it executed stay, since other runs may read them, and this
+        // execution takes none. Unreadable ones, from an older format, are
+        // replaced. Ones left by an execution that never finished, or kept
+        // where something looked inside the run, are as good as new ones,
+        // which land beside them.
         let previous = Run::open(&dir).ok();
         let own = crate::keyframes::own_state(&dir);
         let keep = keyframes == Keyframes::Take
             && own == crate::keyframes::Own::Readable
+            && crate::keyframes::taken(&dir)
             && previous
                 .as_ref()
                 .is_some_and(|p| p.manifest.outcome.is_some());
@@ -683,6 +697,7 @@ impl Run {
             progress: ProgressLine::new(start),
             status: None,
             error: None,
+            pause_at_exit: false,
         };
         let config = manifest.spec.config()?;
         let store = || rewind_store::Store::open(&home.store());
@@ -747,9 +762,35 @@ impl Run {
                     &mut memory,
                 )?;
                 store.sync()?;
+                crate::keyframes::mark_taken(&dir)?;
                 outcome
             }
             Keyframes::Skip => machine.run(None, &mut recorder)?,
+
+            // To the step where init reports the job's exit, a keyframe
+            // there holding every page, and on to the end as the run would
+            // have gone. A run that stops first takes none.
+            Keyframes::AtExit => {
+                recorder.pause_at_exit = true;
+                match machine.run(None, &mut recorder)? {
+                    Outcome::Paused => {
+                        recorder.pause_at_exit = false;
+                        let store = match &mut store {
+                            Some(s) => s,
+                            None => store.insert(rewind_store::Store::open(&home.store())?),
+                        };
+                        let kf =
+                            machine.keyframe(&mut crate::keyframes::StorePages(store), None)?;
+
+                        // The pages first, durably, then the keyframe naming
+                        // them.
+                        store.sync()?;
+                        crate::keyframes::save(&dir, &kf)?;
+                        machine.run(None, &mut recorder)?
+                    }
+                    stopped => stopped,
+                }
+            }
         };
 
         let wall = start.elapsed();
@@ -808,6 +849,7 @@ impl Run {
             progress: ProgressLine::new(Instant::now()),
             status: None,
             error: None,
+            pause_at_exit: false,
         };
         let mut machine = Machine::boot(&self.manifest.spec.config()?)?;
         machine.run(None, &mut recorder)?;
@@ -831,9 +873,14 @@ impl Run {
     /// manifest come out as they were. A run that timed out gets as long as
     /// it had, and may stop at another step.
     pub fn add_keyframes(&self, home: &Home) -> Result<Run> {
-        // A run with readable keyframes of its own has them already, and
-        // executing it again would keep those and take none.
-        if crate::keyframes::own_state(&self.dir) == crate::keyframes::Own::Readable {
+        // A run that took readable keyframes as it executed has them
+        // already, and executing it again would keep those and take none.
+        // One with keyframes only where something looked inside it, as
+        // `rewind check`'s runs have where their job exited, executes
+        // again and takes the rest.
+        if crate::keyframes::taken(&self.dir)
+            && crate::keyframes::own_state(&self.dir) == crate::keyframes::Own::Readable
+        {
             return Run::open(&self.dir);
         }
 
@@ -1099,6 +1146,7 @@ impl Run {
             progress: ProgressLine::new(Instant::now()),
             status: None,
             error: None,
+            pause_at_exit: false,
         };
         let mut machine = self.machine_at(home, kf, Keep::Nothing, &mut recorder)?;
         machine.run(None, &mut recorder)?;
@@ -1960,12 +2008,10 @@ pub(crate) mod tests {
         dir
     }
 
-    #[test]
-    fn keyframes_are_added_only_to_a_run_without_them() {
-        // A finished run that has keyframes of its own: adding keyframes
-        // runs nothing, which this spec, with no kernel to boot, would
-        // fail at, and leaves the run as it was.
-        let root = runs_dir("add-keyframes");
+    /// A finished run in a fresh home named `name`, with a keyframe of its
+    /// own at step 4, and the home.
+    fn run_with_a_keyframe(name: &str) -> (PathBuf, Home, PathBuf, Manifest) {
+        let root = runs_dir(name);
         let home = Home::at(root.clone()).unwrap();
         let mut m = manifest("abc", "r", 0);
         m.outcome = Some(RunOutcome {
@@ -1979,10 +2025,34 @@ pub(crate) mod tests {
         let mut kf = rewind_vmm::snapshot::Keyframe::default();
         kf.step = 4;
         crate::keyframes::save(&dir, &kf).unwrap();
+        (root, home, dir, m)
+    }
+
+    #[test]
+    fn keyframes_are_added_only_to_a_run_without_them() {
+        // A finished run that took keyframes as it executed: adding
+        // keyframes runs nothing, which this spec, with no kernel to boot,
+        // would fail at, and leaves the run as it was.
+        let (root, home, dir, m) = run_with_a_keyframe("add-keyframes");
+        crate::keyframes::mark_taken(&dir).unwrap();
         let trace = fs::read(dir.join(TRACE)).unwrap();
 
         let run = Run::open(&dir).unwrap().add_keyframes(&home).unwrap();
         assert_eq!(run.manifest, m);
+        assert_eq!(fs::read(dir.join(TRACE)).unwrap(), trace);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn keyframes_are_added_to_a_run_with_one_kept_where_it_was_looked_inside() {
+        // A finished run whose one keyframe was kept where something looked
+        // inside it, as at a check run's job exit: adding keyframes
+        // executes the run again, which this spec, with no kernel to boot,
+        // fails at, and the run's trace stays as it was.
+        let (root, home, dir, _) = run_with_a_keyframe("add-keyframes-kept");
+        let trace = fs::read(dir.join(TRACE)).unwrap();
+
+        assert!(Run::open(&dir).unwrap().add_keyframes(&home).is_err());
         assert_eq!(fs::read(dir.join(TRACE)).unwrap(), trace);
         fs::remove_dir_all(&root).unwrap();
     }

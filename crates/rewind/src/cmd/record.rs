@@ -183,7 +183,8 @@ pub struct CheckArgs {
     /// on its first line, which may start with `step N:`. It finds the
     /// run in $REWIND_RUN, schedule 0 in $REWIND_BASE and the step the
     /// job exited at in $REWIND_END, and can read the run with `rewind
-    /// cat`, `rewind events` and `rewind log`.
+    /// cat`, `rewind events` and `rewind log`. The runs of one batch are
+    /// judged at once, so a script runs beside other copies of itself.
     #[arg(long = "property", value_name = "PROPERTY")]
     pub(crate) properties: Vec<Property>,
     /// A file of properties, one a line, as --property takes them; lines
@@ -313,8 +314,9 @@ impl Subject<'_> {
 }
 
 /// Forks `run` at the first step of `window`, perturbed by its seed until
-/// its last, and its RNG reseeded as `reseed` says, without keyframes of
-/// its own, as `rewind check` tries it.
+/// its last, and its RNG reseeded as `reseed` says, with only the
+/// keyframes `machine` asks of a run that skips them, as `rewind check`
+/// tries it.
 fn fork_window(
     home: &Home,
     run: &Run,
@@ -337,7 +339,7 @@ fn fork_window(
     name.push(')');
     let how = Execution {
         echo: Echo::Quiet,
-        keyframes: Keyframes::Skip,
+        keyframes: keyframes_for(machine),
         limit: time_limit(machine.timeout),
     };
     Run::execute(
@@ -527,7 +529,13 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         !base_holds
     };
     let differs_by = |violations: &[Violation]| violations.is_empty() != base_holds;
-    let differs = |run: &Run| -> Result<bool> { Ok(differs_by(&judge.violations(run)?)) };
+
+    // A property that reads a run's files where its job exited forks the
+    // run there, so each other run takes a keyframe there, which the
+    // fork restores instead of replaying the run from boot.
+    if judge.reads_files_at_exit() {
+        machine.exit_keyframe = ExitKeyframe::Take;
+    }
 
     // Each seed's unperturbed run and how its perturbed schedules are
     // made, the first seed's being the unperturbed run itself.
@@ -644,9 +652,9 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                 batch[batch.len() - 1]
             ));
             let runs = s.subject.try_all(home, &s.machine, &windows);
+            let judged = runs.and_then(|runs| judge_all(&judge, runs));
             clear_status();
-            for run in runs? {
-                let violations = judge.violations(&run)?;
+            for (run, violations) in judged? {
                 let differs = differs_by(&violations);
                 say(format!(
                     "{}: {}{}",
@@ -857,7 +865,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             if !json {
                 print_timeout(home, schedule, &worst);
             }
-            let probe_all = |windows: Vec<(u64, u64)>| -> Result<Vec<Run>> {
+            let probe_all = |windows: Vec<(u64, u64)>| -> Result<Vec<Judged>> {
                 let lo = windows.iter().map(|w| w.0).min().unwrap_or(0);
                 let hi = windows.iter().map(|w| w.1).max().unwrap_or(0);
                 status(&format!(
@@ -872,11 +880,27 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                         until,
                     })
                     .collect();
-                s.subject.try_all(home, &s.machine, &windows)
+                let runs = s.subject.try_all(home, &s.machine, &windows)?;
+                Ok(judge_all(&judge, runs)?
+                    .into_iter()
+                    .map(|(run, violations)| Judged {
+                        differs: differs_by(&violations),
+                        run,
+                    })
+                    .collect())
             };
-            let narrowed =
-                rewind_core::check::narrow((s.start, end), jobs, worst, probe_all, differs)?;
-            let (lo, until, worst) = (narrowed.from, narrowed.until, narrowed.run);
+            let whole = Judged {
+                run: worst,
+                differs: true,
+            };
+            let narrowed = rewind_core::check::narrow(
+                (s.start, end),
+                jobs,
+                whole,
+                probe_all,
+                |judged: &Judged| Ok(judged.differs),
+            )?;
+            let (lo, until, worst) = (narrowed.from, narrowed.until, narrowed.run.run);
             clear_status();
             if same_outcome_only {
                 say(format!(
@@ -892,7 +916,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             // one step shorter ends like the seed's unperturbed run and is
             // the same run until that step, so it is the run to compare
             // with; a window of one step leaves that run itself.
-            let partner = narrowed.without_last.unwrap_or(s.base);
+            let partner = narrowed.without_last.map_or(s.base, |judged| judged.run);
             (
                 worst,
                 partner,
@@ -1068,6 +1092,37 @@ impl<'a> Seeded<'a> {
             start,
         })
     }
+}
+
+/// A run a search tried, and whether its verdict differs from the
+/// unperturbed run's.
+struct Judged {
+    run: Run,
+    differs: bool,
+}
+
+/// What `judge` finds each of `runs` violates, judging them all at once on
+/// a thread each, since a property that looks inside a run forks it.
+/// The runs come back in the order given.
+fn judge_all(judge: &Judge, runs: Vec<Run>) -> Result<Vec<(Run, Vec<Violation>)>> {
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = runs
+            .into_iter()
+            .map(|run| {
+                scope.spawn(move || {
+                    let violations = judge.violations(&run);
+                    (run, violations)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| {
+                let (run, violations) = h.join().expect("judging a run panicked");
+                Ok((run, violations?))
+            })
+            .collect()
+    })
 }
 
 /// What a search found first: a seed whose unperturbed run differs, by
@@ -1362,6 +1417,11 @@ pub(crate) struct MachineArgs {
     /// Skip keyframes: faster, but seeking into the run starts from boot.
     #[arg(long)]
     no_keyframes: bool,
+    /// Whether a run that skips keyframes still takes one where the job
+    /// exits; rewind check asks for one when a property reads the run's
+    /// files there.
+    #[arg(skip)]
+    exit_keyframe: ExitKeyframe,
     /// Stop the run after this many seconds on this machine, however far it
     /// got.
     ///
@@ -1428,6 +1488,23 @@ enum Progress {
     #[default]
     Hidden,
     Shown,
+}
+
+/// Whether a run that skips keyframes takes one where the job exits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ExitKeyframe {
+    #[default]
+    Skip,
+    Take,
+}
+
+/// The keyframes a run executed with `machine` takes.
+fn keyframes_for(machine: &MachineArgs) -> Keyframes {
+    match (machine.no_keyframes, machine.exit_keyframe) {
+        (false, _) => Keyframes::Take,
+        (true, ExitKeyframe::Skip) => Keyframes::Skip,
+        (true, ExitKeyframe::Take) => Keyframes::AtExit,
+    }
 }
 
 /// What a run prints while it executes.
@@ -1656,14 +1733,9 @@ fn execute(
         Loudness::Output
     };
     let echo = echo_for(loudness, machine.progress, Terminal::stderr());
-    let keyframes = if machine.no_keyframes {
-        Keyframes::Skip
-    } else {
-        Keyframes::Take
-    };
     let how = Execution {
         echo,
-        keyframes,
+        keyframes: keyframes_for(machine),
         limit: time_limit(machine.timeout),
     };
     let run = Run::execute(

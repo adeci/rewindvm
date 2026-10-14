@@ -106,6 +106,23 @@ pub enum Own {
     Unreadable,
 }
 
+/// The file in a run's keyframe directory whose presence says the run took
+/// its keyframes as it executed, from where it started to where it ended.
+/// A run without it has keyframes only where something looked inside it,
+/// as `rewind check`'s runs have where their job exited.
+pub const TAKEN: &str = "taken";
+
+/// Records that the run in `run_dir` took its keyframes as it executed.
+pub fn mark_taken(run_dir: &Path) -> Result<()> {
+    fs::create_dir_all(run_dir.join(DIR))?;
+    crate::image::write_atomic(&run_dir.join(DIR).join(TAKEN), &[])
+}
+
+/// Whether the run in `run_dir` took its keyframes as it executed.
+pub fn taken(run_dir: &Path) -> bool {
+    run_dir.join(DIR).join(TAKEN).exists()
+}
+
 /// Whether the keyframes in a run's own directory read back.
 pub fn own_state(run_dir: &Path) -> Own {
     let steps = own_steps(run_dir);

@@ -99,6 +99,14 @@ pub fn export(home: &Home, run: &Run, contents: Contents, out: &Path) -> Result<
                 }
             }
         }
+        // Whether the run took them as it executed goes with them.
+        if keyframes::taken(&run.dir) {
+            append_bytes(
+                &mut tar,
+                &format!("{}/{}", keyframes::DIR, keyframes::TAKEN),
+                &[],
+            )?;
+        }
         let mut page = vec![0u8; PAGE_SIZE];
         for hash in hashes {
             store.get(&hash, &mut page)?;
@@ -383,11 +391,12 @@ mod tests {
     #[test]
     fn a_run_exported_and_imported_elsewhere_arrives_whole() {
         // A finished run with bookmarks, its inputs on disk, and a keyframe
-        // at step 5 naming one page in the store. Its replayable export
-        // imported into another home brings the same manifest, trace and
-        // bookmarks, the keyframe, the page, and the inputs, which the
-        // manifest then names in the new home. Its view export brings the
-        // first three alone.
+        // at step 5 naming one page in the store, taken as it executed. Its
+        // replayable export imported into another home brings the same
+        // manifest, trace and bookmarks, the keyframe, still taken as the
+        // run executed, the page, and the inputs, which the manifest then
+        // names in the new home. Its view export brings the first three
+        // alone.
         let (from, to, view) = (home("from"), home("to"), home("view"));
         let inputs = from.root().join("given");
         fs::create_dir_all(&inputs).unwrap();
@@ -415,6 +424,7 @@ mod tests {
         kf.step = 5;
         kf.pages = vec![(0, hash)];
         keyframes::save(&dir, &kf).unwrap();
+        keyframes::mark_taken(&dir).unwrap();
         let run = Run::open(&dir).unwrap();
 
         // The replayable export, imported.
@@ -429,6 +439,7 @@ mod tests {
             fs::read(dir.join(BOOKMARKS)).unwrap()
         );
         assert_eq!(got.keyframes().unwrap().steps(), vec![5]);
+        assert!(keyframes::taken(&got.dir));
         let mut read = vec![0u8; PAGE_SIZE];
         Store::open(&to.store())
             .unwrap()

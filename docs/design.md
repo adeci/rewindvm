@@ -739,6 +739,21 @@ JUnit XML reports the job left matching the glob, through one `files`
 inspection of the run at the job's exit, and compares results by test name
 with schedule 0's.
 
+`check`'s runs take no keyframes, and a fork at the job's exit would replay
+one from boot. So with either property each run takes a single keyframe of
+every page where init reports the job's exit: the machine pauses there,
+takes it and runs on, and the trace is the same as without it. `check` also
+judges each batch of runs at once, a thread a run, as it executes them. In
+bank-java's search under `junit=TEST-*.xml`, 135 runs of about 175000 steps,
+reading one run's reports took 5.4 s from boot and 0.6 s from the keyframe,
+and taking the keyframe added about 1 s to a 10 s run. The search took 333 s
+with neither and 82 s with both; with the default property it takes 47 s.
+
+A run's keyframe directory holds a file named `taken` once the run has
+taken keyframes as it executed. A run with keyframes only where something
+looked inside it, as a `check` run has at its exit, is executed again to
+take the rest when `check` reports it.
+
 `--seeds N` tries N seeds of the guest's randomness from `--seed` on, each
 unperturbed and then under every perturbed schedule. A job's other seeds
 boot from scratch, since the seed is credited at boot. A recorded run's are
