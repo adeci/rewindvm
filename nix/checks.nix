@@ -1345,9 +1345,12 @@ in
         grep -qE '^failing: run [0-9a-f]+, seed [0-9]+ from step [0-9]+, schedule 0$|^passing: run [0-9a-f]+, seed [0-9]+ from step [0-9]+, schedule 0$' reseeded
 
         # rewind fork --seed: the fork is its parent until the step, and
-        # replays the same.
+        # replays the same. fork exits with its job's status, and the coin
+        # under seed 9 lands either way depending on the host's CPU.
         start=$(rewind events coin --json | jq -r 'select(.kind.type == "mark" and .kind.text == "rewind-start") | .step')
-        rewind fork -q coin "$start" --seed 9 --json > forked.json
+        status=0
+        rewind fork -q coin "$start" --seed 9 --json > forked.json || status=$?
+        [ "$status" -le 1 ]
         jq -e '.name | test("seed 9")' forked.json
         rewind replay "$(jq -r .id forked.json)" > replayed
         grep -q '^identical' replayed
