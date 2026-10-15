@@ -295,6 +295,15 @@ NEXT = """
 </a>
 """
 
+# The box that closes every page: the one link to the pricing section, and
+# the prices in a sentence, as the landing page states them.
+BUY = """
+<div class="cta">
+  <a class="btn" href="{up}#pricing">Get Rewind VM</a>
+  <p>The engine is free and MIT licensed. The desktop app is $49 personal or $99 per seat.</p>
+</div>
+"""
+
 
 def site_path(source):
     """The page a document becomes, relative to the site's root."""
@@ -653,6 +662,7 @@ def convert(cfg):
             text=text,
         )
     )
+    out.append(BUY.format(up=up))
     out.append(FOOT.format(up=up))
     return page, "".join(out)
 

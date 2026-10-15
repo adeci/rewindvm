@@ -1632,6 +1632,25 @@ a.card:hover {
   margin-top: 4px;
 }
 
+/* The box that closes a page: the button to the pricing section, with the
+   prices beside it. */
+.article .cta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  margin-top: 24px;
+  padding: 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.article .cta p {
+  color: var(--soft);
+  margin: 0;
+  max-width: none;
+}
+
 /* Console blocks: what was typed in the accent, what came back muted. */
 .console {
   margin-block: 18px;
