@@ -118,7 +118,7 @@ diff -ruN a/arch/x86/kernel/cpu/Makefile b/arch/x86/kernel/cpu/Makefile
 diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 --- a/arch/x86/kernel/cpu/rewind.c	1969-12-31 16:00:00.000000000 -0800
 +++ b/arch/x86/kernel/cpu/rewind.c	1969-12-31 16:00:00.000000000 -0800
-@@ -0,0 +1,1444 @@
+@@ -0,0 +1,1454 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Rewind VM guest platform.
@@ -1347,9 +1347,19 @@ diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 +	return rewind_write(file, buf, len, REWIND_EV_OUTPUT, 2);
 +}
 +
++/*
++ * A write of nothing to /dev/rewind is a schedule point: one exit, which a
++ * schedule can reschedule or stall at, and no record. A program puts one
++ * where a switch to another thread matters but no system call happens, as
++ * between an atomic load and the store computed from it.
++ */
 +static ssize_t rewind_mark_write(struct file *file, const char __user *buf,
 +				 size_t len, loff_t *off)
 +{
++	if (len == 0) {
++		rewind_yield();
++		return 0;
++	}
 +	return rewind_write(file, buf, len, REWIND_EV_MARK, 0);
 +}
 +

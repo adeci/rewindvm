@@ -37,6 +37,17 @@ and result. A test that passed in schedule 0 and fails, or never
 finishes, in another run violates the `sdk` property. The pytest plugin
 and the JUnit 5 extension make these calls for you.
 
+`point()` is a schedule point. Rewind switches threads only where the
+guest makes an exit, such as a system call it reports, so two threads that
+race in pure computation, an atomic load and the store computed from it,
+never interleave there. A point is an exit in the middle: `rewind check`
+can switch to another thread at it, or hold this one up, as at any other
+step. It writes nothing to the run's trace and fails no run, so put one at
+each place a switch matters and judge the runs with `always` or the job's
+own result. It is a write of nothing to `/dev/rewind`, which C, C++, Rust,
+Go and Python make; Java's streams and the shell skip a write of nothing,
+so their libraries have no `point`.
+
 An id has no spaces. A message, where a call takes one, is shown when the
 call fails. Each library writes a pass or a hit once, and a failure or a
 miss once, per id and process, since every write costs the VM an exit.
@@ -60,7 +71,8 @@ license. Install it from this repository, or copy the file into your own.
 
 ## The lines
 
-A library for another language writes these, each in a single `write`:
+A library for another language writes these, each in a single `write`,
+and makes a schedule point with a `write` of zero bytes:
 
 ```text
 rewind-sdk 1 always pass <id>

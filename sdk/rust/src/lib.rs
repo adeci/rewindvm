@@ -118,6 +118,16 @@ pub fn unreachable(id: &str, message: impl FnOnce() -> String) {
     });
 }
 
+/// A schedule point: an exit where `rewind check` can switch to another
+/// thread or hold this one up, with nothing written to the run's trace. Put
+/// one where a switch matters but the code makes no system call, such as
+/// between an atomic load and the store computed from it.
+pub fn point() {
+    if let Some(mut file) = device() {
+        let _ = file.write(&[]);
+    }
+}
+
 /// A test named `name`, which may have spaces, starts.
 pub fn test_begin(name: &str) {
     say(&format!("test-begin {name}"));

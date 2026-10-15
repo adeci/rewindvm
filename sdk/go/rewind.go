@@ -118,6 +118,16 @@ func Unreachable(id string, format string, args ...any) {
 	sayOnce("unreachable "+id, func() string { return with("unreachable "+id, format, args) })
 }
 
+// Point is a schedule point: an exit where `rewind check` can switch to
+// another thread or hold this one up, with nothing written to the run's
+// trace. Put one where a switch matters but the code makes no system call,
+// such as between an atomic load and the store computed from it.
+func Point() {
+	if f := dev(); f != nil {
+		_, _ = f.Write(nil)
+	}
+}
+
 // TestBegin says a test named name, which may have spaces, starts.
 func TestBegin(name string) {
 	say("test-begin " + name)

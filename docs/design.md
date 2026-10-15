@@ -814,7 +814,9 @@ Three earlier designs did not work, and why is worth keeping.
   A thread spinning on a flag without yielding stalls the VM; futex-based
   waits are fine, and so is a loop of `sched_yield`, since each yield is an
   exit. Races that need preemption in the middle of pure computation are
-  out of reach. With exit time computation also takes no time; counter
+  out of reach, unless the program marks the place with the SDK's
+  `point()`, a write of nothing to `/dev/rewind` that makes one exit and
+  records nothing. With exit time computation also takes no time; counter
   time ([pmu.md](pmu.md)) fixes that, not the preemption.
 - **Go programs at `--cores` above 1 can hang.** During garbage collection
   Go's runtime waits for a goroutine on another thread by spinning in user

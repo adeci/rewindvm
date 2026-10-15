@@ -12,6 +12,7 @@
  *		      "balance=%ld expected=%ld", balance, expected);
  *	REWIND_SOMETIMES(others > 0, "deposits-concurrent");
  *	REWIND_UNREACHABLE("pay-after-close", "account %d", id);
+ *	rewind_point();
  *
  * An id is a string literal without spaces. The message, a printf format
  * and its arguments, is optional and formatted only when written. Each
@@ -137,6 +138,20 @@ static inline int rewind_first(int *sent, int bit)
 		if (rewind_first(&rewind_sent_, REWIND_SENT_FAIL))                     \
 			rewind_say("unreachable " id, "" __VA_ARGS__);                 \
 	} while (0)
+
+/*
+ * A schedule point: an exit where `rewind check` can switch to another
+ * thread or hold this one up, with nothing written to the run's trace. Put
+ * one where a switch matters but the code makes no system call, such as
+ * between an atomic load and the store computed from it.
+ */
+static inline void rewind_point(void)
+{
+	int fd = rewind_fd();
+
+	if (fd >= 0)
+		(void)!write(fd, "", 0);
+}
 
 /* How a test ended. */
 enum rewind_result { REWIND_PASS, REWIND_FAIL, REWIND_SKIP };

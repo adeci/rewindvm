@@ -387,6 +387,63 @@ let
           -o $out/bin/race race.c
       '';
 
+  # A root with a static program whose two threads add to a total with an
+  # atomic load and a separate atomic store, making no system call between
+  # them. Without points the guest never switches threads there, so no
+  # schedule loses an add. With `points` as its argument, each add puts the
+  # SDK's rewind_point between the load and the store, and a schedule that
+  # switches threads at one loses an add, and the program exits 1.
+  pointRoot =
+    pkgs.runCommand "rewind-point-root"
+      {
+        nativeBuildInputs = [ pkgs.pkgsStatic.stdenv.cc ];
+        dontStrip = true;
+      }
+      ''
+        mkdir -p $out/bin $out/src
+        cd $out/src
+        cp ${../sdk/c/rewind.h} rewind.h
+        cat > point.c <<'EOF'
+        #include <pthread.h>
+        #include <stdio.h>
+        #include <string.h>
+
+        #include "rewind.h"
+
+        #define WORKERS 2
+        #define ADDS 10
+
+        static long total;
+        static int points;
+
+        static void *add(void *arg)
+        {
+          for (int i = 0; i < ADDS; i++) {
+            long seen = __atomic_load_n(&total, __ATOMIC_RELAXED);
+            if (points)
+              rewind_point();
+            __atomic_store_n(&total, seen + 1, __ATOMIC_RELAXED);
+          }
+          return 0;
+        }
+
+        int main(int argc, char **argv)
+        {
+          pthread_t t[WORKERS];
+
+          points = argc > 1 && strcmp(argv[1], "points") == 0;
+          for (int i = 0; i < WORKERS; i++)
+            pthread_create(&t[i], 0, add, 0);
+          for (int i = 0; i < WORKERS; i++)
+            pthread_join(t[i], 0);
+          dprintf(1, "total %ld\n", total);
+          return total != WORKERS * ADDS;
+        }
+        EOF
+        $CC -static -O1 -g -pthread -fdebug-prefix-map=$out/src=/src \
+          -o $out/bin/point point.c
+      '';
+
   # Background jobs racing through a pipe, the kernel's RNG, and a sleep:
   # everything that would differ between two runs of an ordinary VM.
   workload = ''
@@ -1240,6 +1297,50 @@ in
         # Options that make another run than the one named are refused.
         ! rewind check --run race --mem 2048 2> refused
         grep -q -- '--mem' refused
+        touch $out
+      '';
+
+  # checks.check-point: the SDK's rewind_point is a schedule point. point's
+  # threads race only in computation, so with no points every schedule
+  # holds; with a point between each load and store, check finds a
+  # schedule that loses an add and narrows it to a step. A point is one
+  # exit and leaves no mark in the trace. Boots the VM, so it needs
+  # /dev/kvm.
+  check-point =
+    pkgs.runCommand "rewind-check-point"
+      {
+        nativeBuildInputs = [
+          rewind
+          pkgs.jq
+        ];
+        requiredSystemFeatures = [ "kvm" ];
+      }
+      ''
+        export REWIND_HOME=$TMPDIR/rewind
+        check() { rewind check -j 4 --clock exits --property exit-zero --root ${pointRoot} "$@"; }
+
+        # Without points the threads never switch inside an add.
+        check --schedules 32 -- /bin/point > plain
+        cat plain
+        grep -q '^every property held under all 33 schedules$' plain
+
+        # With them, a schedule loses an add.
+        ! check -- /bin/point points > found
+        cat found
+        grep -qE '^schedule +[0-9]+ violates exit-zero; narrowing' found
+        grep -q ' decides it: .* makes the run violate exit-zero$' found
+
+        # Each point is an exit, and none is a mark.
+        marks() { rewind events --json "$1" | jq -s '[.[] | select(.kind.type == "mark")] | length'; }
+        rewind run --clock exits --root ${pointRoot} -- /bin/point
+        plain_id=$(rewind ls --json -n 1 | jq -r .id)
+        rewind run --clock exits --root ${pointRoot} -- /bin/point points || true
+        points_id=$(rewind ls --json -n 1 | jq -r .id)
+        plain_steps=$(rewind ls --json -n 2 | jq -rs '.[1].steps')
+        points_steps=$(rewind ls --json -n 1 | jq -r .steps)
+        echo "steps: $plain_steps plain, $points_steps with points"
+        test "$points_steps" -ge $((plain_steps + 20))
+        test "$(marks "$plain_id")" = "$(marks "$points_id")"
         touch $out
       '';
 

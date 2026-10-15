@@ -96,6 +96,18 @@ def unreachable(id, message=""):
     _say_once(f"unreachable {id}", lambda: _with(f"unreachable {id}", message))
 
 
+def point():
+    """A schedule point: an exit where `rewind check` can switch to another
+    thread or hold this one up, with nothing written to the run's trace."""
+    fd = _device()
+    if fd is None:
+        return
+    try:
+        os.write(fd, b"")
+    except OSError:
+        pass
+
+
 def test_begin(name):
     """A test named `name`, which may have spaces, starts."""
     _say(f"test-begin {name}")
