@@ -299,6 +299,10 @@ pub trait Engine: Send + Sync {
     ) -> EngineResult<crate::sweep::Checked>;
 }
 
+/// gdb's setting that lets its output scroll the terminal pane rather than
+/// stopping each screenful for a key.
+const GDB_NO_PAGER: &str = "set pagination off";
+
 /// A program and its arguments, for the terminal pane to run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandLine {
@@ -568,7 +572,7 @@ impl Engine for CliEngine {
     }
 
     fn gdb_command(&self, run: &Path, step: u64, at: Option<GdbAt>) -> CommandLine {
-        // rewind gdb <run> <step> [--pid P --tid T [--frame N]]
+        // rewind gdb <run> <step> [--pid P --tid T [--frame N]] -- -iex 'set pagination off'
         let mut args: Vec<OsString> = vec!["gdb".into(), run.into(), step.to_string().into()];
         if let Some(at) = at {
             args.extend([
@@ -581,6 +585,11 @@ impl Engine for CliEngine {
                 args.extend(["--frame".into(), frame.to_string().into()]);
             }
         }
+
+        // The pane is a few rows tall, so gdb would stop at "Type <RET>
+        // for more" on the attach alone, and the first command typed
+        // would answer the pager rather than gdb. The pane scrolls instead.
+        args.extend(["--".into(), "-iex".into(), GDB_NO_PAGER.into()]);
         CommandLine {
             program: self.program.clone(),
             args,
@@ -1320,7 +1329,7 @@ mod tests {
         );
         assert_eq!(
             engine.gdb_command(run, 4_392, None).display(),
-            "rewind gdb /runs/abc 4392"
+            "rewind gdb /runs/abc 4392 -- -iex set pagination off"
         );
         let at = GdbAt {
             pid: 166,
@@ -1329,7 +1338,7 @@ mod tests {
         };
         assert_eq!(
             engine.gdb_command(run, 4_392, Some(at)).display(),
-            "rewind gdb /runs/abc 4392 --pid 166 --tid 174 --frame 3"
+            "rewind gdb /runs/abc 4392 --pid 166 --tid 174 --frame 3 -- -iex set pagination off"
         );
     }
 

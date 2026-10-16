@@ -63,8 +63,8 @@ With --local, the commands build them from the recorded commit instead,
 and `git clone https://github.com/fzakaria/rewindvm` clones that commit,
 while the page still shows GitHub: a page about an example that is not
 pushed yet can be recorded, and the runs are the ones a reader's build of
-the same source makes. Such a clone prints what a local clone does, so its
-block should be `hide`.
+the same source makes. Such a clone prints nothing, where a reader's
+prints "Cloning into 'rewindvm'...".
 """
 
 import argparse
@@ -209,10 +209,14 @@ class Recording:
         if self.commit is None:
             return command
 
-        # A clone of the repository checks out the recorded commit.
+        # A clone of the repository checks out the recorded commit. The
+        # clone checks nothing out itself: a quiet clone still prints the
+        # detached HEAD advice when the source's HEAD is on no branch,
+        # which a jj repository's is whenever the working copy is ahead of
+        # main, and the quiet checkout after it prints nothing.
         if m := GITHUB_CLONE.fullmatch(command):
             into = shlex.quote(m.group(1) or "rewindvm")
-            return f"git clone -q {shlex.quote(str(REPO))} {into} && git -C {into} checkout -q {self.commit}"
+            return f"git clone -q --no-checkout {shlex.quote(str(REPO))} {into} && git -C {into} checkout -q {self.commit}"
 
         local = f"git+file://{REPO}?rev={self.commit}"
 
