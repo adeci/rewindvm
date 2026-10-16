@@ -464,6 +464,7 @@ in
   # library as sdk/ has it.
   sdk-copies = pkgs.runCommand "rewind-sdk-copies" { } ''
     cmp ${../sdk/c/rewind.h} ${../examples/bank/rewind.h}
+    cmp ${../sdk/c/rewind.h} ${../examples/counter/rewind.h}
     cmp ${../sdk/java/dev/rewindvm/sdk/Rewind.java} ${../examples/bank-java/dev/rewindvm/sdk/Rewind.java}
     cmp ${../sdk/java/dev/rewindvm/sdk/RewindExtension.java} ${../examples/bank-java/dev/rewindvm/sdk/RewindExtension.java}
     touch $out

@@ -64,6 +64,23 @@ $ make -C bank-java check JUNIT=junit-platform-console-standalone.jar  # plain, 
 $ nix build github:fzakaria/rewindvm#bank-java                         # as a derivation
 ```
 
+## counter
+
+Two threads count hits on one counter. A hit reads the count and stores the
+count plus one, with no lock and no system call between, so a thread that
+runs between the other's read and store has its hit written over. `make
+check` fails when the total comes up short. Rewind VM switches threads only
+at system calls, so no schedule reaches this race until the schedule points
+tutorial puts a `rewind_point()` between the read and the store. A compare
+and exchange that reads again when the count has changed fixes it. It
+asserts with the Rewind SDK, through a copy of
+[`sdk/c/rewind.h`](../sdk/c/rewind.h), that the total adds up.
+
+```console
+$ make -C counter check                       # plain, on the host
+$ nix build github:fzakaria/rewindvm#counter  # as a derivation
+```
+
 ## config-reload
 
 One process rewrites a config file in place, truncating it and writing its

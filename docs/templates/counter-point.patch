@@ -1,0 +1,11 @@
+--- a/examples/counter/counter.c
++++ b/examples/counter/counter.c
+@@ -27,6 +27,8 @@
+ static void hit(void)
+ {
+ 	long seen = atomic_load(&hits);
++	/* A schedule point: `rewind check` can switch threads here. */
++	rewind_point();
+ 	atomic_store(&hits, seen + 1);
+ }
+ 

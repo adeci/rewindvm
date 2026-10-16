@@ -179,6 +179,10 @@
           # two tellers losing a deposit, a lost update (nix/examples.nix)
           bank = p.examples.bank;
 
+          # two threads losing a hit with no system call between read and
+          # store, reached only with a schedule point (nix/examples.nix)
+          counter = p.examples.counter;
+
           # bank as a JUnit 5 suite marked with the Rewind SDK's extension
           # (nix/examples.nix)
           bank-java = p.examples.bank-java;

@@ -28,6 +28,7 @@ LINK_MAP = {
     "docs/tutorial-nix.md": "tutorials/nix.html",
     "docs/tutorial-container.md": "tutorials/container.html",
     "docs/tutorial-properties.md": "tutorials/properties.html",
+    "docs/tutorial-points.md": "tutorials/points.html",
     "docs/tutorial-advanced.md": "tutorials/advanced.html",
     "docs/case-studies/nix-gc-closure-sigpipe.md": "case-studies/nix-gc-closure-sigpipe.html",
     "docs/case-studies/nix-schema-migration-hang.md": "case-studies/nix-schema-migration-hang.html",
@@ -158,6 +159,19 @@ PAGES = [
         source="docs/tutorial-properties.md",
         eyebrow="Tutorial &middot; Properties",
         description="Property-based testing with rewind check: properties every run must have, assertions a program makes with the Rewind SDK, and seeds that vary a program's randomness as well as its schedule.",
+        toc="Steps",
+        figure=None,
+        next=(
+            "tutorials/points.html",
+            "Tutorial &middot; Points",
+            "Schedule points",
+            "One line that puts a thread switch where no system call is.",
+        ),
+    ),
+    dict(
+        source="docs/tutorial-points.md",
+        eyebrow="Tutorial &middot; Points",
+        description="Schedule points with the Rewind SDK: one line that lets rewind check switch threads between a read and a store, reaching a race that no schedule reaches at system calls alone.",
         toc="Steps",
         figure=None,
         next=(

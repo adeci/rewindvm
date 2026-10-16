@@ -8,7 +8,9 @@
 # signal that should wake it; each fails only under some interleavings.
 # hash-order's test expects a HashSet's order, which Rust draws from the
 # system's randomness, so it fails only under some seeds. bank-java is bank
-# as a JUnit 5 suite marked with the Rewind SDK's extension.
+# as a JUnit 5 suite marked with the Rewind SDK's extension. counter loses
+# a hit to two threads racing with no system call between read and store,
+# which only a schedule point reaches.
 { pkgs }:
 {
   mylib = pkgs.stdenv.mkDerivation {
@@ -36,6 +38,15 @@
     makeFlags = [ "PREFIX=$(out)" ];
     doCheck = true;
     meta.description = "Two tellers and one account, losing a deposit under some interleavings";
+  };
+
+  counter = pkgs.stdenv.mkDerivation {
+    pname = "counter";
+    version = "0.1.0";
+    src = ../examples/counter;
+    makeFlags = [ "PREFIX=$(out)" ];
+    doCheck = true;
+    meta.description = "Two threads and one count, losing a hit only at a schedule point";
   };
 
   bank-java = pkgs.stdenv.mkDerivation {

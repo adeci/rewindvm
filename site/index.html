@@ -753,8 +753,8 @@
         <h2>Tutorials</h2>
         <p class="lede">
           The first two follow one real bug, a shutdown race in a small C thread pool, from install
-          to fix; the third says what a correct run is; the fourth is the rest of the tools. Every
-          transcript in them is real output.
+          to fix; the third says what a correct run is; the fourth reaches a race between two lines
+          of code; the fifth is the rest of the tools. Every transcript in them is real output.
         </p>
         <div class="grid swipe">
           <a class="card" href="tutorials/nix.html">
@@ -781,6 +781,15 @@
             <p>
               Properties that catch a bug on the first run, assertions from inside the program, and
               seeds that vary its randomness as well as its schedule.
+            </p>
+            <span class="card-link">Read the tutorial &rarr;</span>
+          </a>
+          <a class="card" href="tutorials/points.html">
+            <span class="eyebrow">Points</span>
+            <h3>Schedule points</h3>
+            <p>
+              A race with no system call between its read and its store, which no schedule reaches
+              until one line from the SDK puts a switch there.
             </p>
             <span class="card-link">Read the tutorial &rarr;</span>
           </a>

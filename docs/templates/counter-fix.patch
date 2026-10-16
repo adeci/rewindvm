@@ -1,0 +1,19 @@
+--- a/examples/counter/counter.c
++++ b/examples/counter/counter.c
+@@ -23,13 +23,14 @@
+ 
+ static atomic_long hits;
+ 
+-/* The race: the count read here is stale by the time it is stored. */
++/* Stores only if the count is still what was read, and reads again if not. */
+ static void hit(void)
+ {
+ 	long seen = atomic_load(&hits);
+ 	/* A schedule point: `rewind check` can switch threads here. */
+ 	rewind_point();
+-	atomic_store(&hits, seen + 1);
++	while (!atomic_compare_exchange_weak(&hits, &seen, seen + 1))
++		;
+ }
+ 
+ static void *count(void *arg)
