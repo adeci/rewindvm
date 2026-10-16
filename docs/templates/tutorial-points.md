@@ -52,8 +52,10 @@ the store:
 
 `rewind_point()` makes one exit from the VM, where a schedule can switch to
 another thread or hold this one up, as at any system call. It writes
-nothing to the run, and outside Rewind it does nothing. Now check finds a
-schedule that loses hits, and narrows it to the point that decides it:
+nothing to the run, and outside Rewind it does nothing.
+
+Now check finds a schedule that loses hits, and narrows it to the point
+that decides it:
 
 ```console run name=found
 $ rewind check --epoch {{epoch}} .#counter | grep -E 'decides it|passing:|failing:|failing run violates sdk'

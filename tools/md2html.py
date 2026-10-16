@@ -124,6 +124,34 @@ DEVENV_FIGURE = """<div class="tour tour-article">
 </div>
 """
 
+# The lost hit, drawn: one thread's store lands between the other's read
+# and store, so the count goes up once for two hits. Shown in the points
+# tutorial after the paragraph that says what the call does.
+POINTS_FIGURE = """<figure class="race">
+  <svg viewBox="0 0 640 190" role="img" aria-label="Thread A reads 7, a switch at the schedule point lets thread B read 7 and store 8, then thread A stores 8, and B's hit is lost">
+    <text x="0" y="52" fill="var(--muted)">thread A</text>
+    <text x="0" y="132" fill="var(--muted)">thread B</text>
+    <line x1="80" y1="48" x2="630" y2="48" stroke="var(--line)" stroke-width="2" />
+    <line x1="80" y1="128" x2="630" y2="128" stroke="var(--line)" stroke-width="2" />
+    <rect x="96" y="32" width="120" height="32" rx="5" fill="var(--panel)" stroke="var(--blue)" />
+    <text x="110" y="53" fill="var(--blue)">read 7</text>
+    <line x1="236" y1="14" x2="236" y2="176" stroke="var(--amber)" stroke-width="2" stroke-dasharray="4 4" />
+    <text x="244" y="22" fill="var(--amber)">rewind_point()</text>
+    <rect x="258" y="112" width="120" height="32" rx="5" fill="var(--panel)" stroke="var(--blue)" />
+    <text x="272" y="133" fill="var(--blue)">read 7</text>
+    <rect x="392" y="112" width="120" height="32" rx="5" fill="var(--panel)" stroke="var(--blue)" />
+    <text x="404" y="133" fill="var(--blue)">store 8</text>
+    <rect x="500" y="32" width="120" height="32" rx="5" fill="var(--panel)" stroke="var(--red)" />
+    <text x="512" y="53" fill="var(--red)">store 8</text>
+    <text x="410" y="176" fill="var(--red)">two hits, count 8</text>
+  </svg>
+  <figcaption>
+    A switch at the point: thread B's hit lands between thread A's read and
+    store, and thread A's store overwrites it.
+  </figcaption>
+</figure>
+"""
+
 # Each page: its source, where it goes, the line above its title, its meta
 # description, what its table of contents is called, an optional figure
 # with the section and the paragraph of that section it follows, and the
@@ -173,7 +201,7 @@ PAGES = [
         eyebrow="Tutorial &middot; Points",
         description="Schedule points with the Rewind SDK: one line that lets rewind check switch threads between a read and a store, reaching a race that no schedule reaches at system calls alone.",
         toc="Steps",
-        figure=None,
+        figure=("mark-the-place", 3, POINTS_FIGURE),
         next=(
             "tutorials/advanced.html",
             "Tutorial &middot; Advanced",

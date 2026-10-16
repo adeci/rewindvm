@@ -1073,6 +1073,28 @@ a:focus-visible {
   margin-top: 10px;
 }
 
+/* The two-thread drawing in the points tutorial: scaled to the column, and
+   scrolling sideways rather than shrinking under 560px. */
+.race {
+  margin: 28px 0 0;
+  overflow-x: auto;
+}
+.race svg {
+  display: block;
+  width: 100%;
+  min-width: 560px;
+  height: auto;
+}
+.race text {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.race figcaption {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-top: 10px;
+}
+
 /* The app tour: the real screenshot at about two thirds of the content
    width with the numbered cards beside it, stacking under it on narrow
    screens. */
