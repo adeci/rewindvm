@@ -33,12 +33,12 @@ schedule 0 already violates it and check finds the bug with no search:
 ```console
 $ rewind check --epoch 1790985600 --schedules 8 --property 'atomic-replace=*.conf' github:fzakaria/rewindvm#config-reload
 rewind: packing 62 store paths for config-reload-0.1.0
-schedule   0: exited:0       4563 steps  f7b1c7741aba  run d83eda44b1eee197  violates atomic-replace
+schedule   0: exited:0       4563 steps  f7b1c7741aba  run 85414e231b889768  violates atomic-replace
   atomic-replace: step 3238: process 139 (config) truncated /build/config-reload/app.conf in place, which the run wrote at step 3233; a reader can see it empty or half written
 ...
-schedule   8: exited:2       3778 steps    run 5ed6470d27365add  violates atomic-replace
+schedule   8: exited:2       3778 steps    run daf38a34caec3748  violates atomic-replace
 every schedule violated a property, as schedule 0 did
-open it at the step: rewind open d83eda44b1eee197 3238
+open it at the step: rewind open 85414e231b889768 3238
 ```
 
 `atomic-replace` flags the unsafe write whether or not a reader saw the
@@ -102,7 +102,7 @@ finished its deposit before the other started, and check reports the
 ```console
 $ rewind check --epoch 1790985600 --schedules 0 github:fzakaria/rewindvm#bank
 ...
-schedule   0: exited:0       4557 steps  2ffd6b62eb30  run 7316b2ee6b7b0cb6  holds
+schedule   0: exited:0       4556 steps  2ffd6b62eb30  run 0771d706a710f8d7  holds
 never true in any run: sometimes "deposits-concurrent"
 every property held under the one schedule tried
 ```
@@ -112,11 +112,11 @@ a run that loses a deposit:
 
 ```console
 $ rewind check --epoch 1790985600 github:fzakaria/rewindvm#bank | grep -E 'decides it|passing:|failing:|failing run violates sdk|^true in'
-true in 16 of 17 runs that checked it: sometimes "deposits-concurrent"
+true in 15 of 17 runs that checked it: sometimes "deposits-concurrent"
 step 3258 decides it: a reschedule there makes the run violate same-outcome, sdk
-passing: run 7316b2ee6b7b0cb6, schedule 0
-failing: run 5257125bf4964a2a, schedule 1 over steps 3258..3259
-failing run violates sdk: step 3299: always "balance-adds-up" failed: balance 370, expected 400
+passing: run 0771d706a710f8d7, schedule 0
+failing: run 5a0942f7af3b77bf, schedule 1 over steps 3258..3259
+failing run violates sdk: step 3298: always "balance-adds-up" failed: balance 380, expected 400
 ```
 
 Outside Rewind the SDK's calls do nothing, so they can stay in the program.
@@ -168,11 +168,11 @@ balance to its store:
 ```console
 $ rewind check --epoch 1790985600 .#bank | grep -E '^true in|^every property'
 rewind: packing 62 store paths for bank-0.1.0
-true in 64 of 65 runs that checked it: sometimes "deposits-concurrent"
+true in 62 of 65 runs that checked it: sometimes "deposits-concurrent"
 every property held under all 65 schedules
 ```
 
-The balance adds up in all 65 runs, and in 64 of them both
+The balance adds up in all 65 runs, and in 62 of them both
 tellers were mid-deposit at once, so the search made them contend for the
 lock and the lock held. Without the `sometimes`, a clean search could also
 mean the tellers never overlapped.
@@ -193,11 +193,11 @@ bug. `--seeds 8` runs the job under 8 seeds:
 ```console
 $ rewind check --epoch 1790985600 --seeds 8 --schedules 0 github:fzakaria/rewindvm#hash-order | grep -E '^seed|decides it|passing:|failing:'
 rewind: packing 67 store paths for hash-order-0.1.0
-seed  0 schedule   0: exited:0       4811 steps  83f239c2e313  run 4274b5643f737d4b
-seed  1 schedule   0: exited:2       3557 steps    run b77e3df778b90b00
+seed  0 schedule   0: exited:0       4811 steps  83f239c2e313  run 2fedde184b908b25
+seed  1 schedule   0: exited:2       3557 steps    run fb6b808a0e60208d
 seed 1 decides it: unperturbed, seed 0 passes and seed 1 fails
-passing: run 4274b5643f737d4b, seed 0, schedule 0
-failing: run b77e3df778b90b00, seed 1, schedule 0
+passing: run 2fedde184b908b25, seed 0, schedule 0
+failing: run fb6b808a0e60208d, seed 1, schedule 0
 ```
 
 Seed 1 puts the tags in the other order and the test fails.
@@ -209,10 +209,10 @@ seed, so one search varies the randomness and the timing together.
 Open the failing `bank` run beside the passing one, at the assertion:
 
 ```console
-$ rewind open 5257125b 3299 --compare 7316b2ee
+$ rewind open 5a0942f7 3298 --compare 0771d706
 ```
 
-![The app zoomed in around step 3299 of the failing bank run: a red mark above the track where always "balance-adds-up" failed, the test's span under the track in red, and the event card naming it](../site/img/app-assertion.png)
+![The app zoomed in around step 3298 of the failing bank run: a red mark above the track where always "balance-adds-up" failed, the test's span under the track in red, and the event card naming it](../site/img/app-assertion.png)
 
 The red mark above the track is the failed assertion; hover over it to see
 its message. The event card names it too, and Jump to failure goes to it.
