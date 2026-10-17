@@ -1655,8 +1655,9 @@ a.card:hover {
 }
 
 /* The box that closes a page: the button to the pricing section, with the
-   prices beside it. */
-.article .cta {
+   prices beside it. Tutorials, case studies and the bugs page end with it. */
+.article .cta,
+.prose .cta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1667,7 +1668,8 @@ a.card:hover {
   border: 1px solid var(--line);
   border-radius: 14px;
 }
-.article .cta p {
+.article .cta p,
+.prose .cta p {
   color: var(--soft);
   margin: 0;
   max-width: none;
