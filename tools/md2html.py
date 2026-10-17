@@ -22,6 +22,10 @@ REPO = Path(__file__).resolve().parent.parent
 GITHUB_BLOB = "https://github.com/fzakaria/rewindvm/blob/main/"
 GITHUB_TREE = "https://github.com/fzakaria/rewindvm/tree/main/"
 
+# The site's own address, which links in the documents use so that they
+# also work on GitHub.
+SITE_URL = "https://rewindvm.dev/"
+
 # Documents the site publishes, by repository path, and their site paths.
 LINK_MAP = {
     "docs/pmu.md": "counter-time.html",
@@ -375,6 +379,15 @@ def slug(text):
 
 def resolve(href, source, page):
     """A link in SOURCE as it must read on PAGE."""
+    # A link to the site itself stays on the copy of the site being read,
+    # so a local build opens its own viewer and examples.
+    if href.startswith(SITE_URL):
+        target, sep, query = href.removeprefix(SITE_URL).partition("?")
+        relative = posixpath.relpath(target or ".", posixpath.dirname(page) or ".")
+        if target.endswith("/") or not target:
+            relative += "/"
+        return relative + sep + query
+
     if re.match(r"^[a-z]+:", href) or href.startswith("#"):
         return href
     target, _, frag = href.partition("#")

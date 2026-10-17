@@ -54,6 +54,10 @@
         reproduced it, gdb in the VM shows <code>tokio::select!</code> taking the child's exit with
         a line still buffered, and the fix passes every schedule.
       </p>
+      <p>
+        Scrub the recording in your browser:
+        <a href="../viewer/?url=examples/devenv-task-output-race.rwd">open it in the viewer</a>.
+      </p>
 
       <nav class="toc" aria-label="Sections">
         <p class="toc-head">Sections</p>
@@ -508,7 +512,8 @@ same result under all 257 schedules</code></pre>
               >devenv-task-output-race.rwd</a
             >
             (10.1 KB), the trace, for <code>rewind events</code>, <code>rewind log</code> and the
-            app.
+            app; the <a href="../viewer/?url=examples/devenv-task-output-race.rwd">viewer</a> opens
+            it in a browser.
           </li>
           <li>
             <a

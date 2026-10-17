@@ -9,6 +9,8 @@ hang to `SQLITE_BUSY_SNAPSHOT`, and checks showed why the first fix,
 [#15694](https://github.com/NixOS/nix/pull/15694), left the hang in place and
 the second, [#15967](https://github.com/NixOS/nix/pull/15967), removed it.
 
+Scrub the recording in your browser: [open it in the viewer](https://rewindvm.dev/viewer/?url=examples/nix-schema-migration-hang.rwd).
+
 ## The code
 
 On a new store, every `nix` process runs the schema migrations while holding
@@ -247,7 +249,8 @@ Both files are in the
 [case-studies release](https://github.com/fzakaria/rewindvm/releases/tag/case-studies):
 
 - [nix-schema-migration-hang.rwd](https://github.com/fzakaria/rewindvm/releases/download/case-studies/nix-schema-migration-hang.rwd)
-  (50.8 KB), the trace, for `rewind events`, `rewind log` and the app.
+  (50.8 KB), the trace, for `rewind events`, `rewind log` and the app; the
+  [viewer](https://rewindvm.dev/viewer/?url=examples/nix-schema-migration-hang.rwd) opens it in a browser.
 - [nix-schema-migration-hang-replayable.rwd](https://github.com/fzakaria/rewindvm/releases/download/case-studies/nix-schema-migration-hang-replayable.rwd)
   (542.8 MB), with the kernel, input image and keyframes, for `rewind replay`
   and `rewind shell` on an AMD Zen 2 or later.

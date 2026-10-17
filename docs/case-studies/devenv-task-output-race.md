@@ -7,6 +7,8 @@ by the maintainer in [cachix/devenv#2296](https://github.com/cachix/devenv/pull/
 Rewind VM reproduced it, gdb in the VM shows `tokio::select!` taking the
 child's exit with a line still buffered, and the fix passes every schedule.
 
+Scrub the recording in your browser: [open it in the viewer](https://rewindvm.dev/viewer/?url=examples/devenv-task-output-race.rwd).
+
 ## The code
 
 `devenv-tasks` runs each task as a child process and reads its output a line
@@ -329,7 +331,8 @@ Both files are in the
 [case-studies release](https://github.com/fzakaria/rewindvm/releases/tag/case-studies):
 
 - [devenv-task-output-race.rwd](https://github.com/fzakaria/rewindvm/releases/download/case-studies/devenv-task-output-race.rwd)
-  (10.1 KB), the trace, for `rewind events`, `rewind log` and the app.
+  (10.1 KB), the trace, for `rewind events`, `rewind log` and the app; the
+  [viewer](https://rewindvm.dev/viewer/?url=examples/devenv-task-output-race.rwd) opens it in a browser.
 - [devenv-task-output-race-replayable.rwd](https://github.com/fzakaria/rewindvm/releases/download/case-studies/devenv-task-output-race-replayable.rwd)
   (185.1 MB), with the kernel, input image and keyframes, for `rewind replay`,
   `rewind gdb` and `rewind shell`.

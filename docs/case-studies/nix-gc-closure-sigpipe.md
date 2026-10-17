@@ -5,6 +5,8 @@ failed it on the first run; the host passed it 200 times. We reported it as
 [NixOS/nix#16546](https://github.com/NixOS/nix/issues/16546), and the fix
 below was merged as [NixOS/nix#16547](https://github.com/NixOS/nix/pull/16547).
 
+Scrub the recording in your browser: [open it in the viewer](https://rewindvm.dev/viewer/?url=examples/nix-gc-closure.rwd).
+
 ## The test
 
 Lines 14 to 16 of
@@ -275,7 +277,8 @@ Both files are in the
 [case-studies release](https://github.com/fzakaria/rewindvm/releases/tag/case-studies):
 
 - [nix-gc-closure-sigpipe.rwd](https://github.com/fzakaria/rewindvm/releases/download/case-studies/nix-gc-closure-sigpipe.rwd)
-  (94.1 KB), the trace, for `rewind events`, `rewind log` and the app.
+  (94.1 KB), the trace, for `rewind events`, `rewind log` and the app; the
+  [viewer](https://rewindvm.dev/viewer/?url=examples/nix-gc-closure.rwd) opens it in a browser.
 - [nix-gc-closure-sigpipe-replayable.rwd](https://github.com/fzakaria/rewindvm/releases/download/case-studies/nix-gc-closure-sigpipe-replayable.rwd)
   (535.0 MB), with the kernel, input image and keyframes, for `rewind replay`
   and `rewind shell` on an AMD Zen 2 or later.
