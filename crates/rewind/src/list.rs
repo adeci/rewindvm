@@ -388,7 +388,7 @@ mod tests {
             ..Filter::default()
         };
         assert_eq!(kept(status(Passed)), vec!["b", "c"]);
-        assert_eq!(kept(status(Status::Unreadable)), vec!["d"]);
+        assert_eq!(kept(status(Unreadable)), vec!["d"]);
         let among = Some(forks_of(&runs, "a"));
         assert_eq!(
             kept(Filter {

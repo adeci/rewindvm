@@ -1,0 +1,5 @@
+# The lints themselves are in Cargo.toml's [workspace.lints]. A test that
+# unwraps fails at the line that broke, which is what a test should do.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-dbg-in-tests = true

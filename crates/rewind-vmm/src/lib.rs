@@ -237,6 +237,7 @@ pub trait Observer {
 }
 
 /// An observer that ignores everything.
+#[derive(Debug)]
 pub struct Ignore;
 impl Observer for Ignore {}
 
@@ -313,6 +314,17 @@ pub struct Machine {
     pub(crate) last_exit: std::time::Instant,
 }
 
+/// The machine's configuration and how far it has run; its devices and
+/// memory are the guest's whole state.
+impl std::fmt::Debug for Machine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Machine")
+            .field("config", &self.config)
+            .field("step", &self.dev.step)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Machine {
     /// Creates the VM with its memory and devices, but no guest state:
     /// either [`Machine::boot`] or a snapshot restore supplies that.
@@ -368,13 +380,13 @@ impl Machine {
                 // where the CPU does not: name the address bits, where KVM
                 // would fail with a bare EINVAL.
                 recorded_slot_fits(cpu::address_bits(&kvm)?)?;
-                let slot = Mapping::anonymous(layout::EXTRAS_LEN as usize)?;
+                let slot = Mapping::anonymous(EXTRAS_LEN as usize)?;
                 // SAFETY: the mapping outlives the VM; the slot is read-only.
                 unsafe {
                     vm.set_user_memory_region(kvm_userspace_memory_region {
                         slot: SLOT_EXTRAS,
                         flags: KVM_MEM_READONLY,
-                        guest_phys_addr: layout::EXTRAS_START,
+                        guest_phys_addr: EXTRAS_START,
                         memory_size: slot.len() as u64,
                         userspace_addr: slot.host_addr(),
                     })?;
@@ -723,7 +735,7 @@ impl Machine {
         if let (Some(seed), Some(shared)) =
             (self.dev.schedule.reseed_at(self.dev.step), self.dev.shared)
         {
-            let bytes = pv::Schedule::reseed_bytes(seed, self.dev.step);
+            let bytes = Schedule::reseed_bytes(seed, self.dev.step);
             self.dev.ram.write(shared + pv::SHARED_RESEED, &bytes)?;
             reasons |= pv::PENDING_RESEED;
         }
@@ -868,7 +880,9 @@ impl Machine {
     /// falls due, and the overflow set a margin short of it, so a guest
     /// computing without exits is still interrupted there.
     fn aim_preemption(&mut self) -> Result<()> {
-        let work = self.work.as_mut().unwrap();
+        let Some(work) = self.work.as_mut() else {
+            return Ok(());
+        };
         if work.target.is_some() {
             return Ok(());
         }
@@ -892,7 +906,9 @@ impl Machine {
     /// After an interruption or a single step: true once the count is
     /// exactly on the target; single-stepping once it is within the margin.
     fn reached_preemption(&mut self) -> Result<bool> {
-        let work = self.work.as_ref().unwrap();
+        let Some(work) = self.work.as_ref() else {
+            return Ok(false);
+        };
         let Some(target) = work.target else {
             return Ok(false);
         };
@@ -917,7 +933,9 @@ impl Machine {
     /// Single-steps the guest, interrupts held, alongside whatever a
     /// debugger traps.
     fn start_stepping(&mut self) -> Result<()> {
-        self.work.as_mut().unwrap().stepping = true;
+        if let Some(work) = self.work.as_mut() {
+            work.stepping = true;
+        }
         self.apply_guest_debug()
     }
 

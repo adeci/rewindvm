@@ -450,7 +450,8 @@ pub fn load_offset(file: &mut (impl Read + Seek), base: u64) -> Option<u64> {
         return None;
     }
     let u16_at = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]) as usize;
-    let u64_at = |b: &[u8], at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+    let u64_at =
+        |b: &[u8], at: usize| u64::from_le_bytes(b[at..at + 8].try_into().expect("eight bytes"));
     let phoff = u64_at(&header, E_PHOFF);
     let phentsize = u16_at(&header, E_PHENTSIZE);
     let phnum = u16_at(&header, E_PHNUM);
@@ -465,7 +466,7 @@ pub fn load_offset(file: &mut (impl Read + Seek), base: u64) -> Option<u64> {
     file.read_exact(&mut phdrs).ok()?;
     let first = phdrs
         .chunks_exact(phentsize)
-        .find(|p| u32::from_le_bytes(p[..4].try_into().unwrap()) == PT_LOAD)?;
+        .find(|p| u32::from_le_bytes(p[..4].try_into().expect("four bytes")) == PT_LOAD)?;
     let linked = (u64_at(first, P_VADDR) - u64_at(first, P_OFFSET)) & PAGE_MASK;
     Some(base.wrapping_sub(linked))
 }
@@ -481,7 +482,8 @@ pub fn dynamic_vaddr(file: &mut (impl Read + Seek)) -> Option<u64> {
         return None;
     }
     let u16_at = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]) as usize;
-    let u64_at = |b: &[u8], at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+    let u64_at =
+        |b: &[u8], at: usize| u64::from_le_bytes(b[at..at + 8].try_into().expect("eight bytes"));
     let phentsize = u16_at(&header, E_PHENTSIZE);
     let phnum = u16_at(&header, E_PHNUM);
     if phentsize < PHDR_LEN {
@@ -492,7 +494,7 @@ pub fn dynamic_vaddr(file: &mut (impl Read + Seek)) -> Option<u64> {
     file.read_exact(&mut phdrs).ok()?;
     let dynamic = phdrs
         .chunks_exact(phentsize)
-        .find(|p| u32::from_le_bytes(p[..4].try_into().unwrap()) == PT_DYNAMIC)?;
+        .find(|p| u32::from_le_bytes(p[..4].try_into().expect("four bytes")) == PT_DYNAMIC)?;
     Some(u64_at(dynamic, P_VADDR))
 }
 
@@ -528,8 +530,10 @@ fn section(file: &mut (impl Read + Seek), name: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let u16_at = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]) as usize;
-    let u32_at = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
-    let u64_at = |b: &[u8], at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+    let u32_at =
+        |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().expect("four bytes"));
+    let u64_at =
+        |b: &[u8], at: usize| u64::from_le_bytes(b[at..at + 8].try_into().expect("eight bytes"));
     let shentsize = u16_at(&header, E_SHENTSIZE);
     let shnum = u16_at(&header, E_SHNUM);
     if shentsize < SHDR_LEN {
@@ -575,8 +579,10 @@ pub fn build_id(file: &mut (impl Read + Seek)) -> Option<String> {
         return None;
     }
     let u16_at = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]) as usize;
-    let u32_at = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
-    let u64_at = |b: &[u8], at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+    let u32_at =
+        |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().expect("four bytes"));
+    let u64_at =
+        |b: &[u8], at: usize| u64::from_le_bytes(b[at..at + 8].try_into().expect("eight bytes"));
     let phentsize = u16_at(&header, E_PHENTSIZE);
     let phnum = u16_at(&header, E_PHNUM);
     if phentsize < PHDR_LEN {
@@ -802,7 +808,7 @@ mod tests {
             .find(|path| path.starts_with(NIX_STORE))
             .expect("a store file is mapped")
             .to_string();
-        let in_root = format!("{}{store_file}", rewind_init::IMAGE_ROOT);
+        let in_root = format!("{}{store_file}", IMAGE_ROOT);
         let map = |path: &str| format!("7f0000000000-7f0000001000 r--p 00000000 00:1a 77 {path}\n");
         let dir =
             std::env::temp_dir().join(format!("rewind-maps-root-store-{}", std::process::id()));

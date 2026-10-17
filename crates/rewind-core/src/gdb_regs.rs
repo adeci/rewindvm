@@ -33,6 +33,7 @@ const EXTRA_LEN: usize = 8;
 const CORE_LEN: usize = 0x218;
 
 /// x86-64 with the FS and GS bases.
+#[derive(Debug)]
 pub enum X86_64WithBases {}
 
 impl Arch for X86_64WithBases {

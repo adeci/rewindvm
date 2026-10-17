@@ -151,6 +151,7 @@ impl Refusal {
 
 /// The runs forked from each run, each run's in order of age, found once
 /// for every family a removal looks at.
+#[derive(Debug)]
 pub struct Forks<'a>(BTreeMap<&'a str, Vec<&'a str>>);
 
 impl<'a> Forks<'a> {
@@ -200,7 +201,7 @@ impl<'a> Forks<'a> {
 /// keyframes through a chain reads them from the first run in it, which
 /// then reads from the next, so the direct readers are the ones that
 /// matter.
-pub fn removal_set(ids: &[&str], runs: &[Member]) -> std::result::Result<Vec<String>, Refusal> {
+pub fn removal_set(ids: &[&str], runs: &[Member]) -> Result<Vec<String>, Refusal> {
     // Every named run and its descendants, whatever the order.
     let forks = Forks::of(runs);
     let all: BTreeSet<&str> = ids.iter().flat_map(|id| forks.descendants(id)).collect();

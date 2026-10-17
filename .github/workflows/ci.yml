@@ -9,7 +9,9 @@
 #     GitHub's Linux runners have but do not open to the build user.
 #
 # Then the packages build: the command, the desktop app, the three release
-# assets, the site and the debuginfod server `rewind gdb` fetches.
+# assets, the site and the debuginfod server `rewind gdb` fetches. The
+# command's and the app's builds run clippy as they compile and fail on
+# any warning (nix/crane.nix).
 # Everything built is pushed to rewindvm.cachix.org.
 name: ci
 

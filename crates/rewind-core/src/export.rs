@@ -275,7 +275,7 @@ fn unpack_and_place(home: &Home, reader: impl Read, source: &str, staging: &Path
             if !from.exists() {
                 return Ok(None);
             }
-            let to = inputs.join(Path::new(name).file_name().unwrap());
+            let to = inputs.join(Path::new(name).file_name().expect("a file's path"));
             fs::rename(&from, &to)?;
             Ok(Some(to))
         };

@@ -33,16 +33,19 @@ const LOCK: &str = "lock";
 /// mounts an image in a shell: `rewind gc` refuses while any is held, since
 /// an image just packed is named by no run until the run's manifest is
 /// written. Let go when dropped.
+#[derive(Debug)]
 pub struct InUse {
     _lock: File,
 }
 
 /// The home held by one process alone, as `rewind gc` holds it while it
 /// removes what no run uses. Let go when dropped.
+#[derive(Debug)]
 pub struct Alone {
     _lock: File,
 }
 
+#[derive(Debug)]
 pub struct Home {
     root: PathBuf,
 }
@@ -159,7 +162,7 @@ pub fn bytes_under(dir: &Path) -> u64 {
     use std::os::unix::fs::MetadataExt;
     /// st_blocks counts 512-byte blocks whatever the file system's own.
     const BLOCK: u64 = 512;
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = fs::read_dir(dir) else {
         return 0;
     };
     let mut total = 0;
@@ -177,6 +180,7 @@ pub fn bytes_under(dir: &Path) -> u64 {
 }
 
 /// The guest pieces named by the environment.
+#[derive(Debug)]
 pub struct Guest {
     pub kernel: PathBuf,
     pub initrd: PathBuf,

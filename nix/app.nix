@@ -48,9 +48,11 @@ let
   # manifests. nix/license.nix builds the issuer on them too.
   cargoArtifacts = rust.craneLib.buildDepsOnly (rust.app // { pname = "rewind-app"; });
 
-  # The compiled app, which finds the engine on PATH.
+  # The compiled app, which finds the engine on PATH, linted as it
+  # compiles (nix/crane.nix).
   unwrapped = rust.craneLib.buildPackage (
     rust.app
+    // rust.clippy
     // {
       pname = "rewind-app";
       inherit cargoArtifacts;

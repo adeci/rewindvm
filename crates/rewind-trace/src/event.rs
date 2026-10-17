@@ -167,7 +167,8 @@ impl Event {
             return Err(DecodeError::Short(record.len()));
         }
         let u16_at = |at: usize| u16::from_le_bytes([record[at], record[at + 1]]);
-        let u32_at = |at: usize| u32::from_le_bytes(record[at..at + 4].try_into().unwrap());
+        let u32_at =
+            |at: usize| u32::from_le_bytes(record[at..at + 4].try_into().expect("four bytes"));
 
         let claimed = u32_at(0) as usize;
         if claimed != record.len() {
@@ -215,10 +216,10 @@ impl Event {
             kind::SIGNAL => {
                 let code = data
                     .get(0..4)
-                    .map_or(0, |b| i32::from_le_bytes(b.try_into().unwrap()));
-                let addr = data
-                    .get(4..12)
-                    .map_or(0, |b| u64::from_le_bytes(b.try_into().unwrap()));
+                    .map_or(0, |b| i32::from_le_bytes(b.try_into().expect("four bytes")));
+                let addr = data.get(4..12).map_or(0, |b| {
+                    u64::from_le_bytes(b.try_into().expect("eight bytes"))
+                });
                 EventKind::Signal {
                     signo: aux,
                     code,

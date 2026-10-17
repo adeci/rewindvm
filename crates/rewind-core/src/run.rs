@@ -169,7 +169,7 @@ pub enum TimeLimit {
     /// Stop it after this much wall-clock time, however far it got. It
     /// then ends as [`Stop::TimedOut`], which is the host's doing: the same
     /// run may finish on a faster host.
-    Wall(std::time::Duration),
+    Wall(Duration),
 }
 
 /// How to execute a run, none of which changes what the run is.
@@ -338,6 +338,7 @@ impl Observer for Recorder {
 }
 
 /// A replay from a keyframe, as [`Run::replay_from`] made it.
+#[derive(Debug)]
 pub struct ReplayedFrom {
     /// The step of the keyframe it started from.
     pub keyframe: u64,
@@ -509,6 +510,7 @@ struct Base {
 }
 
 /// A run on disk.
+#[derive(Debug)]
 pub struct Run {
     pub dir: PathBuf,
     pub manifest: Manifest,
@@ -940,7 +942,7 @@ impl Run {
 
         let limit = match &self.manifest.outcome {
             Some(o) if o.stop.timeout().is_some() => {
-                TimeLimit::Wall(std::time::Duration::from_millis(o.wall_ms))
+                TimeLimit::Wall(Duration::from_millis(o.wall_ms))
             }
             _ => TimeLimit::None,
         };
@@ -1430,7 +1432,7 @@ impl Run {
 
 /// Every run in a home, and the directories beside them whose manifests
 /// do not read.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Listing {
     pub runs: Vec<Run>,
     pub unreadable: Vec<Unreadable>,
@@ -1836,7 +1838,7 @@ pub(crate) mod tests {
             let stall = Stall {
                 rip,
                 mode,
-                since_exit: std::time::Duration::from_millis(since_exit_ms),
+                since_exit: Duration::from_millis(since_exit_ms),
             };
             stop_of(Outcome::Stopped(Stop::TimedOut(stall)), &kernel, || {
                 Some(worker.clone())

@@ -32,6 +32,18 @@ rec {
   craneLib = crane.mkLib pkgs;
   craneLibStatic = crane.mkLib pkgs.pkgsStatic;
 
+  # Clippy, run by a package's own build rather than a check of its own.
+  # cargo runs the workspace's crates, and only those, through
+  # clippy-driver, which compiles them as rustc would and lints them on
+  # the way, so the dependencies come from the dependency build unchanged
+  # and nothing compiles twice. build.warnings fails the build on any
+  # warning, rustc's or clippy's, without changing what is compiled, as
+  # RUSTFLAGS would.
+  clippy = {
+    RUSTC_WORKSPACE_WRAPPER = "${pkgs.clippy}/bin/clippy-driver";
+    CARGO_BUILD_WARNINGS = "deny";
+  };
+
   # The engine's workspace without the desktop app, which is a workspace
   # of its own, and without build directories. Only the rewind command is
   # built; it depends on every crate in the workspace.
@@ -43,6 +55,7 @@ rec {
       fileset = fs.unions [
         ../Cargo.toml
         ../Cargo.lock
+        ../clippy.toml
         (fs.difference ../crates (
           fs.unions [
             ../crates/rewind-app

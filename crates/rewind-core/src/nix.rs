@@ -926,7 +926,7 @@ mod tests {
                  declare stdenv='/nix/store/ddd-stdenv'\n"
             )
         );
-        let json: serde_json::Value = serde_json::from_str(files["/build/.attrs.json"]).unwrap();
+        let json: Value = serde_json::from_str(files["/build/.attrs.json"]).unwrap();
         assert_eq!(json["outputs"], serde_json::json!({"out": FIXTURE_OUT}));
         assert_eq!(json["stdenv"], "/nix/store/ddd-stdenv");
     }

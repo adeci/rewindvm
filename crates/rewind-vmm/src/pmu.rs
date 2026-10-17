@@ -86,6 +86,7 @@ pub enum Modes {
     UserAndKernel,
 }
 
+#[derive(Debug)]
 pub struct Counter {
     fd: i32,
 }
@@ -136,6 +137,7 @@ impl Drop for Counter {
 /// A second counter of the same event, used only for its overflow: armed
 /// to overflow after a number of events, it signals the vCPU thread, which
 /// pulls the vCPU out of KVM_RUN a little after that point.
+#[derive(Debug)]
 pub struct Overflow {
     fd: i32,
 }
@@ -235,7 +237,7 @@ fn open_event(event: CounterEvent, modes: Modes, sample_period: u64) -> Result<i
         }
         let attr = PerfEventAttr {
             type_,
-            size: std::mem::size_of::<PerfEventAttr>() as u32,
+            size: size_of::<PerfEventAttr>() as u32,
             config,
             flags,
             sample_period,

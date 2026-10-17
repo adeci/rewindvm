@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 # The marks the guest's init writes into every trace.
 rewind-init = { path = "../rewind-init", default-features = false }

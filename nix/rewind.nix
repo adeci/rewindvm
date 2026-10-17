@@ -26,11 +26,13 @@ let
 
   unwrapped = rust.craneLib.buildPackage (
     rust.engine
+    // rust.clippy
     // {
       pname = "rewind";
       inherit cargoArtifacts;
-      # The workspace's unit tests; the ones that need /dev/kvm run as flake
-      # checks instead, where the sandbox can be given it.
+      # The workspace's unit tests, linted as they compile (nix/crane.nix);
+      # the ones that need /dev/kvm run as flake checks instead, where the
+      # sandbox can be given it.
       cargoTestExtraArgs = "--workspace";
       # The commit, for `rewind --version`; given to this build alone, so
       # the dependencies' build does not change with every commit.

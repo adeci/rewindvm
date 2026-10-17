@@ -53,7 +53,7 @@ const LOADER_UNDEFINED: u8 = 0xff;
 const SETUP_RNG_SEED: u32 = 9;
 
 /// e820 entry types.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[repr(u32)]
 pub enum E820 {
     Ram = 1,
@@ -63,6 +63,7 @@ pub enum E820 {
 }
 
 /// Everything the boot protocol needs from the monitor.
+#[derive(Debug)]
 pub struct BootSpec<'a> {
     pub kernel: &'a [u8],
     pub initrd: &'a [u8],
@@ -192,11 +193,11 @@ pub fn write_tables(ram: &mut Mapping) -> Result<()> {
 }
 
 fn read_u16(buf: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes(buf[at..at + 2].try_into().unwrap())
+    u16::from_le_bytes(buf[at..at + 2].try_into().expect("two bytes"))
 }
 
 fn read_u32(buf: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(buf[at..at + 4].try_into().unwrap())
+    u32::from_le_bytes(buf[at..at + 4].try_into().expect("four bytes"))
 }
 
 fn write_u16(buf: &mut [u8], at: usize, value: u16) {

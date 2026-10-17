@@ -34,6 +34,7 @@ const SERVER_PARTIAL: &str = "partial";
 /// A cache directory held for one session's server, until this is dropped
 /// and, when the server inherits the lock's descriptor, until the server
 /// ends.
+#[derive(Debug)]
 pub struct Slot {
     dir: PathBuf,
     lock: File,

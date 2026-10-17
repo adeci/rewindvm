@@ -17,7 +17,7 @@ const MODE_FILE: u32 = 0o100000;
 
 /// An archive being built. Every entry is owned by root with a fixed
 /// timestamp, so the same files always make the same bytes.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Archive {
     out: Vec<u8>,
     ino: u32,

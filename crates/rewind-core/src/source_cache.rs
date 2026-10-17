@@ -39,6 +39,7 @@ pub enum Entry {
 }
 
 /// One run's cache.
+#[derive(Debug)]
 pub struct SourceCache {
     dir: PathBuf,
 }

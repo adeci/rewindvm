@@ -113,31 +113,31 @@ fn page(fill: u8) -> Vec<u8> {
 fn write_samples_if_asked() {
     static WRITTEN: std::sync::Once = std::sync::Once::new();
     if std::env::var_os(WRITE_SAMPLES).is_some() {
-        WRITTEN.call_once(write_samples);
+        WRITTEN.call_once(|| write_samples().expect("writing the samples"));
     }
 }
 
-fn write_samples() {
-    fs::create_dir_all(samples()).unwrap();
-    fs::write(
-        keyframe_sample(),
-        keyframes::encode(&sample_keyframe()).unwrap(),
-    )
-    .unwrap();
+fn write_samples() -> anyhow::Result<()> {
+    fs::create_dir_all(samples())?;
+    fs::write(keyframe_sample(), keyframes::encode(&sample_keyframe())?)?;
     let store = store_sample();
     let _ = fs::remove_dir_all(&store);
-    let mut opened = Store::open(&store).unwrap();
+    let mut opened = Store::open(&store)?;
     for fill in STORE_FILLS {
-        opened.put(&page(fill)).unwrap();
+        opened.put(&page(fill))?;
     }
     drop(opened);
-    for entry in fs::read_dir(&store).unwrap() {
-        let path = entry.unwrap().path();
-        let name = path.file_name().unwrap().to_str().unwrap();
-        if path.is_file() && !STORE_FILES.contains(&name) {
-            fs::remove_file(&path).unwrap();
+    for entry in fs::read_dir(&store)? {
+        let path = entry?.path();
+        let keep = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| STORE_FILES.contains(&n));
+        if path.is_file() && !keep {
+            fs::remove_file(&path)?;
         }
     }
+    Ok(())
 }
 
 /// Each sample is as it was checked in: its hash is the one pinned, and

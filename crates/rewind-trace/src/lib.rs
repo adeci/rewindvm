@@ -13,6 +13,9 @@
 //! ended. A trace file also holds the run's read and write records,
 //! which [`io_records`] decodes; a [`Trace`] is the events without them.
 
+// Only rewind-vmm and the command touch memory and the kernel directly.
+#![forbid(unsafe_code)]
+
 pub mod compare;
 pub mod contents;
 pub mod ending;
@@ -173,7 +176,7 @@ impl Trace {
     pub fn decode(records: &[(u64, Vec<u8>)]) -> io::Result<Trace> {
         let mut events = Vec::with_capacity(records.len());
         for (step, record) in records {
-            if crate::io_records::is_io(record) {
+            if io_records::is_io(record) {
                 continue;
             }
             let event = Event::decode(*step, record)
@@ -245,24 +248,29 @@ impl Trace {
     pub fn processes(&self) -> Vec<Process> {
         let mut procs: BTreeMap<u32, Process> = BTreeMap::new();
         let mut order: Vec<u32> = Vec::new();
-        let entry =
-            |procs: &mut BTreeMap<u32, Process>, order: &mut Vec<u32>, pid, parent, step| {
-                procs.entry(pid).or_insert_with(|| {
-                    order.push(pid);
-                    Process {
-                        pid,
-                        parent,
-                        argv: Vec::new(),
-                        execd: false,
-                        forked_argv: Vec::new(),
-                        execs: Vec::new(),
-                        start: step,
-                        end: None,
-                        status: None,
-                        threads: Vec::new(),
-                    }
-                });
-            };
+        fn entry<'a>(
+            procs: &'a mut BTreeMap<u32, Process>,
+            order: &mut Vec<u32>,
+            pid: u32,
+            parent: u32,
+            step: u64,
+        ) -> &'a mut Process {
+            procs.entry(pid).or_insert_with(|| {
+                order.push(pid);
+                Process {
+                    pid,
+                    parent,
+                    argv: Vec::new(),
+                    execd: false,
+                    forked_argv: Vec::new(),
+                    execs: Vec::new(),
+                    start: step,
+                    end: None,
+                    status: None,
+                    threads: Vec::new(),
+                }
+            })
+        }
 
         for e in &self.events {
             match &e.kind {
@@ -274,8 +282,9 @@ impl Trace {
                         }
                     } else {
                         // A pid can be reused once its process has exited.
-                        if procs.get(child).is_some_and(|p| p.end.is_some()) {
-                            let old = procs.remove(child).unwrap();
+                        if procs.get(child).is_some_and(|p| p.end.is_some())
+                            && let Some(old) = procs.remove(child)
+                        {
                             let key = u32::MAX - order.len() as u32;
                             procs.insert(
                                 key,
@@ -302,8 +311,7 @@ impl Trace {
                     }
                 }
                 EventKind::Exec { argv, .. } => {
-                    entry(&mut procs, &mut order, e.pid, 0, 0);
-                    let p = procs.get_mut(&e.pid).unwrap();
+                    let p = entry(&mut procs, &mut order, e.pid, 0, 0);
                     p.argv = argv.clone();
                     p.execd = true;
                     p.execs.push((e.step, argv.clone()));
@@ -643,6 +651,7 @@ pub fn records_from(mut r: impl Read) -> io::Result<Vec<(u64, Vec<u8>)>> {
 
 /// Appends events to a trace file as the guest emits them, after the
 /// header naming the trace's format.
+#[derive(Debug)]
 pub struct TraceWriter<W: Write> {
     out: BufWriter<W>,
     /// Whether the header is written yet.
@@ -955,7 +964,7 @@ mod tests {
             vec![("/nix/store/x-out".to_string(), "sha256:ff".to_string())]
         );
         assert_eq!(trace.events[1].init_mark(), None);
-        assert_eq!(trace.events[0].init_mark(), Some(rewind_init::Mark::Start));
+        assert_eq!(trace.events[0].init_mark(), Some(Mark::Start));
     }
 
     fn sample() -> Trace {

@@ -231,7 +231,7 @@ impl Memory for Machine {
 }
 
 /// What gdb asked the fork to do next.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     Continue,
     Step,
@@ -247,7 +247,7 @@ impl Mode {
 }
 
 /// A range gdb watches, as it asked for it.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Watch {
     address: u64,
     len: u64,
@@ -292,7 +292,7 @@ trait Int3Memory {
 /// address registers, where nothing in the VM changes, and a watched range
 /// takes one register for each aligned piece of it the CPU can watch.
 /// Breakpoints past the registers are int3 in memory.
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct Traps {
     breakpoints: Vec<Breakpoint>,
     watches: Vec<Watch>,
@@ -498,6 +498,7 @@ fn in_scope(address: u64, space: Option<u64>, cr3: u64) -> bool {
 }
 
 /// A forked machine under gdb.
+#[derive(Debug)]
 pub struct Debuggee {
     machine: Machine,
     traps: Traps,
@@ -734,6 +735,7 @@ impl LibrariesSvr4 for Debuggee {
 /// The run's records after the fork's step, compared one by one with the
 /// fork's as it makes them, keeping the step of the first that differs: a
 /// record with other bytes, at another step, or one the run never made.
+#[derive(Debug)]
 struct Follow {
     made: std::vec::IntoIter<(u64, Vec<u8>)>,
     left_at: Option<u64>,

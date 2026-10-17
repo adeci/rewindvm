@@ -323,6 +323,7 @@ impl Usage {
 fn free_bytes(path: &Path) -> Option<u64> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: statvfs is integers, for which all zeroes is a value.
     let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
     // SAFETY: statvfs fills the struct it is given for a NUL-terminated
     // path.

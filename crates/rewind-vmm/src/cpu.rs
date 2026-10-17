@@ -165,7 +165,7 @@ pub fn setup_lapic(vcpu: &VcpuFd) -> Result<()> {
         let bytes: &mut [u8] =
             // SAFETY: kvm_lapic_state.regs is a plain 1 KiB register page.
             unsafe { std::slice::from_raw_parts_mut(lapic.regs.as_mut_ptr().cast(), 1024) };
-        let old = u32::from_le_bytes(bytes[reg..reg + 4].try_into().unwrap());
+        let old = u32::from_le_bytes(bytes[reg..reg + 4].try_into().expect("four bytes"));
         let new = (old & !0x700) | (mode << 8);
         bytes[reg..reg + 4].copy_from_slice(&new.to_le_bytes());
     }
@@ -546,7 +546,13 @@ fn baseline(host: &[kvm_cpuid_entry2], model: CpuModel) -> Result<Vec<kvm_cpuid_
     } else {
         v3::SIGNATURE_INTEL
     };
-    let brand = |i: usize| u32::from_le_bytes(fixed.brand[i * 4..i * 4 + 4].try_into().unwrap());
+    let brand = |i: usize| {
+        u32::from_le_bytes(
+            fixed.brand[i * 4..i * 4 + 4]
+                .try_into()
+                .expect("four bytes"),
+        )
+    };
 
     let mut out = vec![
         entry(0, 0, v3::MAX_BASIC, leaf0.ebx, leaf0.ecx, leaf0.edx),
@@ -680,7 +686,7 @@ fn host_cpuid(kvm: &Kvm) -> Result<Vec<kvm_cpuid_entry2>> {
     }
 
     let sig = SIGNATURE;
-    let word = |i: usize| u32::from_le_bytes(sig[i * 4..i * 4 + 4].try_into().unwrap());
+    let word = |i: usize| u32::from_le_bytes(sig[i * 4..i * 4 + 4].try_into().expect("four bytes"));
     entries.push(kvm_cpuid_entry2 {
         function: HYPERVISOR_LEAF,
         eax: HYPERVISOR_LEAF + 1,

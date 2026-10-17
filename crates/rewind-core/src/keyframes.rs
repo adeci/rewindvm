@@ -29,6 +29,7 @@ pub use rewind_trace::manifest::KEYFRAMES_DIR as DIR;
 pub const EXTENSION: &str = "kf";
 
 /// The page store as the monitor sees it.
+#[derive(Debug)]
 pub struct StorePages<'a>(pub &'a mut Store);
 
 impl Pages for StorePages<'_> {
@@ -41,6 +42,7 @@ impl Pages for StorePages<'_> {
 }
 
 /// Read-only access, for restoring.
+#[derive(Debug)]
 pub struct ReadPages<'a>(pub &'a Store);
 
 impl Pages for ReadPages<'_> {
@@ -168,6 +170,7 @@ struct Sharing {
 }
 
 /// One directory a run's keyframes come from, for steps up to `through`.
+#[derive(Debug)]
 struct Layer {
     dir: PathBuf,
     through: u64,
@@ -176,6 +179,7 @@ struct Layer {
 /// Where a run's keyframes are: its own directory, then the directory of
 /// the run it shares keyframes with, and so on back to a run that shares
 /// none. Runs that share keyframes sit side by side in one runs directory.
+#[derive(Debug)]
 pub struct Layers {
     layers: Vec<Layer>,
 }
@@ -295,7 +299,7 @@ impl Layers {
     pub fn chain(&self, step: u64) -> Result<Vec<Keyframe>> {
         let mut chain = vec![self.load(step)?];
         let mut at = step;
-        while let Some(parent) = chain.last().unwrap().parent {
+        while let Some(parent) = chain.last().and_then(|k| k.parent) {
             if parent >= at {
                 bail!(
                     "the keyframe at step {at} of run {} names step {parent} as its parent, \
@@ -313,7 +317,7 @@ impl Layers {
 
 /// The page hashes a chain of keyframes has set guest memory to, where they
 /// are not zero.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Memory {
     pages: HashMap<u32, [u8; 32]>,
 }
@@ -408,6 +412,7 @@ pub const STOP_EVERY: Duration = Duration::from_millis(250);
 
 /// Paces a replay toward a step: where it stops on the way, and at which
 /// of those stops a look inside the run keeps a keyframe.
+#[derive(Debug)]
 pub struct Pace {
     /// Steps from one stop to the next, aimed at STOP_EVERY of replay.
     stride: u64,
@@ -741,9 +746,7 @@ mod tests {
         // keyframes, and says which run it needs instead of panicking.
         let runs = runs("missing");
         let c = run(&runs, "c", &[3000], share("gone", 2400));
-        let err = Layers::open(&c, share("gone", 2400).as_ref())
-            .err()
-            .expect("opening should fail");
+        let err = Layers::open(&c, share("gone", 2400).as_ref()).expect_err("opening should fail");
         let message = format!("{err:#}");
         assert!(
             message.contains(crate::run::tests::id("gone").as_str()),

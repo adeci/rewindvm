@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use crate::layout::PAGE_SIZE;
 
 /// A host mapping that backs a range of guest physical memory.
+#[derive(Debug)]
 pub struct Mapping {
     ptr: NonNull<u8>,
     len: usize,
@@ -43,7 +44,7 @@ impl Mapping {
             );
         }
         Ok(Mapping {
-            ptr: NonNull::new(ptr.cast()).unwrap(),
+            ptr: NonNull::new(ptr.cast()).expect("mmap returns null only with MAP_FIXED"),
             len,
         })
     }

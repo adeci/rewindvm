@@ -77,19 +77,16 @@ struct DeviceState {
 fn pod<T>(value: &T) -> Vec<u8> {
     // SAFETY: the KVM structures saved here are plain C structs with no
     // pointers, so their bytes are their value.
-    unsafe {
-        std::slice::from_raw_parts((value as *const T).cast::<u8>(), std::mem::size_of::<T>())
-    }
-    .to_vec()
+    unsafe { std::slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) }.to_vec()
 }
 
 /// A plain KVM structure back from its bytes.
 fn unpod<T: Default>(bytes: &[u8]) -> Result<T> {
-    if bytes.len() != std::mem::size_of::<T>() {
+    if bytes.len() != size_of::<T>() {
         bail!(
             "keyframe holds {} bytes for a {}-byte {}",
             bytes.len(),
-            std::mem::size_of::<T>(),
+            size_of::<T>(),
             std::any::type_name::<T>()
         );
     }

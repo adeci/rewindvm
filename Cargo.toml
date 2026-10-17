@@ -19,6 +19,25 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/fzakaria/rewindvm"
 
+# Every crate of the workspace takes these through `[lints] workspace =
+# true`. The package build runs clippy and fails on any warning
+# (nix/rewind.nix); a local `cargo build` only warns.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+# Tests may unwrap (clippy.toml); everywhere else a failure is either
+# returned or, where it cannot happen, an expect that says why.
+unwrap_used = "deny"
+# Every unsafe block says, in a SAFETY comment, why its contract holds.
+undocumented_unsafe_blocks = "deny"
+allow_attributes_without_reason = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

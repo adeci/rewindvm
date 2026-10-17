@@ -80,6 +80,7 @@ pub fn slices(steps: impl IntoIterator<Item = (u64, OnTheCpu, String)>) -> Vec<S
 }
 
 /// The VM kernel's tasks, read through `mem`.
+#[derive(Debug)]
 pub struct Tasks<'a, M: Memory + ?Sized> {
     mem: &'a M,
     layout: TaskLayout,

@@ -35,13 +35,16 @@
 //! is renamed over the old, the old one still names every page where it
 //! was; after, the new one names every page where it is now.
 
+// Only rewind-vmm and the command touch memory and the kernel directly.
+#![forbid(unsafe_code)]
+
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use anyhow::{Context, Result, bail};
 
@@ -115,9 +118,9 @@ impl Location {
     /// The location an index entry names.
     fn of(entry: &[u8]) -> Location {
         Location {
-            pack: u32::from_le_bytes(entry[32..36].try_into().unwrap()),
-            offset: u64::from_le_bytes(entry[36..44].try_into().unwrap()),
-            len: u32::from_le_bytes(entry[44..48].try_into().unwrap()),
+            pack: u32::from_le_bytes(entry[32..36].try_into().expect("four bytes")),
+            offset: u64::from_le_bytes(entry[36..44].try_into().expect("eight bytes")),
+            len: u32::from_le_bytes(entry[44..48].try_into().expect("four bytes")),
         }
     }
 }
@@ -145,8 +148,8 @@ impl Sorted {
         if &header[..8] != SORTED_MAGIC {
             return None;
         }
-        let covers = u64::from_le_bytes(header[8..16].try_into().unwrap());
-        let entries = u64::from_le_bytes(header[16..].try_into().unwrap());
+        let covers = u64::from_le_bytes(header[8..16].try_into().expect("eight bytes"));
+        let entries = u64::from_le_bytes(header[16..].try_into().expect("eight bytes"));
         let body = file
             .metadata()
             .ok()?
@@ -174,7 +177,7 @@ impl Sorted {
     /// from its leading bytes, which takes a few reads at any size, and
     /// halves the range once guessing has not found it.
     fn find(&self, hash: &Hash) -> Option<Location> {
-        let key = u64::from_be_bytes(hash[..8].try_into().unwrap());
+        let key = u64::from_be_bytes(hash[..8].try_into().expect("eight bytes"));
         let (mut lo, mut hi) = (0u64, self.entries);
         let (mut lo_key, mut hi_key) = (0u64, u64::MAX);
         let mut guesses = 0;
@@ -192,11 +195,11 @@ impl Sorted {
                 std::cmp::Ordering::Equal => return Some(Location::of(&entry)),
                 std::cmp::Ordering::Less => {
                     lo = mid + 1;
-                    lo_key = u64::from_be_bytes(entry[..8].try_into().unwrap());
+                    lo_key = u64::from_be_bytes(entry[..8].try_into().expect("eight bytes"));
                 }
                 std::cmp::Ordering::Greater => {
                     hi = mid;
-                    hi_key = u64::from_be_bytes(entry[..8].try_into().unwrap());
+                    hi_key = u64::from_be_bytes(entry[..8].try_into().expect("eight bytes"));
                 }
             }
         }
@@ -234,7 +237,7 @@ fn write_sorted(dir: &Path, entries: &[[u8; INDEX_ENTRY]], covers: u64) -> Resul
         .create_new(true)
         .open(&tmp)
         .with_context(|| format!("creating {}", tmp.display()))?;
-    let mut out = std::io::BufWriter::new(file);
+    let mut out = BufWriter::new(file);
     out.write_all(SORTED_MAGIC)?;
     out.write_all(&covers.to_le_bytes())?;
     out.write_all(&(entries.len() as u64).to_le_bytes())?;
@@ -251,7 +254,7 @@ fn write_sorted(dir: &Path, entries: &[[u8; INDEX_ENTRY]], covers: u64) -> Resul
 /// bytes. The keys are BLAKE3 output, already uniform, and a store holds
 /// millions of them: hashing each again with the standard hasher made
 /// opening a large store take seconds.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct PageHasher(u64);
 
 impl Hasher for PageHasher {
@@ -334,6 +337,16 @@ pub struct Store {
     _lock: File,
 }
 
+/// The store's directory: its index holds every page it has, too many to
+/// print.
+impl std::fmt::Debug for Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Store")
+            .field("dir", &self.dir)
+            .finish_non_exhaustive()
+    }
+}
+
 /// How much a store holds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
@@ -386,6 +399,21 @@ fn check_format(dir: &Path) -> Result<()> {
 }
 
 impl Store {
+    /// The index, locked. Only a thread that panicked while holding the
+    /// lock leaves it poisoned, and that panic is the failure to report.
+    fn index(&self) -> MutexGuard<'_, Index> {
+        self.index
+            .lock()
+            .expect("another thread panicked holding the store's index")
+    }
+
+    /// The open pack files, locked, as `index`.
+    fn readers(&self) -> MutexGuard<'_, HashMap<u32, File>> {
+        self.readers
+            .lock()
+            .expect("another thread panicked holding the store's readers")
+    }
+
     pub fn open(dir: &Path) -> Result<Store> {
         fs::create_dir_all(dir.join(PACKS))?;
         check_format(dir)?;
@@ -481,7 +509,7 @@ impl Store {
         // them all twice.
         if sorting.is_some() {
             let len = store.index_log.metadata()?.len();
-            store.index.lock().unwrap().read = len / INDEX_ENTRY as u64 * INDEX_ENTRY as u64;
+            store.index().read = len / INDEX_ENTRY as u64 * INDEX_ENTRY as u64;
             store.compact()?;
         }
         drop(sorting);
@@ -492,7 +520,7 @@ impl Store {
     /// Writes a new sorted copy that covers the index up to where this store
     /// has read it, and reads from it from now on.
     fn compact(&self) -> Result<()> {
-        let mut index = self.index.lock().unwrap();
+        let mut index = self.index();
         let covered = index.sorted.as_ref().map_or(0, |s| s.covers);
         let mut entries = match &index.sorted {
             Some(sorted) => sorted.all()?,
@@ -523,7 +551,7 @@ impl Store {
     /// Reads the index entries written since this store last looked,
     /// by it or by any other.
     fn refresh(&self) -> Result<()> {
-        let mut index = self.index.lock().unwrap();
+        let mut index = self.index();
         let mut file = File::open(self.dir.join(INDEX))?;
         file.seek(SeekFrom::Start(index.read))?;
         let mut bytes = Vec::new();
@@ -531,7 +559,7 @@ impl Store {
         let (entries, _) = bytes.as_chunks::<INDEX_ENTRY>();
         index.pages.reserve(entries.len());
         for entry in entries {
-            let hash: Hash = entry[..32].try_into().unwrap();
+            let hash: Hash = entry[..32].try_into().expect("32 bytes");
             index.pages.insert(hash, Location::of(entry));
         }
         index.read += (entries.len() * INDEX_ENTRY) as u64;
@@ -611,12 +639,12 @@ impl Store {
     /// Where a page is, rereading the index once if this store has not
     /// seen it yet.
     fn location(&self, hash: &Hash) -> Option<Location> {
-        let known = self.index.lock().unwrap().known(hash);
+        let known = self.index().known(hash);
         if known.is_some() {
             return known;
         }
         self.refresh().ok()?;
-        self.index.lock().unwrap().known(hash)
+        self.index().known(hash)
     }
 
     /// Stores a page if it is new, and returns its hash either way. New
@@ -625,7 +653,7 @@ impl Store {
     /// and either copy serves.
     pub fn put(&mut self, data: &[u8]) -> Result<Hash> {
         let hash = Self::hash(data);
-        if hash == ZERO_PAGE || self.index.lock().unwrap().known(&hash).is_some() {
+        if hash == ZERO_PAGE || self.index().known(&hash).is_some() {
             return Ok(hash);
         }
         let compressed = zstd::bulk::compress(data, COMPRESSION_LEVEL)?;
@@ -661,7 +689,7 @@ impl Store {
         if written != INDEX_ENTRY {
             bail!("wrote {written} of an index entry's {INDEX_ENTRY} bytes");
         }
-        self.index.lock().unwrap().pages.insert(hash, loc);
+        self.index().pages.insert(hash, loc);
         Ok(hash)
     }
 
@@ -676,7 +704,7 @@ impl Store {
             .with_context(|| format!("page {} is not in the store", hex(hash)))?;
         let mut compressed = vec![0u8; loc.len as usize];
         {
-            let mut readers = self.readers.lock().unwrap();
+            let mut readers = self.readers();
             let reader = match readers.entry(loc.pack) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
@@ -714,7 +742,7 @@ impl Store {
     /// How much the store holds, as far as this store has read the index.
     /// Reads the whole sorted copy.
     pub fn stats(&self) -> Stats {
-        let index = self.index.lock().unwrap();
+        let index = self.index();
         let sorted = index
             .sorted
             .as_ref()
@@ -775,6 +803,7 @@ impl PackUse {
 /// A store held by one process alone, which may remove pages from it. It
 /// holds the store's lock exclusively, so a store opened meanwhile waits
 /// for it to be dropped.
+#[derive(Debug)]
 pub struct Collector {
     dir: PathBuf,
     _lock: File,
@@ -884,7 +913,7 @@ impl Collector {
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e.into()),
             }
-            let hash: Hash = entry[..32].try_into().unwrap();
+            let hash: Hash = entry[..32].try_into().expect("32 bytes");
             if !live.contains(&hash) || kept.contains_key(&hash) {
                 dropped += 1;
                 continue;
@@ -1085,7 +1114,7 @@ mod tests {
         use std::hash::BuildHasher;
         let build = PageHashes::default();
         let key = Store::hash(b"some page");
-        let first = u64::from_le_bytes(key[..8].try_into().unwrap());
+        let first = u64::from_le_bytes(key[..8].try_into().expect("eight bytes"));
         assert_eq!(build.hash_one(key), first);
         assert_ne!(build.hash_one(Store::hash(b"another page")), first);
     }

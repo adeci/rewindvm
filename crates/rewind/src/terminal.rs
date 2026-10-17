@@ -24,6 +24,7 @@ const END_OF_INPUT: u8 = 0x04;
 
 /// The window size of the terminal on `fd`, as (columns, rows).
 pub fn size(fd: RawFd) -> Option<(u16, u16)> {
+    // SAFETY: winsize is four integers, for which all zeroes is a value.
     let mut size: libc::winsize = unsafe { std::mem::zeroed() };
     // SAFETY: a valid out pointer for TIOCGWINSZ.
     let rc = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ as libc::Ioctl, &mut size) };
@@ -40,6 +41,8 @@ pub struct RawMode {
 impl RawMode {
     pub fn enter() -> RawMode {
         let fd = std::io::stdin().as_raw_fd();
+        // SAFETY: termios is integers and an array of them, for which all
+        // zeroes is a value.
         let mut saved: libc::termios = unsafe { std::mem::zeroed() };
         // SAFETY: a valid descriptor and termios.
         if unsafe { libc::isatty(fd) } != 1 || unsafe { libc::tcgetattr(fd, &mut saved) } != 0 {

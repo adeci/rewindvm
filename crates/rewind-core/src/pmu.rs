@@ -291,7 +291,7 @@ pub fn selftest(guest: &Guest) -> Result<SelfTest> {
             0xcbf2_9ce4_8422_2325,
         ));
         machine.run(None, &mut Ignore)?;
-        let (counter, hash) = machine.pmu.as_ref().unwrap();
+        let (counter, hash) = machine.pmu.as_ref().expect("set before the run");
         counts[i] = counter.read()?;
         hashes[i] = *hash;
     }

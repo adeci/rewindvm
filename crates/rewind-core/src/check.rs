@@ -18,6 +18,7 @@
 use anyhow::Result;
 
 /// The window narrowing settled on, and the run made with it.
+#[derive(Debug)]
 pub struct Narrowed<R> {
     pub from: u64,
     pub until: u64,

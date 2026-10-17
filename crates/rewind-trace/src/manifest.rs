@@ -144,9 +144,9 @@ impl std::ops::Deref for RunId {
     }
 }
 
-impl AsRef<std::path::Path> for RunId {
-    fn as_ref(&self) -> &std::path::Path {
-        std::path::Path::new(&self.0)
+impl AsRef<Path> for RunId {
+    fn as_ref(&self) -> &Path {
+        Path::new(&self.0)
     }
 }
 

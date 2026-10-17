@@ -42,6 +42,7 @@ pub type Console = Box<dyn FnMut(&[u8])>;
 /// What a shell starts with: the process whose view it takes (the job's
 /// when None), its terminal's size as (columns, rows), and any extra
 /// packages.
+#[derive(Debug)]
 pub struct Session {
     pub pid: Option<u32>,
     pub size: (u16, u16),
@@ -50,6 +51,7 @@ pub struct Session {
 
 /// More Nix packages for a shell: an image of their closure, mapped into the
 /// fork's extras slot, and the bin directories to put first on its PATH.
+#[derive(Debug)]
 pub struct Extras {
     pub image: std::path::PathBuf,
     pub bins: Vec<String>,

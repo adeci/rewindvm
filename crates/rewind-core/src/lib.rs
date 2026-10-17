@@ -1,6 +1,9 @@
 //! The engine behind the `rewind` command and the desktop app: building
 //! inputs, executing runs, and finding them again.
 
+// Only rewind-vmm and the command touch memory and the kernel directly.
+#![forbid(unsafe_code)]
+
 pub mod check;
 pub mod compare;
 pub mod cpio;
