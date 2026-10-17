@@ -1468,8 +1468,8 @@ in
         # The Rewind SDK from a shell: a job that asserts its random byte
         # is even and marks a test, and exits 0 either way. check judges
         # the marks by itself, finds the seed whose assertion fails, names
-        # the sometimes no run made true, and counts the runs that made
-        # the other true.
+        # the sometimes no run can make true, a byte being at most 255, and
+        # counts the runs that made the other true.
         cat > coin.sh <<'EOF'
         sdk() { printf 'rewind-sdk 1 %s\n' "$*" > /dev/rewind; }
         b=$(od -An -tu1 -N1 /dev/urandom)
@@ -1482,7 +1482,7 @@ in
           sdk always fail even byte $b is odd
           sdk test-end fail coin flip
         fi
-        if [ $b -gt 250 ]; then sdk sometimes hit huge-byte; else sdk sometimes miss huge-byte; fi
+        if [ $b -gt 255 ]; then sdk sometimes hit huge-byte; else sdk sometimes miss huge-byte; fi
         if [ $((b % 2)) = 0 ]; then sdk sometimes hit even-byte; else sdk sometimes miss even-byte; fi
         exit 0
         EOF
