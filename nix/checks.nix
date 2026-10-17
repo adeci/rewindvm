@@ -515,11 +515,15 @@ in
         # A look inside a run more than 512 steps past its nearest
         # keyframe keeps one at its step. A second look there keeps none,
         # since it restores that keyframe and replays nothing, and the run
-        # replays from the kept keyframe like from any other. A run of
-        # thousands of writes has keyframes far enough apart.
+        # replays from the kept keyframe like from any other. Keyframes
+        # are spaced by wall time, so a slow machine takes one every 256
+        # steps of a run of thousands of writes; the keyframes between
+        # the second and the last are removed to make a stretch long
+        # enough on any machine.
         rewind run -q --name long --root ${busyboxRoot} -- sh -c 'for i in $(seq 3000); do echo $i; done'
         long=$(dirname "$(grep -l '"name": "long"' $REWIND_HOME/runs/*/manifest.json)")
         keyframes() { ls "$long/keyframes" | sed 's/\.kf$//; s/^0*//'; }
+        ls "$long/keyframes" | sort | sed '1,2d; $d' | while read -r kf; do rm "$long/keyframes/$kf"; done
         end=$(rewind events long | grep 'mark "rewind-exit ' | awk '{print $1}')
         far=$( (keyframes; echo "$end") | sort -n | awk -v end="$end" \
           'NR > 1 && $1 - last > 600 && last + 600 < end { print last + 600; exit } { last = $1 }')
