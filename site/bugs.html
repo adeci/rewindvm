@@ -43,6 +43,10 @@
           <li><a href="#nixd">nixd</a></li>
           <li><a href="#jj">Jujutsu</a></li>
           <li><a href="#process-compose">process-compose</a></li>
+          <li><a href="#pueue">Pueue</a></li>
+          <li><a href="#watchexec">watchexec</a></li>
+          <li><a href="#concurrently">concurrently</a></li>
+          <li><a href="#supervisor">Supervisor</a></li>
         </ol>
       </nav>
 
@@ -117,6 +121,62 @@
         <li>
           <a href="https://github.com/F1bonacc1/process-compose/pull/571"
             >A SIGTERM during startup leaves processes running after process-compose exits</a
+          >
+        </li>
+      </ul>
+
+      <h2 id="pueue">Pueue</h2>
+      <ul>
+        <li>
+          <a href="https://github.com/Nukesor/pueue/pull/684"
+            >A task added right after <code>pueue reset</code> is deleted by the reset</a
+          >
+        </li>
+      </ul>
+
+      <h2 id="watchexec">watchexec</h2>
+      <ul>
+        <li>
+          <a href="https://github.com/watchexec/watchexec/pull/1154"
+            >One run's <code>--timeout</code> kills the restarted run</a
+          >
+        </li>
+        <li>
+          <a href="https://github.com/watchexec/watchexec/pull/1154"
+            >A signal forwarded during a restart kills the new run</a
+          >
+        </li>
+        <li>
+          <a href="https://github.com/watchexec/watchexec/pull/1153"
+            >watchexec fails to start when <code>HOME</code> does not exist</a
+          >
+        </li>
+      </ul>
+
+      <h2 id="concurrently">concurrently</h2>
+      <ul>
+        <li>
+          <a href="https://github.com/open-cli-tools/concurrently/pull/630"
+            >A signal during <code>--teardown</code> leaves the teardown command running</a
+          >
+        </li>
+        <li>
+          <a href="https://github.com/open-cli-tools/concurrently/pull/631"
+            >Input to a command that closed its stdin crashes concurrently</a
+          >
+        </li>
+      </ul>
+
+      <h2 id="supervisor">Supervisor</h2>
+      <ul>
+        <li>
+          <a href="https://github.com/Supervisor/supervisor/pull/1729"
+            >A daemonizing <code>supervisord</code> returns before its pidfile exists</a
+          >
+        </li>
+        <li>
+          <a href="https://github.com/Supervisor/supervisor/pull/1730"
+            >A program that fails at once is restarted forever when its child holds its output</a
           >
         </li>
       </ul>
