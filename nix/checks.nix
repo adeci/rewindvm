@@ -1495,23 +1495,25 @@ in
         jq -e '[.schedules[].violations[] | select(.property == "sdk") | .why]
           | all(test("^(always \"even\" failed: byte [0-9]+ is odd|test coin flip passed in the unperturbed run and failed here)$"))' sdk.json
 
-        # JUnit reports: a job that writes one, its coin.flip test failing
-        # when its random byte is even. Seed 0's byte is odd, so the test
-        # passes in the base run. check reads the report each run wrote
-        # and names the test that passed under seed 0 and failed.
+        # JUnit reports: a job that writes one with two tests, coin.flip
+        # failing when its random byte is even and coin.flop when it is
+        # odd, so one of them passes in the base run whichever way seed
+        # 0's byte lands on this CPU. check reads the report each run
+        # wrote and names the test that passed under seed 0 and failed.
         cat > report.sh <<'EOF'
         b=$(od -An -tu1 -N1 /dev/urandom)
-        failure=""
-        if [ $((b % 2)) = 0 ]; then failure="<failure message=\"even\"/>"; fi
+        flip=""
+        flop=""
+        if [ $((b % 2)) = 0 ]; then flip="<failure message=\"even\"/>"; else flop="<failure message=\"odd\"/>"; fi
         mkdir -p /run/reports
-        printf '<testsuite><testcase classname="coin" name="flip">%s</testcase><testcase classname="coin" name="steady"/></testsuite>\n' "$failure" > /run/reports/TEST-coin.xml
+        printf '<testsuite><testcase classname="coin" name="flip">%s</testcase><testcase classname="coin" name="flop">%s</testcase></testsuite>\n' "$flip" "$flop" > /run/reports/TEST-coin.xml
         EOF
         # The search has a home of its own, holding only its runs.
         junit_home=$TMPDIR/junit-home
         ! REWIND_HOME=$junit_home rewind check -j 4 --clock exits --seeds 6 --schedules 0 \
           --property 'junit=/run/reports/*.xml' --root ${busyboxRoot} -- sh -c "$(cat report.sh)" > junit
         cat junit
-        grep -qE '^failing run violates junit: step [0-9]+: test coin.flip passed in the unperturbed run and failed here$' junit
+        grep -qE '^failing run violates junit: step [0-9]+: test coin\.(flip|flop) passed in the unperturbed run and failed here$' junit
 
         # Each other seed's run took a keyframe where its job exited, where
         # check read its report, and replays as recorded all the same. The
