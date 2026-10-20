@@ -460,6 +460,10 @@ let
   sdkLanguages = import ./sdk-languages { inherit pkgs; };
 in
 {
+  home-on-nfs = import ./home-on-nfs.nix {
+    inherit pkgs rewind;
+  };
+
   # The examples that copy an SDK library, as a program would, hold the
   # library as sdk/ has it.
   sdk-copies = pkgs.runCommand "rewind-sdk-copies" { } ''
