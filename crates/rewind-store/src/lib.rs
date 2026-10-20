@@ -402,7 +402,7 @@ impl Store {
         // opener with the store to itself may cut it off: with others open
         // it could be an entry still being written. The same goes for a
         // sorted copy still being written.
-        let lock = File::create(dir.join(LOCK))?;
+        let lock = open_lock(&dir.join(LOCK))?;
         if lock.try_lock().is_ok() {
             let index = open_index()?;
             let len = index.metadata()?.len();
@@ -451,7 +451,7 @@ impl Store {
         // then find its copy and read only what came after.
         let mut sorting = None;
         if past(&sorted)? >= COMPACT_AT as u64 {
-            let lock = File::create(dir.join(SORTING_LOCK))?;
+            let lock = open_lock(&dir.join(SORTING_LOCK))?;
             lock.lock()
                 .with_context(|| format!("waiting to sort {}", dir.display()))?;
 
@@ -787,7 +787,7 @@ impl Collector {
     pub fn lock(dir: &Path) -> Result<Option<Collector>> {
         fs::create_dir_all(dir.join(PACKS))?;
         check_format(dir)?;
-        let lock = File::create(dir.join(LOCK))?;
+        let lock = open_lock(&dir.join(LOCK))?;
         match lock.try_lock() {
             Ok(()) => Ok(Some(Collector {
                 dir: dir.to_path_buf(),
@@ -1002,6 +1002,21 @@ impl Collector {
         write_sorted(&self.dir, &entries, entries.len() as u64)?;
         Ok(())
     }
+}
+
+/// Opens the lock file at `path`, creating it if there is none, for
+/// reading and writing. Linux's NFS client emulates flock(2) with POSIX
+/// byte-range locks, which take a shared lock only on a file open for
+/// reading and an exclusive one only on a file open for writing: a lock
+/// file opened write-only, as `File::create` opens it, refuses a shared
+/// lock there with EBADF.
+pub fn open_lock(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
 }
 
 /// The size of the file at `path`, or 0 when there is none.

@@ -114,7 +114,8 @@ pub fn collect(root: &Path, act: Act) -> Result<Vec<Unused>> {
 fn try_hold(root: &Path, number: u32) -> Result<Option<Slot>> {
     let dir = root.join(number.to_string());
     let path = dir.with_extension(LOCK_EXTENSION);
-    let lock = File::create(&path).with_context(|| format!("creating {}", path.display()))?;
+    let lock =
+        rewind_store::open_lock(&path).with_context(|| format!("creating {}", path.display()))?;
     match lock.try_lock() {
         Ok(()) => Ok(Some(Slot { dir, lock })),
         Err(fs::TryLockError::WouldBlock) => Ok(None),

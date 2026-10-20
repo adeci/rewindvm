@@ -455,7 +455,8 @@ const LOCK_RETRY: Duration = Duration::from_millis(1);
 /// while another execution of the same run holds it.
 pub(crate) fn lock_executing(dir: &Path) -> Result<fs::File> {
     let path = dir.join(EXECUTING_LOCK);
-    let file = fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
+    let file =
+        rewind_store::open_lock(&path).with_context(|| format!("creating {}", path.display()))?;
     let start = Instant::now();
     loop {
         match file.try_lock() {

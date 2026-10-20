@@ -119,7 +119,7 @@ impl Home {
 
     fn lock_file(&self) -> Result<File> {
         let path = self.root.join(LOCK);
-        File::create(&path).with_context(|| format!("creating {}", path.display()))
+        rewind_store::open_lock(&path).with_context(|| format!("creating {}", path.display()))
     }
 
     /// Holds the home in use until the result is dropped, waiting first
