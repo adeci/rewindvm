@@ -1,0 +1,290 @@
+diff -ruN a/fs/file_table.c b/fs/file_table.c
+--- a/fs/file_table.c	2026-10-21 18:17:25.227597226 -0700
++++ b/fs/file_table.c	2026-10-21 18:17:43.464994687 -0700
+@@ -215,6 +215,9 @@
+ #ifdef CONFIG_EPOLL
+ 	f->f_ep		= NULL;
+ #endif
++#ifdef CONFIG_REWIND_GUEST
++	f->f_rewind_dirents = NULL;
++#endif
+ 
+ 	f->f_iocb_flags = 0;
+ 	f->f_pos	= 0;
+@@ -502,6 +505,7 @@
+ 	 */
+ 	eventpoll_release(file);
+ 	locks_remove_file(file);
++	rewind_dirents_free(file);
+ 
+ 	security_file_release(file);
+ 	if (unlikely(file->f_flags & FASYNC)) {
+diff -ruN a/fs/readdir.c b/fs/readdir.c
+--- a/fs/readdir.c	2026-10-21 18:17:25.227550649 -0700
++++ b/fs/readdir.c	2026-10-21 18:18:06.790771661 -0700
+@@ -118,6 +118,194 @@
+ }
+ EXPORT_SYMBOL(iterate_dir);
+ 
++#ifdef CONFIG_REWIND_GUEST
++#include <linux/siphash.h>
++#include <linux/sort.h>
++#include <linux/slab.h>
++#include <linux/magic.h>
++
++/*
++ * Directory order for the Rewind VM. A directory on tmpfs lists its
++ * newest entries first, and erofs lists its entries by name, so a build
++ * in the VM sees one order for a given sequence of creations. ext4 on a
++ * real machine lists them in the order of a hash of each name, keyed by
++ * a seed chosen when the filesystem was made. rewind.dirents=N lists
++ * every directory on tmpfs, ramfs, overlayfs and erofs in the order of a
++ * SipHash of each name keyed by N, as an ext4 made with another seed
++ * would; without it the order is the filesystem's own. The order is a
++ * function of the names and N alone, so a run still replays.
++ *
++ * getdents reads the whole directory on its first call at position 0 and
++ * serves this and later calls from that snapshot; the position is an
++ * index into it. Rewinding to 0 takes a new snapshot.
++ */
++static u64 rewind_dirents_key __ro_after_init;
++
++static int __init rewind_dirents_setup(char *s)
++{
++	return kstrtou64(s, 0, &rewind_dirents_key) == 0;
++}
++__setup("rewind.dirents=", rewind_dirents_setup);
++
++struct rewind_dirent {
++	u64 order;
++	u64 ino;
++	unsigned int type;
++	unsigned int len;
++	size_t name;
++};
++
++struct rewind_dirents {
++	unsigned int count;
++	unsigned int cap;
++	size_t used;
++	size_t blob_cap;
++	struct rewind_dirent *entries;
++	char *blob;
++	bool failed;
++};
++
++struct rewind_collect {
++	struct dir_context ctx;
++	struct rewind_dirents *d;
++};
++
++/* Only the filesystems a build's files live on in the VM. */
++static bool rewind_dirents_apply(struct file *file)
++{
++	unsigned long magic = file_inode(file)->i_sb->s_magic;
++
++	if (!rewind_dirents_key)
++		return false;
++	return magic == TMPFS_MAGIC || magic == RAMFS_MAGIC ||
++	       magic == OVERLAYFS_SUPER_MAGIC || magic == EROFS_SUPER_MAGIC_V1;
++}
++
++static bool rewind_collect_one(struct dir_context *ctx, const char *name,
++			       int namlen, loff_t offset, u64 ino,
++			       unsigned int d_type)
++{
++	struct rewind_collect *c = container_of(ctx, struct rewind_collect, ctx);
++	struct rewind_dirents *d = c->d;
++	siphash_key_t key = { .key = { rewind_dirents_key, 0 } };
++	struct rewind_dirent *e;
++
++	/* Grow the entry array and the name blob by doubling. */
++	if (d->count == d->cap) {
++		unsigned int cap = d->cap ? d->cap * 2 : 64;
++		void *grown = kvrealloc(d->entries, cap * sizeof(*e), GFP_KERNEL);
++
++		if (!grown)
++			goto fail;
++		d->entries = grown;
++		d->cap = cap;
++	}
++	if (d->used + namlen + 1 > d->blob_cap) {
++		size_t cap = max(d->blob_cap * 2, d->used + namlen + 1 + 4096);
++		void *grown = kvrealloc(d->blob, cap, GFP_KERNEL);
++
++		if (!grown)
++			goto fail;
++		d->blob = grown;
++		d->blob_cap = cap;
++	}
++
++	/* Names are kept as offsets into the blob, which may still move. */
++	memcpy(d->blob + d->used, name, namlen);
++	d->blob[d->used + namlen] = '\0';
++	e = &d->entries[d->count];
++	*e = (struct rewind_dirent){
++		.ino = ino,
++		.type = d_type,
++		.len = namlen,
++		.name = d->used,
++	};
++
++	/* "." and ".." stay first, as on ext4; the rest go by hash. */
++	if ((namlen == 1 && name[0] == '.') ||
++	    (namlen == 2 && name[0] == '.' && name[1] == '.'))
++		e->order = namlen - 1;
++	else
++		e->order = siphash(name, namlen, &key) | 2;
++	d->used += namlen + 1;
++	d->count++;
++	return true;
++fail:
++	d->failed = true;
++	return false;
++}
++
++static int rewind_dirent_cmp(const void *a, const void *b)
++{
++	const struct rewind_dirent *x = a, *y = b;
++
++	if (x->order != y->order)
++		return x->order < y->order ? -1 : 1;
++	return 0;
++}
++
++void rewind_dirents_free(struct file *file)
++{
++	struct rewind_dirents *d = file->f_rewind_dirents;
++
++	if (!d)
++		return;
++	kvfree(d->entries);
++	kvfree(d->blob);
++	kfree(d);
++	file->f_rewind_dirents = NULL;
++}
++
++/* iterate_dir, in the order rewind.dirents= gives. */
++static int rewind_iterate_dir(struct file *file, struct dir_context *ctx)
++{
++	struct rewind_dirents *d;
++	unsigned int i;
++	int res;
++
++	if (!rewind_dirents_apply(file))
++		return iterate_dir(file, ctx);
++
++	/* A read from the start takes a new snapshot of the directory. */
++	if (file->f_pos == 0 || !file->f_rewind_dirents) {
++		struct rewind_collect c = {
++			.ctx.actor = rewind_collect_one,
++			.ctx.count = INT_MAX,
++		};
++
++		rewind_dirents_free(file);
++		d = kzalloc(sizeof(*d), GFP_KERNEL);
++		if (!d)
++			return -ENOMEM;
++		c.d = d;
++		file->f_pos = 0;
++		res = iterate_dir(file, &c.ctx);
++		file->f_rewind_dirents = d;
++		if (res < 0 || d->failed) {
++			rewind_dirents_free(file);
++			return res < 0 ? res : -ENOMEM;
++		}
++		sort(d->entries, d->count, sizeof(*d->entries), rewind_dirent_cmp, NULL);
++		file->f_pos = 0;
++	}
++
++	/* Serve entries from the position on until the caller's buffer fills. */
++	d = file->f_rewind_dirents;
++	for (i = file->f_pos; i < d->count; i++) {
++		struct rewind_dirent *e = &d->entries[i];
++
++		ctx->pos = i;
++		if (!dir_emit(ctx, d->blob + e->name, e->len, e->ino, e->type))
++			break;
++	}
++	ctx->pos = i;
++	file->f_pos = i;
++	return 0;
++}
++#else
++#define rewind_iterate_dir iterate_dir
++#endif
++
+ /*
+  * POSIX says that a dirent name cannot contain NULL or a '/'.
+  *
+@@ -226,7 +414,7 @@
+ 	if (fd_empty(f))
+ 		return -EBADF;
+ 
+-	error = iterate_dir(fd_file(f), &buf.ctx);
++	error = rewind_iterate_dir(fd_file(f), &buf.ctx);
+ 	if (buf.result)
+ 		error = buf.result;
+ 
+@@ -316,7 +504,7 @@
+ 	if (fd_empty(f))
+ 		return -EBADF;
+ 
+-	error = iterate_dir(fd_file(f), &buf.ctx);
++	error = rewind_iterate_dir(fd_file(f), &buf.ctx);
+ 	if (error >= 0)
+ 		error = buf.error;
+ 	if (buf.prev_reclen) {
+@@ -396,7 +584,7 @@
+ 	if (fd_empty(f))
+ 		return -EBADF;
+ 
+-	error = iterate_dir(fd_file(f), &buf.ctx);
++	error = rewind_iterate_dir(fd_file(f), &buf.ctx);
+ 	if (error >= 0)
+ 		error = buf.error;
+ 	if (buf.prev_reclen) {
+@@ -473,7 +661,7 @@
+ 	if (fd_empty(f))
+ 		return -EBADF;
+ 
+-	error = iterate_dir(fd_file(f), &buf.ctx);
++	error = rewind_iterate_dir(fd_file(f), &buf.ctx);
+ 	if (buf.result)
+ 		error = buf.result;
+ 
+@@ -556,7 +744,7 @@
+ 	if (fd_empty(f))
+ 		return -EBADF;
+ 
+-	error = iterate_dir(fd_file(f), &buf.ctx);
++	error = rewind_iterate_dir(fd_file(f), &buf.ctx);
+ 	if (error >= 0)
+ 		error = buf.error;
+ 	if (buf.prev_reclen) {
+diff -ruN a/include/linux/fs.h b/include/linux/fs.h
+--- a/include/linux/fs.h	2026-10-21 18:17:25.225479895 -0700
++++ b/include/linux/fs.h	2026-10-21 18:17:25.246402242 -0700
+@@ -1284,6 +1284,10 @@
+ #ifdef CONFIG_EPOLL
+ 	struct hlist_head		*f_ep;
+ #endif
++#ifdef CONFIG_REWIND_GUEST
++	/* A directory's entries in the order rewind.dirents= gives them. */
++	struct rewind_dirents		*f_rewind_dirents;
++#endif
+ 	union {
+ 		struct callback_head	f_task_work;
+ 		struct llist_node	f_llist;
+@@ -3207,6 +3211,11 @@
+ extern const struct inode_operations simple_symlink_inode_operations;
+ 
+ extern int iterate_dir(struct file *, struct dir_context *);
++#ifdef CONFIG_REWIND_GUEST
++extern void rewind_dirents_free(struct file *);
++#else
++static inline void rewind_dirents_free(struct file *file) { }
++#endif
+ 
+ int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,
+ 		int flags);

@@ -27,7 +27,12 @@ pkgs.stdenv.mkDerivation {
   separateDebugInfo = true;
   inherit (upstream) version src;
 
-  patches = [ ../guest/linux/rewind-guest.patch ];
+  patches = [
+    ../guest/linux/rewind-guest.patch
+    # rewind.dirents=N: directories listed in the order of a SipHash of
+    # each name keyed by N, as an ext4 made with another hash seed would
+    ../guest/linux/rewind-dirents.patch
+  ];
 
   depsBuildBuild = [ pkgs.buildPackages.stdenv.cc ];
   nativeBuildInputs = [

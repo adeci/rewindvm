@@ -73,8 +73,10 @@ nothing preempts it. See [Limits](#limits).
 
 ### The guest kernel
 
-The kernel is upstream Linux 7.2 with one patch and a small config, built by
-`nix/kernel.nix`. The patch adds a hypervisor platform to
+The kernel is upstream Linux 7.2 with two patches and a small config, built
+by `nix/kernel.nix`. The second patch changes the order directories list in
+when the command line asks for it (see [Directory order](#directory-order)).
+The first adds a hypervisor platform to
 `arch/x86/kernel/cpu/rewind.c`, in the pattern of the Jailhouse and ACRN guest
 platforms. The platform is detected by the CPUID signature `RewindRewind`.
 
@@ -368,6 +370,44 @@ The guest's wall clock starts at midnight UTC of the day the run was made.
 Configure scripts compare the clock with the timestamps in source tarballs, so
 1970 does not work, and the value is an input like any other, so a replay uses
 it again.
+
+### Directory order
+
+`readdir` returns a directory's entries in the order its filesystem keeps
+them, and in the guest that order is the same in every run. tmpfs, which
+`/build` is on, lists the newest entry first. erofs, the input image, lists
+entries by name. A merged overlayfs directory lists the lower layer's
+entries, then the upper's. On a real machine, ext4 lists a directory in the
+order of a hash of each name, keyed by a seed chosen when the filesystem was
+made, so two machines can list one directory in two orders. A build that
+writes out a directory's entries in the order it reads them, unsorted, then
+differs from machine to machine, and the guest never shows it.
+
+The guest kernel's second patch reads `rewind.dirents=N` from the command
+line. With N other than 0, every directory on tmpfs, ramfs, overlayfs and
+erofs lists `.` and `..` first and the rest in the order of a SipHash of
+each name keyed by N, as an ext4 made with another seed would. Without the
+argument, or with 0, each filesystem keeps its own order. The order depends
+only on the names and N, so a run made with a key replays, and the command
+line is part of the run's spec, so the key is one of its inputs and part of
+its id.
+
+A `getdents` call at position 0 reads the whole directory, sorts it, and
+serves that call and the ones after it from the sorted copy; the position
+is an index into the copy. An entry created after that call shows up only
+after the program reads from position 0 again, which POSIX allows.
+
+setuptools 80.9.0 in nixpkgs is a build this finds. Under key 1,
+`/build/source` lists `setuptools.egg-info` before `bootstrap.egg-info`, and
+the wheel's `WHEEL` file says `Generator: setuptools (80.9.0.post0)`. Under
+key 2 the two directories list the other way round, the build takes its
+version from `bootstrap.egg-info`, whose `PKG-INFO` says `Version: 1.0`, and
+`WHEEL` says `Generator: setuptools (1.0)`. The guest's own tmpfs order
+gives the first of the two.
+
+There is no `--dirents` option yet. `--kernel-args rewind.dirents=N` sets
+the key for `rewind run`, `rewind nix` and `rewind check`, and `check` does
+not vary it from run to run.
 
 ## Runs on disk
 

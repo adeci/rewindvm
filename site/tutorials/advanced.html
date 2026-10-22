@@ -78,6 +78,9 @@
             <a href="#hold-a-task-off-the-cpu-for-longer">Hold a task off the CPU for longer</a>
           </li>
           <li><a href="#try-other-seeds-from-a-step">Try other seeds from a step</a></li>
+          <li>
+            <a href="#list-directories-in-another-order">List directories in another order</a>
+          </li>
           <li><a href="#move-around-a-long-run">Move around a long run</a></li>
           <li><a href="#hand-a-failure-to-someone-else">Hand a failure to someone else</a></li>
           <li><a href="#which-clock">Which clock</a></li>
@@ -960,6 +963,36 @@ failing: run 8e3c6d0bdfcbd8b5, schedule 10 over steps 303..343, stalls up to 50 
 seed 1 decides it: under schedule 0, seed 0 passes and seed 1 fails
 passing: run 2fedde184b908b25, seed 0, schedule 0
 failing: run 64f50ddd67b8feac, seed 1 from step 301, schedule 0</code></pre>
+      </section>
+
+      <section class="step">
+        <h2 id="list-directories-in-another-order">
+          <a class="anchor" href="#list-directories-in-another-order"
+            >List directories in another order</a
+          >
+        </h2>
+        <p>
+          Inside the VM a directory lists its entries in the same order in every run, so a build
+          that depends on that order never differs there. On a real machine, ext4 lists a directory
+          in an order set when the disk was formatted. The kernel argument
+          <code>rewind.dirents=N</code> lists every directory the build sees in the order of a hash
+          of each name keyed by N, as another ext4 disk would; 0 keeps the usual order. The key is
+          part of the run, so a run made with one replays:
+        </p>
+        <pre
+          class="console"
+        ><code><span class="cmd"><span class="prompt">$</span> rewind nix --kernel-args rewind.dirents=2 github:fzakaria/rewindvm#mylib</span></code></pre>
+        <p>
+          Build with a few keys and compare the outputs with <code>rewind diff --outputs</code>.
+          setuptools 80.9.0 builds a wheel that names its own version as <code>1.0</code> under key
+          2, because it reads its version from whichever <code>.egg-info</code> directory lists
+          first. There is no <code>--dirents</code> option yet, and <code>check</code> does not vary
+          the key.
+          <a href="https://github.com/fzakaria/rewindvm/blob/main/docs/design.md#directory-order"
+            >Directory order</a
+          >
+          in the design notes says how the kernel does it.
+        </p>
       </section>
 
       <section class="step">

@@ -505,6 +505,27 @@ $ rewind check --run hash-order --seeds 8 --schedules 0 | grep -E 'decides it|pa
 
 <!-- assert: grep -qE 'decides it: under schedule 0, seed [0-9]+ passes and seed [0-9]+ fails$' {{out:reseed}} && grep -qE 'seed [0-9]+ from step [0-9]+, schedule 0$' {{out:reseed}} -->
 
+## List directories in another order
+
+Inside the VM a directory lists its entries in the same order in every run,
+so a build that depends on that order never differs there. On a real
+machine, ext4 lists a directory in an order set when the disk was formatted.
+The kernel argument `rewind.dirents=N` lists every directory the build sees
+in the order of a hash of each name keyed by N, as another ext4 disk would;
+0 keeps the usual order. The key is part of the run, so a run made with one
+replays:
+
+```console
+$ rewind nix --kernel-args rewind.dirents=2 {{flake}}
+```
+
+Build with a few keys and compare the outputs with `rewind diff --outputs`.
+setuptools 80.9.0 builds a wheel that names its own version as `1.0` under
+key 2, because it reads its version from whichever `.egg-info` directory
+lists first. There is no `--dirents` option yet, and `check` does not vary
+the key. [Directory order](design.md#directory-order) in the design notes
+says how the kernel does it.
+
 ## Move around a long run
 
 Builds of larger projects run to hundreds of thousands of steps. The app has
