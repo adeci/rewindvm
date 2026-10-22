@@ -493,6 +493,19 @@ impl Timeline {
         self.rows.iter().filter(move |r| r.alive_at(step))
     }
 
+    /// Which of the rows alive at `step` did the last event at or before
+    /// it: its thread's row, or its process's row when the thread has no
+    /// row of its own. None when that process is not alive at `step`.
+    pub fn last_event_row(&self, step: u64) -> Option<usize> {
+        let event = self.event_index_at(step).and_then(|i| self.event(i))?;
+        self.alive_rows(step)
+            .position(|r| r.pid == event.pid && r.tid == event.tid)
+            .or_else(|| {
+                self.alive_rows(step)
+                    .position(|r| r.kind == RowKind::Process && r.pid == event.pid)
+            })
+    }
+
     /// The phase `step` falls in: the last one starting at or before it.
     pub fn phase_index_at(&self, step: u64) -> Option<usize> {
         if self.phases.is_empty() {
@@ -1829,6 +1842,19 @@ mod tests {
         assert_eq!(at(7), vec![1, 2, 3]);
         assert_eq!(at(14), vec![1, 2, 4, 5]);
         assert_eq!(at(19), vec![1]);
+    }
+
+    #[test]
+    fn the_last_events_row_is_its_thread_or_else_its_process() {
+        // Indexes into the rows alive at each step: the compiler's open at
+        // step 8, the worker thread's SIGSEGV at 14, the worker's exit at
+        // 15 (its row gone, so the test's), and the test's own exit at 16,
+        // when no row of it is alive.
+        let t = build();
+        assert_eq!(t.last_event_row(8), Some(2));
+        assert_eq!(t.last_event_row(14), Some(3));
+        assert_eq!(t.last_event_row(15), Some(2));
+        assert_eq!(t.last_event_row(16), None);
     }
 
     #[test]

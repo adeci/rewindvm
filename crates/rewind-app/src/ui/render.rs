@@ -1311,9 +1311,12 @@ impl Scrubber {
 
         // The process tree, indented by depth, threads in grey. Each row
         // is one line of text, the id padded to its column, so a selection
-        // copies ids and labels together.
+        // copies ids and labels together. The step each started at stands
+        // before it, as in the files list, and goes there when clicked.
         let rows: Vec<_> = t.alive_rows(step).collect();
         let alive = rows.len();
+        let now = t.last_event_row(step);
+        let step_width = self.step_column_width();
         let selected = self.selected_range(Surface::Processes);
         let registry = self.selecting.registry.clone();
         let procs = div()
@@ -1342,24 +1345,40 @@ impl Scrubber {
                     (0..id_end, color_only(id_color)),
                     (id_end..text.len(), color_only(label_color)),
                 ];
+                // The row of the thread or process that did the last event
+                // is lit, as the log lights the playhead's line.
                 div()
-                    .id(SharedString::from(format!("proc-{i}")))
                     .flex()
                     .w_full()
                     .flex_none()
                     .items_center()
+                    .gap(px(size::LIST_COLUMN_GAP))
                     .h(px(size::LIST_ROW_HEIGHT))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgb(theme::ROW_HOVER)))
-                    .on_click(seek_on_click(row.start, cx))
-                    .tooltip(tooltip(PROCESS_ROW_NOTE))
-                    .pl(px(size::PANEL_PAD_X + row.depth as f32 * size::TREE_INDENT))
-                    .pr(px(size::PANEL_PAD_X))
+                    .px(px(size::PANEL_PAD_X))
+                    .when(now == Some(i), |d| d.bg(rgb(theme::ROW_NOW)))
                     .child(
-                        div().min_w_0().truncate().child(
-                            selectable(Surface::Processes, i, text, part, &registry)
-                                .with_highlights(colors),
-                        ),
+                        div()
+                            .id(SharedString::from(format!("proc-step-{i}")))
+                            .flex_none()
+                            .w(step_width)
+                            .flex()
+                            .justify_end()
+                            .cursor_pointer()
+                            .text_color(rgb(theme::FAINT))
+                            .hover(|s| s.text_color(rgb(theme::AMBER)))
+                            .on_click(seek_on_click(row.start, cx))
+                            .tooltip(tooltip(PROCESS_STEP_NOTE))
+                            .child(thousands(row.start)),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .pl(px(row.depth as f32 * size::TREE_INDENT))
+                            .child(
+                                selectable(Surface::Processes, i, text, part, &registry)
+                                    .with_highlights(colors),
+                            ),
                     )
             }));
         let procs = selects(procs, Surface::Processes, cx);
@@ -2376,7 +2395,7 @@ const GDB_NOTE: &str = "gdb on a throwaway copy of the VM at this step, with the
 const SHELL_NOTE: &str = "A shell inside a throwaway copy of the VM at this step, in the process's directory with its environment, while everything else in the VM stays where it was. Nothing done in it changes the recording.";
 const FILE_STEP_NOTE: &str = "The step this file was last written, removed or renamed at. Click to go there; click the path to see the file at the playhead.";
 const LOG_STEP_NOTE: &str = "The step this line was written at. Click to go there.";
-const PROCESS_ROW_NOTE: &str = "Click to go to the step this process or thread started at.";
+const PROCESS_STEP_NOTE: &str = "The step this process or thread started at. Click to go there.";
 const BACK_NOTE: &str = "Back to where the playhead was before its last jump: to the failure, the divergence, a phase, an end, a clicked line or a step typed in. Key: Alt+Left, or the mouse's back button.";
 const PREVIOUS_NOTE: &str = "Previous stop, of the ones the chooser beside it picks. Key: Left.";
 const NEXT_NOTE: &str = "Next stop, of the ones the chooser beside it picks. Key: Right.";
@@ -2690,7 +2709,8 @@ fn file_named_by(event: &rewind_trace::Event) -> Option<String> {
 /// The text of the cards, notices and lists, built once for both drawing
 /// and copying so the two always agree.
 impl Scrubber {
-    /// The process tree rows alive at the playhead.
+    /// The process tree rows alive at the playhead, without the step
+    /// column, which a copy leaves out as it does the files list's.
     pub(super) fn process_lines(&self) -> Vec<Mapped> {
         let Some(session) = &self.session else {
             return Vec::new();
