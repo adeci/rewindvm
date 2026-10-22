@@ -7,10 +7,10 @@
 use std::path::Path;
 
 use gpui::{
-    AnyElement, Bounds, ClickEvent, Context, CursorStyle, DispatchPhase, Div, FontWeight,
+    AnyElement, Bounds, ClickEvent, Context, CursorStyle, DispatchPhase, Div, Font, FontWeight,
     HighlightStyle, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
-    PathBuilder, Pixels, Point, Role, ScrollStrategy, ScrollWheelEvent, SharedString, Window,
-    canvas, div, fill, point, prelude::*, px, relative, rgb, rgba, uniform_list,
+    PathBuilder, Pixels, Point, Role, ScrollStrategy, ScrollWheelEvent, SharedString, TextRun,
+    Window, canvas, div, fill, font, point, prelude::*, px, relative, rgb, rgba, uniform_list,
 };
 
 use crate::describe::{self, EventTone, short_store_paths, thousands};
@@ -28,6 +28,7 @@ use crate::ui::scrubber::{ForkState, NoticeAction, NoticeTone, Scrub, Scrubber};
 use crate::ui::selectable::{PID_CHARS, mapped, process_row, selectable, selects};
 use crate::ui::splits::{Edge, grip, measure};
 use crate::ui::tabs::RightTab;
+use crate::ui::toolbar::{ToolbarFit, ToolbarMemory, clip_label, next_fit};
 use crate::ui::tour::explore_button;
 use crate::ui::widgets::{
     Availability, ButtonStyle, PillTone, button, icon, panel_title, pill, pulsing, readout,
@@ -195,8 +196,9 @@ impl Scrubber {
     }
 
     fn render_session(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let header = self.render_header(window, cx);
-        let timeline = self.render_timeline(window, cx);
+        let (fit, labels_width) = self.choose_toolbar(window);
+        let header = self.render_header(fit, window, cx);
+        let timeline = self.render_timeline(fit, labels_width, window, cx);
         let log = self.render_log(cx);
         let middle = self.render_middle(cx);
         // The right column: the tab chosen, "At this step" at the width
@@ -266,7 +268,12 @@ impl Scrubber {
 
     /// The header: the mark, the run and what it built, verdict pills, and
     /// the run's size on the right.
-    fn render_header(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    fn render_header(
+        &self,
+        fit: ToolbarFit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
         let session = self.session();
         let run = &session.run;
         let fonts = &self.fonts;
@@ -303,9 +310,12 @@ impl Scrubber {
             Verdict::Passed => PillTone::Passed,
         };
         let name = describe::clip(&run.label(), MAX_NAME_CHARS);
+        // The left side gives way to the run's size on the right: what
+        // does not fit is cut off rather than drawn over it.
         let mut left = div()
             .flex()
             .min_w_0()
+            .overflow_hidden()
             .items_center()
             .gap(px(size::HEADER_GAP))
             .child(brand)
@@ -385,17 +395,25 @@ impl Scrubber {
         }
 
         // The run's size, or, while another run is read to take its place,
-        // which one.
+        // which one. A window too narrow for the full toolbar is too narrow
+        // for the whole size too: it shows the steps, the rest in a note.
         let timeline = &run.timeline;
-        let stats = match &self.loading {
-            Some(path) => opening_label(path),
-            None => format!(
-                "{} steps \u{b7} {} events \u{b7} {VCPUS} vCPU",
-                thousands(timeline.total),
-                thousands(timeline.trace.events.len() as u64)
+        let size_label = format!(
+            "{} steps \u{b7} {} events \u{b7} {VCPUS} vCPU",
+            thousands(timeline.total),
+            thousands(timeline.trace.events.len() as u64)
+        );
+        let stats = match (&self.loading, fit) {
+            (Some(path), _) => div().child(opening_label(path)),
+            (None, ToolbarFit::Full) => div().child(size_label),
+            (None, ToolbarFit::Compact) => div().child(
+                div()
+                    .id("run-size")
+                    .tooltip(tooltip(size_label))
+                    .child(format!("{} steps", thousands(timeline.total))),
             ),
         };
-        self.header_frame(left, Some(stats), window, cx)
+        self.header_frame(left, Some(stats.into_any_element()), window, cx)
     }
 
     /// The header bar around `left`: on the right the run's size, the
@@ -404,7 +422,7 @@ impl Scrubber {
     fn header_frame(
         &self,
         left: Div,
-        stats: Option<String>,
+        stats: Option<AnyElement>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
@@ -584,7 +602,13 @@ impl Scrubber {
 
     /// The timeline: phase segments, ticks, markers and the playhead over
     /// a track that scrubs on click and drag, then the controls row.
-    fn render_timeline(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    fn render_timeline(
+        &mut self,
+        fit: ToolbarFit,
+        labels_width: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let session = self.session();
         let t = &session.run.timeline;
         let step = self.step;
@@ -766,7 +790,7 @@ impl Scrubber {
             .border_b_1()
             .border_color(rgb(theme::LINE))
             .child(div().flex().flex_col().child(track).children(tests))
-            .child(self.render_controls(cx))
+            .child(self.render_controls(fit, labels_width, cx))
     }
 
     /// An invisible layer over the track that turns clicks and drags into
@@ -846,9 +870,70 @@ impl Scrubber {
         .size_full()
     }
 
+    /// Which toolbar the window has room for this frame, and how wide the
+    /// full row's labels that change are. The header follows the same
+    /// choice.
+    fn choose_toolbar(&self, window: &mut Window) -> (ToolbarFit, Pixels) {
+        let t = &self.session().run.timeline;
+
+        // The labels that change: the stride, the step and the run's
+        // length, the phase and the amber button's. With them shaped in
+        // their fonts, the full row is as wide as its other parts were
+        // last laid out at plus these.
+        let phase = clip_label(
+            &t.phase_index_at(self.step)
+                .map_or_else(String::new, |i| t.phases[i].name.clone()),
+        );
+        let (step_text, total_text) = self.step_readout_texts();
+        let (ui, mono) = (&self.fonts.ui, &self.fonts.mono);
+        let labels_width = [
+            (
+                self.chosen_stride().shown,
+                ui,
+                FontWeight::NORMAL,
+                size::TEXT_UI,
+            ),
+            (step_text, mono, FontWeight::SEMIBOLD, size::TEXT_READOUT),
+            (total_text, mono, FontWeight::SEMIBOLD, size::TEXT_READOUT),
+            (phase.shown, mono, FontWeight::NORMAL, size::TEXT_READOUT),
+            (
+                here_label(self.here_action, ToolbarFit::Full),
+                ui,
+                FontWeight::SEMIBOLD,
+                size::TEXT_UI,
+            ),
+        ]
+        .into_iter()
+        .map(|(text, family, weight, text_size)| {
+            text_width(window, text, family, weight, text_size)
+        })
+        .fold(px(0.0), |sum, w| sum + w);
+
+        // The toolbar to show; the full one until the full row has been
+        // laid out once.
+        let viewport = window.viewport_size().width;
+        let memory = self.toolbar.get();
+        let fit = match memory.full_fixed {
+            Some(fixed) => next_fit(memory.shown, fixed + labels_width, viewport),
+            None => ToolbarFit::Full,
+        };
+        self.toolbar.set(ToolbarMemory {
+            shown: fit,
+            ..memory
+        });
+        (fit, labels_width)
+    }
+
     /// Transport buttons on the left; readouts and the fork button on the
-    /// right.
-    fn render_controls(&self, cx: &mut Context<Self>) -> Div {
+    /// right. When the full row does not fit the window with the labels on
+    /// screen, a compact toolbar gives the buttons shorter labels and puts
+    /// their full names in their notes.
+    fn render_controls(
+        &self,
+        fit: ToolbarFit,
+        labels_width: Pixels,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let session = self.session();
         let t = &session.run.timeline;
         let has_divergence = if session.divergence_step().is_some() {
@@ -899,6 +984,8 @@ impl Scrubber {
             .px_0()
             .child(icon(Icon::GoToStart, size::ICON_START, theme::TEXT))
             .on_click(cx.listener(|this, _, _, cx| this.go(Motion::Start, cx)));
+        // Previous and Next: named in the full toolbar, chevrons with
+        // their names in a note in the compact one.
         let previous = button(
             "previous-event",
             ButtonStyle::Neutral,
@@ -906,25 +993,67 @@ impl Scrubber {
         )
         .aria_label("Previous stop (Left)")
         .child(icon(Icon::ChevronLeft, size::ICON_CHEVRON, theme::TEXT))
-        .child("Previous")
         .on_click(cx.listener(|this, _, _, cx| this.go(Motion::PreviousEvent, cx)));
         let next = button("next-event", ButtonStyle::Neutral, Availability::Enabled)
             .aria_label("Next stop (Right)")
-            .child("Next")
-            .child(icon(Icon::ChevronRight, size::ICON_CHEVRON, theme::TEXT))
             .on_click(cx.listener(|this, _, _, cx| this.go(Motion::NextEvent, cx)));
+        let next_chevron = icon(Icon::ChevronRight, size::ICON_CHEVRON, theme::TEXT);
+        let (previous, next) = match fit {
+            ToolbarFit::Full => (
+                previous.child("Previous"),
+                next.child("Next").child(next_chevron),
+            ),
+            ToolbarFit::Compact => (
+                previous
+                    .tooltip(tooltip(PREVIOUS_NOTE))
+                    .w(px(size::ICON_BUTTON_WIDTH))
+                    .px_0(),
+                next.tooltip(tooltip(NEXT_NOTE))
+                    .w(px(size::ICON_BUTTON_WIDTH))
+                    .px_0()
+                    .child(next_chevron),
+            ),
+        };
+
+        // The jumps: "Jump to" only when the full toolbar fits.
         let divergence = button("to-divergence", ButtonStyle::Divergence, has_divergence)
-            .child("Jump to divergence")
+            .aria_label("Jump to divergence (D)")
             .on_click(cx.listener(|this, _, _, cx| this.go(Motion::Divergence, cx)));
-        let divergence = self.with_callout(divergence, Anchor::DivergenceButton, cx);
         let failure = button("to-failure", ButtonStyle::Failure, has_failure)
-            .child("Jump to failure")
+            .aria_label("Jump to failure (F)")
             .on_click(cx.listener(|this, _, _, cx| this.go(Motion::Failure, cx)));
+        let (divergence, failure) = match fit {
+            ToolbarFit::Full => (
+                divergence.child("Jump to divergence"),
+                failure.child("Jump to failure"),
+            ),
+            ToolbarFit::Compact => (
+                divergence
+                    .tooltip(tooltip(DIVERGENCE_NOTE))
+                    .child("Divergence"),
+                failure.tooltip(tooltip(FAILURE_NOTE)).child("Failure"),
+            ),
+        };
+        let divergence = self.with_callout(divergence, Anchor::DivergenceButton, cx);
         let failure = self.with_callout(failure, Anchor::FailureButton, cx);
 
-        let phase = t
-            .phase_index_at(self.step)
-            .map_or_else(String::new, |i| t.phases[i].name.clone());
+        // The phase, cut to the toolbar's cap with the whole name in its
+        // note; the compact toolbar leaves it to the phase track above.
+        let phase = clip_label(
+            &t.phase_index_at(self.step)
+                .map_or_else(String::new, |i| t.phases[i].name.clone()),
+        );
+        let phase = div()
+            .id("phase-readout")
+            .when_some(phase.whole, |d, whole| {
+                d.tooltip(tooltip(format!("Phase: {whole}")))
+            })
+            .child(readout(
+                "phase",
+                phase.shown,
+                theme::TEXT,
+                FontWeight::NORMAL,
+            ));
         let readouts = div()
             .flex()
             .items_center()
@@ -932,7 +1061,7 @@ impl Scrubber {
             .font_family(self.fonts.mono.clone())
             .text_size(px(size::TEXT_READOUT))
             .child(self.render_step_readout(cx))
-            .child(readout("phase", phase, theme::TEXT, FontWeight::NORMAL));
+            .when(fit == ToolbarFit::Full, |d| d.child(phase));
         // While forks made here run, the button's icon turns and its note
         // says how many; a click still starts another.
         let forking = self
@@ -948,19 +1077,13 @@ impl Scrubber {
         } else {
             icon(Icon::Fork, size::ICON_FORK, theme::AMBER_INK).into_any_element()
         };
-        let (label, note) = match self.here_action {
-            HereAction::Fork => ("Fork from here".to_string(), None),
-            HereAction::Check {
-                schedules,
-                seeds: 1,
-            } => (
-                format!("Check from here \u{b7} {schedules}"),
-                Some(check_note(schedules, 1)),
-            ),
-            HereAction::Check { schedules, seeds } => (
-                format!("Check from here \u{b7} {seeds}\u{d7}{schedules}"),
-                Some(check_note(schedules, seeds)),
-            ),
+        // The compact toolbar drops "from here", and Fork says it in
+        // its note.
+        let label = here_label(self.here_action, fit);
+        let note = match (self.here_action, fit) {
+            (HereAction::Fork, ToolbarFit::Full) => None,
+            (HereAction::Fork, ToolbarFit::Compact) => Some(FORK_NOTE.to_string()),
+            (HereAction::Check { schedules, seeds }, _) => Some(check_note(schedules, seeds)),
         };
         let note = match (forking, note) {
             (0, note) => note,
@@ -991,11 +1114,34 @@ impl Scrubber {
             cx,
         );
 
+        // Once laid out, the full row tells how wide its other parts are,
+        // unless the step field stands in for the step readout. A full row
+        // that turns out not to fit is drawn again, compact.
+        let learn = fit == ToolbarFit::Full && self.step_entry.is_none();
+        let memory = self.toolbar.clone();
         div()
             .flex()
             .items_center()
             .justify_between()
             .gap(px(size::READOUT_GAP))
+            .when(learn, |row| {
+                row.on_children_prepainted(move |groups, window, _| {
+                    let [left, right] = groups.as_slice() else {
+                        return;
+                    };
+                    let row_width = left.size.width
+                        + right.size.width
+                        + px(size::READOUT_GAP + 2.0 * size::PAGE_PAD_X);
+                    memory.set(ToolbarMemory {
+                        full_fixed: Some(row_width - labels_width),
+                        ..memory.get()
+                    });
+                    let viewport = window.viewport_size().width;
+                    if next_fit(ToolbarFit::Full, row_width, viewport) == ToolbarFit::Compact {
+                        window.on_next_frame(|window, _| window.refresh());
+                    }
+                })
+            })
             .child(
                 div()
                     .flex()
@@ -1006,7 +1152,7 @@ impl Scrubber {
                     .child(start)
                     .child(previous)
                     .child(next)
-                    .child(self.render_stride_chooser(cx))
+                    .child(self.render_stride_chooser(fit, cx))
                     .child(divergence)
                     .child(failure),
             )
@@ -2232,6 +2378,11 @@ const FILE_STEP_NOTE: &str = "The step this file was last written, removed or re
 const LOG_STEP_NOTE: &str = "The step this line was written at. Click to go there.";
 const PROCESS_ROW_NOTE: &str = "Click to go to the step this process or thread started at.";
 const BACK_NOTE: &str = "Back to where the playhead was before its last jump: to the failure, the divergence, a phase, an end, a clicked line or a step typed in. Key: Alt+Left, or the mouse's back button.";
+const PREVIOUS_NOTE: &str = "Previous stop, of the ones the chooser beside it picks. Key: Left.";
+const NEXT_NOTE: &str = "Next stop, of the ones the chooser beside it picks. Key: Right.";
+const DIVERGENCE_NOTE: &str = "Jump to divergence: the first step where this run and the run it is compared with differ. Key: D.";
+const FAILURE_NOTE: &str = "Jump to failure. Key: F.";
+const FORK_NOTE: &str = "Fork from here: runs this run again from the playhead under another schedule. The menu beside it turns it into a check of many schedules.";
 const FORWARD_NOTE: &str =
     "Forward again, after Back. Key: Alt+Right, or the mouse's forward button.";
 const EXPORT_NOTE: &str = "Writes this run to one .rwd file, with its keyframes and inputs, that another machine can open, replay and fork.";
@@ -2248,6 +2399,54 @@ fn check_note(schedules: u64, seeds: u64) -> String {
     format!(
         "Runs {schedules} other schedules from this step, each a fork of this run, and counts how many end differently. The forks stay among this run's forks. The menu beside it turns it back to Fork from here."
     )
+}
+
+/// The amber button's label for `action`: "from here" in the full toolbar
+/// only.
+fn here_label(action: HereAction, fit: ToolbarFit) -> String {
+    let (fork, check) = match fit {
+        ToolbarFit::Full => ("Fork from here", "Check from here"),
+        ToolbarFit::Compact => ("Fork", "Check"),
+    };
+    match action {
+        HereAction::Fork => fork.to_string(),
+        HereAction::Check {
+            schedules,
+            seeds: 1,
+        } => format!("{check} \u{b7} {schedules}"),
+        HereAction::Check { schedules, seeds } => {
+            format!("{check} \u{b7} {seeds}\u{d7}{schedules}")
+        }
+    }
+}
+
+/// How wide `text` is in `family` at `weight` and `text_size`, shaped as
+/// the window draws it.
+fn text_width(
+    window: &Window,
+    text: String,
+    family: &SharedString,
+    weight: FontWeight,
+    text_size: f32,
+) -> Pixels {
+    if text.is_empty() {
+        return px(0.0);
+    }
+    let run = TextRun {
+        len: text.len(),
+        font: Font {
+            weight,
+            ..font(family.clone())
+        },
+        color: gpui::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(SharedString::from(text), px(text_size), &[run], None)
+        .width()
 }
 
 /// The fork button's note while forks made from this window run.

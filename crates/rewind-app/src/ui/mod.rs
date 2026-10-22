@@ -29,6 +29,7 @@ mod sweep;
 mod tabs;
 #[cfg_attr(target_family = "wasm", path = "terminal_web.rs")]
 mod terminal;
+mod toolbar;
 mod tour;
 mod viewer;
 mod widgets;

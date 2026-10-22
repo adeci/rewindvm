@@ -381,6 +381,9 @@ pub struct Scrubber {
     /// What the amber button does at the playhead, and where its menu
     /// opened, while it is open.
     pub(super) here_action: crate::sweep::HereAction,
+    /// Which toolbar is shown, and what it has learned of the full row's
+    /// width; written as the toolbar is laid out.
+    pub(super) toolbar: Rc<Cell<crate::ui::toolbar::ToolbarMemory>>,
     pub(super) here_menu: Option<gpui::Point<gpui::Pixels>>,
     /// A press on the title bar that the next motion turns into a window
     /// move.
@@ -479,6 +482,7 @@ impl Scrubber {
             lanes: None,
             sweep: None,
             here_action: crate::sweep::HereAction::Fork,
+            toolbar: Rc::default(),
             here_menu: None,
             title: None,
             #[cfg(target_family = "wasm")]

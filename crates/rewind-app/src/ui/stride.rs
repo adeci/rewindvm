@@ -14,14 +14,11 @@ use crate::model::Timeline;
 use crate::stride::{Direction, Stride, step_by};
 use crate::theme::{self, size};
 use crate::ui::scrubber::{NoticeTone, Scrubber};
+use crate::ui::toolbar::{Clipped, ToolbarFit, clip_label};
 use crate::ui::widgets::{Availability, ButtonStyle, button, tooltip};
 
 /// How many characters of a file's path the chooser shows.
 const MAX_PATH_CHARS: usize = 40;
-
-/// How many characters of the chosen stride the chooser shows; the menu
-/// shows them whole.
-const MAX_CHOSEN_CHARS: usize = 22;
 
 /// The menu's width, wide enough for a thread and its program's name.
 const MENU_WIDTH: f32 = 300.0;
@@ -144,24 +141,38 @@ impl Scrubber {
         unique
     }
 
+    /// The chosen stride as the chooser shows it.
+    pub(super) fn chosen_stride(&self) -> Clipped {
+        clip_label(
+            &self
+                .session
+                .as_ref()
+                .map(|s| stride_label(&self.stride, &s.run.timeline))
+                .unwrap_or_default(),
+        )
+    }
+
     /// The chooser: "Stop at" and the stride chosen, which opens the menu.
-    pub(super) fn render_stride_chooser(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let label = self
-            .session
-            .as_ref()
-            .map(|s| {
-                clip(
-                    &stride_label(&self.stride, &s.run.timeline),
-                    MAX_CHOSEN_CHARS,
-                )
-            })
-            .unwrap_or_default();
+    /// The compact toolbar shows the stride alone.
+    pub(super) fn render_stride_chooser(
+        &self,
+        fit: ToolbarFit,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        // The stride is cut to the toolbar's cap; the note and the menu
+        // show it whole.
+        let label = self.chosen_stride();
+        let note = match &label.whole {
+            Some(whole) => format!("Stopping at {whole}. {CHOOSER_NOTE}"),
+            None => CHOOSER_NOTE.to_string(),
+        };
+        let label = label.shown;
         // The note would cover the menu while the menu is open.
         button("stride", ButtonStyle::Neutral, Availability::Enabled)
-            .when(self.stride_menu.is_none(), |b| {
-                b.tooltip(tooltip(CHOOSER_NOTE))
+            .when(self.stride_menu.is_none(), |b| b.tooltip(tooltip(note)))
+            .when(fit == ToolbarFit::Full, |b| {
+                b.child(div().text_color(rgb(theme::MUTED)).child("Stop at"))
             })
-            .child(div().text_color(rgb(theme::MUTED)).child("Stop at"))
             .child(label)
             .child(div().text_color(rgb(theme::MUTED)).child("\u{25be}"))
             .on_mouse_down(

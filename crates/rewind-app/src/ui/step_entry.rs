@@ -90,15 +90,21 @@ impl Scrubber {
         }
     }
 
+    /// The step readout's numbers: the step, and "/" and the run's length.
+    pub(super) fn step_readout_texts(&self) -> (String, String) {
+        let total = self.session.as_ref().map_or(0, |s| s.run.timeline.total);
+        (thousands(self.step), format!("/ {}", thousands(total)))
+    }
+
     /// The step readout: the step and the run's length, or the field while
     /// it is open.
     pub(super) fn render_step_readout(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let total = self.session.as_ref().map_or(0, |s| s.run.timeline.total);
+        let (step, of_total) = self.step_readout_texts();
         let caption = div().text_color(rgb(theme::MUTED)).child("step");
         let of_total = div()
             .text_color(rgb(theme::AMBER))
             .font_weight(FontWeight::SEMIBOLD)
-            .child(format!("/ {}", thousands(total)));
+            .child(of_total);
 
         let Some(entry) = &self.step_entry else {
             return div()
@@ -115,7 +121,7 @@ impl Scrubber {
                     div()
                         .text_color(rgb(theme::AMBER))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(thousands(self.step)),
+                        .child(step),
                 )
                 .child(of_total);
         };
