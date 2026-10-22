@@ -198,6 +198,13 @@ enum Command {
     /// --file or --outputs, compares the files the runs left behind
     /// instead of their events.
     Diff(cmd::view::DiffArgs),
+    /// Why a file differs between two runs: the process and the step that
+    /// wrote a differing byte, followed back through copies, and how the
+    /// two writers' command lines differ.
+    ///
+    /// It reads the file at steps by forking the runs, as `rewind cat`
+    /// does.
+    Blame(cmd::blame::BlameArgs),
 }
 
 /// Whether standard error is a terminal, where a status line can be drawn
@@ -260,6 +267,7 @@ impl Command {
             | Command::Gdb(_)
             | Command::Where(_)
             | Command::Threads(_)
+            | Command::Blame(_)
             | Command::Replay(_)
             | Command::Export(_)
             | Command::Import(_) => HomeHold::InUse,
@@ -350,6 +358,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Replay(args) => cmd::view::replay(&home, args),
         Command::Generate(args) => cmd::setup::generate(args),
         Command::Diff(args) => cmd::view::diff(&home, args),
+        Command::Blame(args) => cmd::blame::blame(&home, args),
     }
 }
 
