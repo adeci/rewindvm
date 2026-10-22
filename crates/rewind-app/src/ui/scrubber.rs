@@ -194,6 +194,14 @@ pub const EXPORT_IN_DESKTOP_APP: &str = "Export writes a run recorded on your ma
 /// What reading a file at a step is doing, in the browser viewer's words.
 pub const READING_A_FILE: &str = "Reading a file at a step";
 
+/// Where gdb or a shell starts: in the process of the event at the
+/// playhead, or in a process or thread picked in the tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Aim {
+    Playhead,
+    Process { pid: u32, tid: u32 },
+}
+
 /// What needs the engine to bring a run back to a step, for the message
 /// shown when a run cannot be brought back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -381,6 +389,9 @@ pub struct Scrubber {
     /// What the amber button does at the playhead, and where its menu
     /// opened, while it is open.
     pub(super) here_action: crate::sweep::HereAction,
+    /// The row picked in the process tree, whose card "At this step"
+    /// shows in place of the last event's.
+    pub(super) picked_row: Option<crate::proc_card::Pick>,
     /// Which toolbar is shown, and what it has learned of the full row's
     /// width; written as the toolbar is laid out.
     pub(super) toolbar: Rc<Cell<crate::ui::toolbar::ToolbarMemory>>,
@@ -482,6 +493,7 @@ impl Scrubber {
             lanes: None,
             sweep: None,
             here_action: crate::sweep::HereAction::Fork,
+            picked_row: None,
             toolbar: Rc::default(),
             here_menu: None,
             title: None,
@@ -573,6 +585,7 @@ impl Scrubber {
             self.history = History::default();
             self.stride = Stride::Every;
             self.view = None;
+            self.picked_row = None;
         }
         self.step = start;
         self.search = None;
@@ -1163,6 +1176,7 @@ impl Scrubber {
                 || self.stride_menu.is_some()
                 || self.here_menu.is_some(),
             tab: self.right_tab,
+            picked: self.picked_row.is_some(),
             terminal: self.terminal.is_some(),
         };
         match escape_closes(open) {
@@ -1172,6 +1186,7 @@ impl Scrubber {
                 self.close_here_menu(cx);
             }
             Some(Closable::Tab(tab)) => self.close_tab(tab, cx),
+            Some(Closable::Pick) => self.pick_row(None, cx),
             Some(Closable::Terminal) => self.close_terminal(cx),
             None => return,
         }
@@ -1456,16 +1471,24 @@ impl Scrubber {
     /// Runs gdb against a fork of the run at the playhead, in the
     /// terminal pane.
     pub(super) fn attach_gdb(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_replay(Replay::Gdb, window, cx);
+        self.open_replay(Replay::Gdb, Aim::Playhead, window, cx);
     }
 
     /// Opens a shell inside a fork of the run at the playhead, in the
     /// terminal pane.
     pub(super) fn open_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_replay(Replay::Shell, window, cx);
+        self.open_replay(Replay::Shell, Aim::Playhead, window, cx);
     }
 
-    fn open_replay(&mut self, replay: Replay, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens gdb or a shell in a fork of the run at the playhead, in the
+    /// terminal pane, started where `aim` says.
+    pub(super) fn open_replay(
+        &mut self,
+        replay: Replay,
+        aim: Aim,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // The browser viewer has no machine to run the recording on.
         if cfg!(target_family = "wasm") && self.session.is_some() {
             self.replay_in_desktop_app(replay.doing(), cx);
@@ -1489,29 +1512,40 @@ impl Scrubber {
         }
         let (run, step) = (session.run.path.clone(), self.step);
 
-        // The shell starts in the process the playhead's event is from,
-        // with its root, working directory and environment; the engine
-        // takes the job's once that process has exited.
+        // The shell starts in the process aimed at, or else the one the
+        // playhead's event is from, with its root, working directory and
+        // environment; the engine takes the job's once that process has
+        // exited.
         let t = &session.run.timeline;
-        let pid = t
-            .event_index_at(step)
-            .and_then(|i| t.event(i))
-            .map(|e| e.pid);
+        let pid = match aim {
+            Aim::Process { pid, .. } => Some(pid),
+            Aim::Playhead => t
+                .event_index_at(step)
+                .and_then(|i| t.event(i))
+                .map(|e| e.pid),
+        };
         let (kind, pid, command) = match replay {
             Replay::Shell => (
                 PaneKind::Shell,
                 pid,
                 self.engine.shell_command(&run, step, pid),
             ),
-            // gdb starts in the thread and frame the source panel shows
-            // for this step, when it shows one; else the engine picks the
-            // thread `rewind where` would.
+            // gdb starts in the thread aimed at, or else in the thread and
+            // frame the source panel shows for this step, when it shows
+            // one; else the engine picks the thread `rewind where` would.
             Replay::Gdb => {
-                let at = self.place_at_playhead().map(|(located, frame)| GdbAt {
-                    pid: located.pid,
-                    tid: located.tid,
-                    frame: frame.map(|f| located.frames[f].level),
-                });
+                let at = match aim {
+                    Aim::Process { pid, tid } => Some(GdbAt {
+                        pid,
+                        tid,
+                        frame: None,
+                    }),
+                    Aim::Playhead => self.place_at_playhead().map(|(located, frame)| GdbAt {
+                        pid: located.pid,
+                        tid: located.tid,
+                        frame: frame.map(|f| located.frames[f].level),
+                    }),
+                };
                 (PaneKind::Gdb, None, self.engine.gdb_command(&run, step, at))
             }
             // A fork and a check make runs, and the source and the threads
@@ -1788,6 +1822,8 @@ struct Open {
     menu: bool,
     /// The tab the right column shows.
     tab: RightTab,
+    /// Whether a row of the process tree is picked, its card showing.
+    picked: bool,
     terminal: bool,
 }
 
@@ -1796,18 +1832,23 @@ struct Open {
 enum Closable {
     Menu,
     Tab(RightTab),
+    /// The picked row's card, which gives way to the last event's.
+    Pick,
     Terminal,
 }
 
 /// What one press of Escape closes: the nearest thing open, from the
-/// menu over everything, through the file, source or runs tab on screen,
-/// to the terminal pane under the panels.
+/// menu over everything, through the file, source or runs tab on screen
+/// and the picked process's card, to the terminal pane under the panels.
 fn escape_closes(open: Open) -> Option<Closable> {
     if open.menu {
         return Some(Closable::Menu);
     }
     if open.tab != RightTab::AtStep {
         return Some(Closable::Tab(open.tab));
+    }
+    if open.picked {
+        return Some(Closable::Pick);
     }
     if open.terminal {
         return Some(Closable::Terminal);
@@ -1836,11 +1877,13 @@ mod tests {
     #[test]
     fn escape_closes_the_nearest_thing_first() {
         // With everything open, Escape takes the menu first, then the tab
-        // on screen unless it is "At this step", then the terminal pane;
-        // with nothing open it closes nothing.
+        // on screen unless it is "At this step", then the picked process's
+        // card, then the terminal pane; with nothing open it closes
+        // nothing.
         let all = Open {
             menu: true,
             tab: RightTab::File,
+            picked: true,
             terminal: true,
         };
         assert_eq!(escape_closes(all), Some(Closable::Menu));
@@ -1851,9 +1894,14 @@ mod tests {
             ..tabs
         };
         assert_eq!(escape_closes(runs), Some(Closable::Tab(RightTab::Runs)));
-        let terminal = Open {
+        let picked = Open {
             tab: RightTab::AtStep,
             ..tabs
+        };
+        assert_eq!(escape_closes(picked), Some(Closable::Pick));
+        let terminal = Open {
+            picked: false,
+            ..picked
         };
         assert_eq!(escape_closes(terminal), Some(Closable::Terminal));
         let nothing = Open {

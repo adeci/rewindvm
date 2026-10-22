@@ -25,6 +25,7 @@ pub mod lanes;
 pub mod license;
 pub mod memo;
 pub mod model;
+pub mod proc_card;
 pub mod request;
 pub mod run;
 pub mod search;

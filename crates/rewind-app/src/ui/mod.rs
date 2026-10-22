@@ -14,6 +14,7 @@ mod link;
 mod notices;
 #[cfg(target_family = "wasm")]
 mod page;
+mod picked;
 mod render;
 mod runs;
 mod scrubber;

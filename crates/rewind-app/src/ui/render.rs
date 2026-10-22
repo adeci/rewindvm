@@ -16,6 +16,7 @@ use gpui::{
 use crate::describe::{self, EventTone, short_store_paths, thousands};
 use crate::family::{Family, Progress, Row, RowKind as RunsRowKind, RunEntry};
 use crate::model::{FileOp, FileTone, LogFilter, Motion, RowKind, Tone};
+use crate::proc_card::Pick;
 use crate::run::{Agreement, Session, Verdict, short_id};
 use crate::selection::{Mapped, Surface, part_of_line};
 use crate::sweep::HereAction;
@@ -1316,6 +1317,7 @@ impl Scrubber {
         let rows: Vec<_> = t.alive_rows(step).collect();
         let alive = rows.len();
         let now = t.last_event_row(step);
+        let picked = self.picked_row;
         let step_width = self.step_column_width();
         let selected = self.selected_range(Surface::Processes);
         let registry = self.selecting.registry.clone();
@@ -1346,8 +1348,14 @@ impl Scrubber {
                     (id_end..text.len(), color_only(label_color)),
                 ];
                 // The row of the thread or process that did the last event
-                // is lit, as the log lights the playhead's line.
+                // is lit, as the log lights the playhead's line, and the
+                // picked row more. A plain click on a row picks it, for its
+                // card; a drag or a double click selects its text instead.
+                let pick = Pick::of(row);
                 div()
+                    .id(SharedString::from(format!("proc-{i}")))
+                    .role(Role::Button)
+                    .aria_label(format!("Show the card of {} {}", row.tid, row.label))
                     .flex()
                     .w_full()
                     .flex_none()
@@ -1355,7 +1363,13 @@ impl Scrubber {
                     .gap(px(size::LIST_COLUMN_GAP))
                     .h(px(size::LIST_ROW_HEIGHT))
                     .px(px(size::PANEL_PAD_X))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(theme::ROW_HOVER)))
                     .when(now == Some(i), |d| d.bg(rgb(theme::ROW_NOW)))
+                    .when(picked == Some(pick), |d| d.bg(rgb(theme::ROW_PICKED)))
+                    .on_click(
+                        cx.listener(move |this, e: &ClickEvent, _, cx| this.click_row(pick, e, cx)),
+                    )
                     .child(
                         div()
                             .id(SharedString::from(format!("proc-step-{i}")))
@@ -1629,8 +1643,13 @@ impl Scrubber {
             .overflow_y_scroll()
             .track_scroll(&self.at_step_scroll)
             .gap(px(size::SECTION_GAP))
-            .p(px(size::PANEL_PAD_X))
-            .child(self.with_callout(event_card, Anchor::EventCard, cx));
+            .p(px(size::PANEL_PAD_X));
+
+        // The picked process's card stands in for the last event's.
+        column = match self.render_picked_row(cx) {
+            Some(picked) => column.child(picked),
+            None => column.child(self.with_callout(event_card, Anchor::EventCard, cx)),
+        };
 
         // Against the compared run: where the two first part, once the
         // playhead is past it, or that they never do.
@@ -2674,7 +2693,7 @@ fn color_only(color: u32) -> HighlightStyle {
 /// A click handler that jumps the playhead to `step`, unless the click
 /// was a double click or ended a drag that selected text. The click stops
 /// here, so a row the target sits in does not take it too.
-fn seek_on_click(
+pub(super) fn seek_on_click(
     step: u64,
     cx: &mut Context<Scrubber>,
 ) -> impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static {

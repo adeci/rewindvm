@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use rewind_trace::ending::ExitStatus;
 use rewind_trace::sdk::{SdkMark, TestResult};
-use rewind_trace::{Event, EventKind, JobExit, Trace, signal};
+use rewind_trace::{Event, EventKind, JobExit, Process, Trace, signal};
 
 use crate::shown_line::{Pen, shown};
 
@@ -293,6 +293,8 @@ pub struct Timeline {
     all_lines: Vec<LogLine>,
     pub phases: Vec<PhaseSpan>,
     pub rows: Vec<ProcRow>,
+    /// The processes the rows were made from, in the trace's own order.
+    pub procs: Vec<Process>,
     pub files: Vec<FileEvent>,
     pub failure: Option<Failure>,
     /// How the run's machine stopped, which finding the failure again needs.
@@ -427,7 +429,8 @@ impl Timeline {
         let output_lines = output_lines(&trace);
         let all_lines = merge_by_step(&output_lines, &console_lines(&trace));
         let phases = phase_spans(&trace, &output_lines, total);
-        let rows = process_rows(&trace);
+        let procs = trace.processes();
+        let rows = process_rows(&trace, &procs);
         let files = file_events(&trace);
         let job_exit = trace.job_exit();
         let job_start = trace.job_start();
@@ -448,6 +451,7 @@ impl Timeline {
             all_lines,
             phases,
             rows,
+            procs,
             files,
             failure,
             stopped,
@@ -1019,9 +1023,7 @@ fn file_events(trace: &Trace) -> Vec<FileEvent> {
 
 /// The process tree as rows in depth-first order: each process, then its
 /// threads, then its children in the order they started.
-fn process_rows(trace: &Trace) -> Vec<ProcRow> {
-    let procs = trace.processes();
-
+fn process_rows(trace: &Trace, procs: &[Process]) -> Vec<ProcRow> {
     // The name each thread and process had when it exited, keyed by thread
     // id and exit step so that a reused id finds its own name.
     let mut comms: HashMap<(u32, u64), String> = HashMap::new();
@@ -1166,14 +1168,14 @@ pub fn ticks(total: u64, target: u64) -> Vec<u64> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     // The model over small hand-built traces: each test builds the events a
     // guest would report, indexes them, and checks one answer the UI asks
     // for per frame.
     use super::*;
     use rewind_trace::Event;
 
-    fn ev(step: u64, pid: u32, tid: u32, kind: EventKind) -> Event {
+    pub(crate) fn ev(step: u64, pid: u32, tid: u32, kind: EventKind) -> Event {
         Event {
             step,
             pid,
@@ -1182,7 +1184,7 @@ mod tests {
         }
     }
 
-    fn out(step: u64, pid: u32, fd: u32, text: &str) -> Event {
+    pub(crate) fn out(step: u64, pid: u32, fd: u32, text: &str) -> Event {
         ev(
             step,
             pid,
@@ -1194,11 +1196,11 @@ mod tests {
         )
     }
 
-    fn fork(step: u64, parent: u32, child: u32, thread: bool) -> Event {
+    pub(crate) fn fork(step: u64, parent: u32, child: u32, thread: bool) -> Event {
         ev(step, parent, parent, EventKind::Fork { child, thread })
     }
 
-    fn exec(step: u64, pid: u32, argv: &[&str]) -> Event {
+    pub(crate) fn exec(step: u64, pid: u32, argv: &[&str]) -> Event {
         ev(
             step,
             pid,
@@ -1211,7 +1213,14 @@ mod tests {
         )
     }
 
-    fn exit(step: u64, pid: u32, tid: u32, status: u32, comm: &str, thread: bool) -> Event {
+    pub(crate) fn exit(
+        step: u64,
+        pid: u32,
+        tid: u32,
+        status: u32,
+        comm: &str,
+        thread: bool,
+    ) -> Event {
         ev(
             step,
             pid,
@@ -1224,7 +1233,7 @@ mod tests {
         )
     }
 
-    fn signal(step: u64, pid: u32, tid: u32, signo: u32) -> Event {
+    pub(crate) fn signal(step: u64, pid: u32, tid: u32, signo: u32) -> Event {
         ev(
             step,
             pid,
@@ -1239,7 +1248,7 @@ mod tests {
 
     /// A small build: bash runs make, make runs a compiler, a test with a
     /// worker thread crashes, and make exits nonzero afterwards.
-    fn build() -> Timeline {
+    pub(crate) fn build() -> Timeline {
         let events = vec![
             exec(1, 1, &["bash", "-e", "builder.sh"]),
             out(2, 1, 1, "Running phase: buildPhase\n"),
