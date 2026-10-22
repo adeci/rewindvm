@@ -28,6 +28,7 @@ pub mod prune;
 pub mod schedule;
 pub mod sdk;
 pub mod stop;
+pub mod writes;
 
 use std::collections::BTreeMap;
 use std::io::{self, BufReader, BufWriter, Read, Write};

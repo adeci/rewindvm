@@ -353,6 +353,50 @@ pub fn lines_of(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// Where each line [`lines_of`] splits `bytes` into starts in `bytes`,
+/// by byte offset.
+pub fn line_starts(bytes: &[u8]) -> Vec<usize> {
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+
+    // A line starts at the beginning and after each newline, except the
+    // newline that ends the copy, which lines_of starts no line after.
+    let mut starts = vec![0];
+    for (i, &byte) in bytes.iter().enumerate() {
+        if byte == b'\n' && i + 1 < bytes.len() {
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
+/// The byte of `bytes` at `column` of line `line`, both counted from 0,
+/// where the line starts at `starts[line]` as [`line_starts`] has it.
+/// `column` is a byte offset into the line as [`lines_of`] has it, which
+/// is the file's own bytes when the line is UTF-8; in a line that is not,
+/// the line's first byte stands for the whole line.
+pub fn byte_in_line(bytes: &[u8], starts: &[usize], line: usize, column: usize) -> usize {
+    let Some(&start) = starts.get(line) else {
+        return bytes.len();
+    };
+
+    // The line's own bytes, without its newline and, as lines_of drops
+    // it, a carriage return before that.
+    let rest = &bytes[start..];
+    let mut end = rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
+    if rest[..end].ends_with(b"\r") {
+        end -= 1;
+    }
+    let own = &rest[..end];
+
+    // Only a UTF-8 line's offsets are the file's.
+    if std::str::from_utf8(own).is_err() {
+        return start;
+    }
+    start + column.min(own.len())
+}
+
 /// How copies `a` and `b` of one file differ.
 pub fn compare(a: &[u8], b: &[u8]) -> FileDiff {
     if a == b {
@@ -738,6 +782,43 @@ mod tests {
             summary("pool.o", &big, &big, &FileDiff::Same, sides),
             ["pool.o is the same in both runs: 12,345 bytes."]
         );
+    }
+
+    /// Lines ending in a newline, a CRLF, an empty line and a last line
+    /// with no newline: each line starts where lines_of says it does, and
+    /// no line starts past the end.
+    #[test]
+    fn lines_start_where_lines_of_splits_them() {
+        let bytes = b"CC = cc\r\n\nall: pool\nclean:";
+        let starts = line_starts(bytes);
+        assert_eq!(starts, [0, 9, 10, 20]);
+        assert_eq!(starts.len(), lines_of(bytes).len());
+        for (start, line) in starts.iter().zip(lines_of(bytes)) {
+            assert!(bytes[*start..].starts_with(line.as_bytes()));
+        }
+        assert_eq!(line_starts(b"a\nb\n"), [0, 2]);
+        assert_eq!(line_starts(b""), Vec::<usize>::new());
+    }
+
+    /// A column of a UTF-8 line is the file's byte at that offset into the
+    /// line, a column past the line's end stops at its end, and a line
+    /// that is not UTF-8 is pointed to by its first byte, since lines_of
+    /// replaced its bad bytes with characters of another length.
+    #[test]
+    fn a_column_is_a_byte_of_the_file() {
+        let bytes = [
+            b"x = 1\n".as_slice(),
+            "naïve = 2\n".as_bytes(),
+            b"bad \xff = 3\n",
+        ]
+        .concat();
+        let starts = line_starts(&bytes);
+        assert_eq!(starts, [0, 6, 17]);
+        assert_eq!(byte_in_line(&bytes, &starts, 0, 4), 4);
+        assert_eq!(byte_in_line(&bytes, &starts, 1, 7), 6 + 7);
+        assert_eq!(bytes[byte_in_line(&bytes, &starts, 1, 7)], b'=');
+        assert_eq!(byte_in_line(&bytes, &starts, 0, 99), 5);
+        assert_eq!(byte_in_line(&bytes, &starts, 2, 6), 17);
     }
 
     /// A rough match says plainly that the lines were not paired up.

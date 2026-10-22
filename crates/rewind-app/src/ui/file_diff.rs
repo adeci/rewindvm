@@ -11,19 +11,27 @@
 //! run's end, and a click on one compares it there. Reading a file means
 //! the engine brings each run back to the step, which takes seconds; the
 //! browser viewer has no machine to do that on.
+//!
+//! In runs with read and write records, a byte that differs, or a changed
+//! line, names the step whose write set it, and a click goes there: this
+//! run's playhead moves to the step, and the other run is shown in this
+//! one's place at its step. The summary offers the same for the first
+//! difference.
 
 use std::ops::Range;
 use std::time::Duration;
 
 use gpui::{
-    Context, Div, FontWeight, HighlightStyle, MouseButton, Role, ScrollStrategy, SharedString,
-    StyledText, UniformListScrollHandle, div, prelude::*, px, relative, rgb, uniform_list,
+    AnyElement, Context, Div, FontWeight, HighlightStyle, InteractiveText, MouseButton, Role,
+    ScrollStrategy, SharedString, StyledText, UniformListScrollHandle, WeakEntity, div, prelude::*,
+    px, relative, rgb, uniform_list,
 };
 
 use crate::answers::FileKey;
 use crate::describe::{clip, short_store_paths, thousands};
 use crate::diff_view::{
-    self, Cell, Compared, Copy, Ends, Laid, Layout, Parted, Row, Whose, other_step,
+    self, Cell, Compared, Copy, Ends, Laid, Layout, Parted, Place, Row, Side, Whose, Writes,
+    first_offset, other_step, unrecorded_note, write_note,
 };
 use crate::engine::{Cancel, EngineResult, FileAtStep, Outputs};
 use crate::request::Request;
@@ -37,9 +45,10 @@ use crate::ui::scrubber::{READING_A_FILE, Scrubber};
 use crate::ui::sideways::{shifted, sideways_layer};
 use crate::ui::tabs::RightTab;
 use crate::ui::viewer::{explain, unavailable, unavailable_run};
-use crate::ui::widgets::{icon, panel_title};
+use crate::ui::widgets::{icon, panel_title, tooltip};
 use crate::viewer::{FetchedAll, expand_tabs, hex_spans};
 use rewind_trace::file_diff::Kind;
+use rewind_trace::writes::FileWrites;
 
 /// How long the playhead must rest before the view reads both copies
 /// again.
@@ -72,6 +81,10 @@ const MOVE_HINT: &str =
 /// The legend over a comparison one under the other.
 const INTERLEAVED_LEGEND: &str = "Amber lines are this run's. Blue lines are the other run's.";
 
+/// The summary's action that goes to the write that set the first byte
+/// that differs.
+const GO_TO_WRITE: &str = "Go to the write";
+
 /// Which steps of the two runs the view compares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiffAt {
@@ -87,13 +100,6 @@ enum Read {
     Waiting,
     Answered(FileAtStep),
     Failed(String),
-}
-
-/// Which of the two runs a copy is of.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Side {
-    This,
-    Other,
 }
 
 /// The list of files that differ at the runs' ends.
@@ -119,6 +125,9 @@ pub struct FileDiffPanel {
     unavailable: Option<&'static str>,
     /// The comparison on screen, and the steps it is of.
     shown: Option<(Compared, (u64, u64))>,
+    /// The writes that made each run's copy on screen, this run's then
+    /// the other's; None for a run without read and write records.
+    writes: (Option<FileWrites>, Option<FileWrites>),
     loading: bool,
     /// The request whose answers this waits on; an answer to any other is
     /// dropped.
@@ -150,6 +159,15 @@ impl FileDiffPanel {
         }
     }
 
+    /// The writes that made run `side`'s copy on screen, when that run
+    /// has read and write records.
+    fn writes_of(&self, side: Side) -> Option<&FileWrites> {
+        match side {
+            Side::This => self.writes.0.as_ref(),
+            Side::Other => self.writes.1.as_ref(),
+        }
+    }
+
     /// The tab's label: the file compared, or the list.
     pub fn label(&self) -> String {
         match &self.path {
@@ -175,6 +193,23 @@ impl Drop for FileDiffPanel {
 fn end_of(run: &Run) -> u64 {
     let timeline = &run.timeline;
     timeline.job_exit.map_or(timeline.total, |exit| exit.step)
+}
+
+/// Whether `run` recorded its writes to files.
+fn writes_recorded(run: &Run) -> Writes {
+    if run.io.records.is_empty() {
+        return Writes::Unrecorded;
+    }
+    Writes::Recorded
+}
+
+/// The writes that made `path` in `run` as it was at `step`; None for a
+/// run without read and write records.
+fn file_writes(run: &Run, path: &str, step: u64) -> Option<FileWrites> {
+    if writes_recorded(run) == Writes::Unrecorded {
+        return None;
+    }
+    Some(FileWrites::of(&run.timeline.trace, &run.io, path, step))
 }
 
 impl Scrubber {
@@ -229,6 +264,7 @@ impl Scrubber {
             copies: (Read::Waiting, Read::Waiting),
             unavailable,
             shown: None,
+            writes: (None, None),
             loading: false,
             request: self.requests.issue(),
             in_flight: Vec::new(),
@@ -251,6 +287,25 @@ impl Scrubber {
             self.right_tab = RightTab::AtStep;
         }
         cx.notify();
+    }
+
+    /// Goes to `step` of run `side`, where a write set a byte the view
+    /// shows: this run's playhead moves there, and the other run is shown
+    /// in this one's place, at the step, with the same file compared.
+    fn jump_to_write(&mut self, side: Side, step: u64, cx: &mut Context<Self>) {
+        let Some(panel) = &self.file_diff else {
+            return;
+        };
+        if side == Side::This {
+            self.jump_to(step, cx);
+            return;
+        }
+
+        // Showing the other run in this one's place closes the view, so
+        // the view opens again on the same file, compared the same way.
+        let (path, at) = (panel.path.clone(), panel.at);
+        self.show_other_run(Some(step), cx);
+        self.show_file_diff(path, at, cx);
     }
 
     /// Back from a file to the list of files that differ.
@@ -474,6 +529,16 @@ impl Scrubber {
                 panel
                     .scroll
                     .scroll_to_item(first.saturating_sub(CONTEXT_ROWS), ScrollStrategy::Top);
+
+                // The writes that made each copy, for naming the step that
+                // wrote a byte.
+                if let (Some(session), Some(path)) = (&this.session, &panel.path) {
+                    let other = session.other.as_ref();
+                    panel.writes = (
+                        file_writes(&session.run, path, steps.0),
+                        other.and_then(|o| file_writes(o, path, steps.1)),
+                    );
+                }
                 panel.shown = Some((compared, steps));
                 panel.loading = false;
                 cx.notify();
@@ -768,8 +833,10 @@ impl Scrubber {
             }
         }
         let shown = panel.shown.as_ref();
+        let mut summary_line = None;
         match shown {
             Some((compared, _)) if status.is_empty() => {
+                summary_line = Some(status.len());
                 for (i, line) in compared.summary.iter().enumerate() {
                     let color = if i == 0 { theme::TEXT } else { theme::SOFT };
                     status.push((line.clone(), color));
@@ -780,6 +847,24 @@ impl Scrubber {
             }
             None if status.is_empty() => status.push((READING_COPIES.to_string(), theme::MUTED)),
             _ => {}
+        }
+
+        // What the view can say of the writes that set the bytes: a line
+        // when a run did not record them, and the way to the write that
+        // set the first byte that differs.
+        let mut first_write = None;
+        if let Some((
+            Compared {
+                laid: Some(laid), ..
+            },
+            _,
+        )) = shown
+        {
+            let recorded = (writes_recorded(&self.session().run), writes_recorded(other));
+            if let Some(note) = unrecorded_note(recorded.0, recorded.1) {
+                status.push((note.to_string(), theme::MUTED));
+            }
+            first_write = first_write_of(panel, laid);
         }
         let mut heading = div()
             .flex()
@@ -799,13 +884,32 @@ impl Scrubber {
                     .text_color(rgb(theme::TEXT))
                     .child(short_store_paths(path)),
             );
-        for (text, color) in status {
+        for (i, (text, color)) in status.into_iter().enumerate() {
+            let line = div()
+                .font_family(self.fonts.ui.clone())
+                .text_size(px(size::TEXT_SMALL))
+                .text_color(rgb(color))
+                .child(text);
+
+            // The first difference's line, with the way to its write.
+            let Some((side, step, note)) = first_write.clone().filter(|_| Some(i) == summary_line)
+            else {
+                heading = heading.child(line);
+                continue;
+            };
+            let go = link("file-diff-go-to-write", GO_TO_WRITE)
+                .font_family(self.fonts.ui.clone())
+                .text_size(px(size::TEXT_SMALL))
+                .role(Role::Button)
+                .tooltip(tooltip(note))
+                .on_click(cx.listener(move |this, _, _, cx| this.jump_to_write(side, step, cx)));
             heading = heading.child(
                 div()
-                    .font_family(self.fonts.ui.clone())
-                    .text_size(px(size::TEXT_SMALL))
-                    .text_color(rgb(color))
-                    .child(text),
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(size::LIST_COLUMN_GAP))
+                    .child(line)
+                    .child(go),
             );
         }
         heading = heading.child(choices);
@@ -896,22 +1000,31 @@ impl Scrubber {
             cell_width(width, panel.layout, laid),
         );
         let digits = gutter_digits(laid);
+        let scrubber = cx.entity().downgrade();
         uniform_list(
             "file-diff-rows",
             laid.rows.len(),
             cx.processor(move |this, range: Range<usize>, _, _| {
-                let Some(FileDiffPanel {
-                    shown:
-                        Some((
-                            Compared {
-                                laid: Some(laid), ..
-                            },
-                            _,
-                        )),
-                    ..
-                }) = this.file_diff.as_ref()
+                let Some(
+                    panel @ FileDiffPanel {
+                        shown:
+                            Some((
+                                Compared {
+                                    laid: Some(laid), ..
+                                },
+                                _,
+                            )),
+                        ..
+                    },
+                ) = this.file_diff.as_ref()
                 else {
                     return Vec::new();
+                };
+
+                // Each cell, with where its differing parts lead.
+                let half = |i: usize, cell: Option<&Cell>| {
+                    let jumps = cell.and_then(|c| jumps_of(panel, c, &scrubber));
+                    half(i, cell, digits, offset, jumps)
                 };
                 range
                     .filter_map(|i| {
@@ -927,14 +1040,12 @@ impl Scrubber {
                             Row::Pair(here, there) => line
                                 .px(px(size::PANEL_PAD_X / 2.0))
                                 .gap(px(size::CARD_GAP))
-                                .child(half(here.as_ref(), digits, offset))
+                                .child(half(i, here.as_ref()))
                                 .child(div().w(px(1.0)).h_full().bg(rgb(theme::LINE_SOFT)))
-                                .child(half(there.as_ref(), digits, offset)),
-                            Row::One(cell) => line.px(px(size::PANEL_PAD_X / 2.0)).child(half(
-                                Some(cell),
-                                digits,
-                                offset,
-                            )),
+                                .child(half(i, there.as_ref())),
+                            Row::One(cell) => line
+                                .px(px(size::PANEL_PAD_X / 2.0))
+                                .child(half(i, Some(cell))),
                         })
                     })
                     .collect::<Vec<_>>()
@@ -969,11 +1080,77 @@ fn column_title(text: String, color: u32) -> Div {
         .child(text)
 }
 
-/// One cell of a row, or the empty place of a copy that has nothing
+/// The way to the write that set the first byte that differs in either
+/// run's copy, this run's first: the run, the write's step, and the note
+/// on it. None when no copy that differs has a recorded write there.
+fn first_write_of(panel: &FileDiffPanel, laid: &Laid) -> Option<(Side, u64, String)> {
+    [Side::This, Side::Other].into_iter().find_map(|side| {
+        let offset = first_offset(laid, side)?;
+        let write = panel.writes_of(side)?.byte(offset as u64)?;
+        let note = write_note(side, Place::Byte { offset }, Some(write));
+        Some((side, write.step, note))
+    })
+}
+
+/// Where a cell's differing parts lead: for each, its range in the shown
+/// text, the note on the write that set the byte it stands for, and that
+/// write's step when the records name one.
+struct Jumps {
+    side: Side,
+    parts: Vec<(Range<usize>, SharedString, Option<u64>)>,
+    scrubber: WeakEntity<Scrubber>,
+}
+
+/// Where `cell`'s differing parts lead, when its run has read and write
+/// records; None for a cell both copies share, or a run without them.
+fn jumps_of(panel: &FileDiffPanel, cell: &Cell, scrubber: &WeakEntity<Scrubber>) -> Option<Jumps> {
+    let side = match cell.whose {
+        Whose::Both => return None,
+        Whose::This => Side::This,
+        Whose::Other => Side::Other,
+    };
+    let writes = panel.writes_of(side)?;
+    let mapped: Mapped = expand_tabs(&cell.text);
+    let parts = cell
+        .targets
+        .iter()
+        .map(|target| {
+            let write = writes.byte(target.offset as u64);
+            let note = write_note(side, Place::of(cell, target), write);
+            let shown =
+                mapped.shown_offset(target.range.start)..mapped.shown_offset(target.range.end);
+            (shown, SharedString::from(note), write.map(|w| w.step))
+        })
+        .collect();
+    Some(Jumps {
+        side,
+        parts,
+        scrubber: scrubber.clone(),
+    })
+}
+
+/// Which of a row's two cells an element is, for its id.
+fn cell_id(row: usize, side: Side) -> SharedString {
+    let side = match side {
+        Side::This => "this",
+        Side::Other => "other",
+    };
+    SharedString::from(format!("file-diff-cell-{row}-{side}"))
+}
+
+/// One cell of row `row`, or the empty place of a copy that has nothing
 /// there: its number in the gutter, then its text moved `offset` pixels
 /// left, tinted when it differs and with what differs marked in its run's
-/// color.
-fn half(cell: Option<&Cell>, digits: usize, offset: f32) -> Div {
+/// color. A cell with `jumps` names the write behind each part that
+/// differs on hover, and goes to it on a click: a hex dump byte by byte,
+/// a line as a whole.
+fn half(
+    row: usize,
+    cell: Option<&Cell>,
+    digits: usize,
+    offset: f32,
+    jumps: Option<Jumps>,
+) -> AnyElement {
     let place = div()
         .flex()
         .items_center()
@@ -984,7 +1161,7 @@ fn half(cell: Option<&Cell>, digits: usize, offset: f32) -> Div {
         .px(px(size::PANEL_PAD_X / 2.0))
         .gap(px(size::LOG_COLUMN_GAP));
     let Some(cell) = cell else {
-        return place.bg(rgb(theme::BG));
+        return place.bg(rgb(theme::BG)).into_any_element();
     };
     let (tint, mark, mark_bg) = match cell.whose {
         Whose::Both => (None, theme::SOFT, None),
@@ -1003,7 +1180,7 @@ fn half(cell: Option<&Cell>, digits: usize, offset: f32) -> Div {
         .number
         .map(|n| format!("{n:>digits$}"))
         .unwrap_or_default();
-    place
+    let place = place
         .when_some(tint, |d, tint| d.bg(rgb(tint)))
         .when(digits > 0, |d| {
             d.child(
@@ -1012,8 +1189,64 @@ fn half(cell: Option<&Cell>, digits: usize, offset: f32) -> Div {
                     .text_color(rgb(theme::FAINT))
                     .child(number),
             )
+        });
+    let text = styled(cell, mark, mark_bg);
+    let Some(Jumps {
+        side,
+        parts,
+        scrubber,
+    }) = jumps
+    else {
+        return place
+            .child(shifted(offset, text).text_color(rgb(theme::SOFT)))
+            .into_any_element();
+    };
+    let id = cell_id(row, side);
+
+    // A line: the whole cell names the write and goes to it.
+    if cell.bytes.is_empty() {
+        let Some((_, note, step)) = parts.into_iter().next() else {
+            return place
+                .child(shifted(offset, text).text_color(rgb(theme::SOFT)))
+                .into_any_element();
+        };
+        return place
+            .id(id)
+            .tooltip(tooltip(note))
+            .when_some(step, |d, step| {
+                d.cursor_pointer().on_click(move |_, _, cx| {
+                    let _ = scrubber.update(cx, |this, cx| this.jump_to_write(side, step, cx));
+                })
+            })
+            .child(shifted(offset, text).text_color(rgb(theme::SOFT)))
+            .into_any_element();
+    }
+
+    // A hex dump line: each differing byte's pair and character name its
+    // write, and the ones with a recorded write go to it.
+    let steps: Vec<(Range<usize>, u64)> = parts
+        .iter()
+        .filter_map(|(range, _, step)| step.map(|step| (range.clone(), step)))
+        .collect();
+    let notes: Vec<(Range<usize>, SharedString)> = parts
+        .into_iter()
+        .map(|(range, note, _)| (range, note))
+        .collect();
+    let clickable = steps.iter().map(|(range, _)| range.clone()).collect();
+    let interactive = InteractiveText::new(id, text)
+        .on_click(clickable, move |i, _, cx| {
+            let Some(&(_, step)) = steps.get(i) else {
+                return;
+            };
+            let _ = scrubber.update(cx, |this, cx| this.jump_to_write(side, step, cx));
         })
-        .child(shifted(offset, styled(cell, mark, mark_bg)).text_color(rgb(theme::SOFT)))
+        .tooltip(move |at, window, cx| {
+            let (_, note) = notes.iter().find(|(range, _)| range.contains(&at))?;
+            Some(tooltip(note.clone())(window, cx))
+        });
+    place
+        .child(shifted(offset, interactive).text_color(rgb(theme::SOFT)))
+        .into_any_element()
 }
 
 /// A cell's text, tabs drawn as spaces: a hex dump's bytes in their

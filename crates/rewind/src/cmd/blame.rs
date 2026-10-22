@@ -38,7 +38,11 @@ use anyhow::{Result, bail};
 use rewind_core::inspect::Inspection;
 use rewind_core::{Home, Run};
 use rewind_trace::io_records::{FileId, Io, IoLog, IoRecord};
-use rewind_trace::{Event, EventKind, Process, Trace};
+use rewind_trace::writes::{
+    FinalWrite, O_TRUNC, Writer, base_name, file_of, final_write, label, last_writer, pid_of,
+    thread_of,
+};
+use rewind_trace::{EventKind, Process, Trace};
 
 use crate::{RUN_HELP, RUN_LONG_HELP};
 
@@ -56,10 +60,6 @@ const MAX_SAME_NAME: usize = 8;
 
 /// Programs whose writes are copies of a file named in their arguments.
 const COPIERS: &[&str] = &["install", "cp", "mv", "ln", "rsync", "cat"];
-
-/// The open flag that empties a file as it is opened, as the kernel
-/// numbers it.
-const O_TRUNC: u32 = 0o1000;
 
 /// How many of the files the build made that a writer read are named
 /// when none of them differs.
@@ -239,19 +239,6 @@ pub struct BlameArgs {
     /// The byte to explain; by default the first that differs.
     #[arg(long)]
     pub(crate) offset: Option<usize>,
-}
-
-/// One process that wrote a file, as the trace has it.
-#[derive(Clone, Debug)]
-struct Writer {
-    /// The path the bytes were written under, before any rename.
-    path: String,
-    process: Process,
-    /// The step of the open for writing, and of the close that ended it.
-    open: u64,
-    close: u64,
-    /// The flags the file was opened with.
-    flags: u32,
 }
 
 /// What made a file's bytes in one run: the copies back to the process
@@ -928,71 +915,6 @@ fn print_argv_difference(x: &Writer, y: &Writer, ids: &[&str; 2]) {
     );
 }
 
-/// The process thread `tid` belonged to at `step`, by the trace's forks;
-/// the thread itself when the trace does not say.
-fn pid_of(trace: &Trace, tid: u32, step: u64) -> u32 {
-    trace
-        .processes()
-        .iter()
-        .filter(|p| p.alive_at(step))
-        .find(|p| p.pid == tid || p.threads.iter().any(|t| t.0 == tid))
-        .map_or(tid, |p| p.pid)
-}
-
-/// Whether thread `tid` is one of `process`'s.
-fn thread_of(process: &Process, tid: u32) -> bool {
-    process.pid == tid || process.threads.iter().any(|t| t.0 == tid)
-}
-
-/// The file the writer opened: the first write-open of its path by one of
-/// its threads from its open for writing to its close. The open's record
-/// is taken at a step after the open's event, at the latest at the close.
-fn file_of(log: &IoLog, writer: &Writer) -> Option<FileId> {
-    log.records
-        .iter()
-        .filter(|r| r.step >= writer.open && r.step <= writer.close)
-        .find_map(|r| match r.io {
-            Io::WriteOpen { tid, file, path }
-                if log.path(path) == writer.path && thread_of(&writer.process, tid) =>
-            {
-                Some(file)
-            }
-            _ => None,
-        })
-}
-
-/// The last write a writer's file took at `offset` while the writer had
-/// it open, from any thread: the one that gave the byte its final value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FinalWrite {
-    step: u64,
-    tid: u32,
-    pos: u64,
-    count: u32,
-}
-
-fn final_write(log: &IoLog, writer: &Writer, offset: u64) -> Option<FinalWrite> {
-    let file = file_of(log, writer)?;
-    log.records
-        .iter()
-        .rev()
-        .filter(|r| r.step >= writer.open && r.step <= writer.close)
-        .find_map(|r| match r.io {
-            Io::Write {
-                tid,
-                file: f,
-                pos,
-                count,
-            } if f == file && (pos..pos + u64::from(count)).contains(&offset) => Some(FinalWrite {
-                step: r.step,
-                tid,
-                pos,
-                count,
-            }),
-            _ => None,
-        })
-}
-
 /// The read-opens of `process`'s threads from its last exec at or before
 /// `from` to `until`, each path once at its first read: what the program
 /// it ran then read.
@@ -1128,11 +1050,6 @@ fn read_inputs(side: &Side, inputs: &[&Input]) -> Result<Vec<Option<Vec<u8>>>> {
     Ok(inputs.iter().map(|i| found.remove(&i.path)).collect())
 }
 
-/// The last part of a path.
-fn base_name(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
-}
-
 /// A command line cut short for a line of its own: its first few
 /// arguments, store paths by their last part.
 fn brief(argv: &[String]) -> String {
@@ -1160,46 +1077,6 @@ fn pair_paths((l, r): &(Input, Input), ids: &[&str; 2]) -> String {
         return l.path.clone();
     }
     format!("{} ({} in run {})", l.path, r.path, ids[1])
-}
-
-/// Programs that run a script named by their first argument, which names
-/// the process better than they do.
-const INTERPRETERS: &[&str] = &["sh", "bash", "perl", "ruby", "node"];
-
-/// How many plain words after a program, such as meson's `setup`, name
-/// what it was asked to do.
-const LABEL_WORDS: usize = 1;
-
-/// A process by its program, for a sentence: the program's file name, the
-/// script's after an interpreter such as python3, and the plain word
-/// after it, as in `meson setup`.
-fn label(process: &Process) -> String {
-    let argv = &process.argv;
-    let Some(first) = argv.first() else {
-        return format!("pid {}", process.pid);
-    };
-    let interpreted = |a: &str| {
-        let base = base_name(a);
-        base.starts_with("python") || INTERPRETERS.contains(&base)
-    };
-    let start = match argv.get(1) {
-        Some(script) if interpreted(first) && script.contains('/') => 1,
-        _ => 0,
-    };
-    let plain = |w: &&String| {
-        w.chars().next().is_some_and(|c| c.is_ascii_lowercase())
-            && w.chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-    };
-    let mut words = vec![base_name(&argv[start]).to_string()];
-    words.extend(
-        argv[start + 1..]
-            .iter()
-            .take_while(plain)
-            .take(LABEL_WORDS)
-            .cloned(),
-    );
-    words.join(" ")
 }
 
 /// The first few of `inputs`, after a colon, for a line that counts them.
@@ -1308,49 +1185,6 @@ fn chain(side: &Side, path: &str) -> Result<Chain> {
         );
     }
     Ok(Chain { hops })
-}
-
-/// The last process to write `path` before `before`, following a rename
-/// into place back to the file that was renamed.
-fn last_writer(trace: &Trace, path: &str, before: u64) -> Option<Writer> {
-    let mut path = path.to_string();
-    let processes = trace.processes();
-    for (i, e) in trace.events.iter().enumerate().rev() {
-        if e.step > before {
-            continue;
-        }
-        match &e.kind {
-            EventKind::Rename { from, to } if *to == path => {
-                path = from.clone();
-            }
-            EventKind::Open {
-                path: opened,
-                flags,
-            } if *opened == path => {
-                let process = processes.iter().find(|p| p.pid == e.pid)?.as_of(e.step);
-                let close = close_after(&trace.events[i + 1..], e, &path, &process);
-                return Some(Writer {
-                    path,
-                    process,
-                    open: e.step,
-                    close,
-                    flags: *flags,
-                });
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// The step the write that `open` started ended: the close of the file's
-/// last reference, else the process's exit.
-fn close_after(rest: &[Event], open: &Event, path: &str, process: &Process) -> u64 {
-    rest.iter()
-        .find(|e| matches!(&e.kind, EventKind::Close { path: p } if p == path))
-        .map(|e| e.step)
-        .or(process.end)
-        .unwrap_or(open.step)
 }
 
 /// The file a writer copied into `writer.path`. For a copier, such as
@@ -1550,6 +1384,7 @@ mod tests {
     // records; and what blame reads from the records, from traces and
     // logs made by hand.
     use super::*;
+    use rewind_trace::Event;
 
     /// A neatvnc-sized run: 30,056 steps recorded in 15.1 s, with one
     /// keyframe where its job exited, as `rewind check` leaves one.
@@ -1878,28 +1713,5 @@ mod tests {
                 ("/build/x.h", "/build/x.h")
             ]
         );
-    }
-
-    #[test]
-    fn a_process_is_named_by_its_program() {
-        // A compiler by its file name, a Python program by its script and
-        // its subcommand rather than by python3, and a process that never
-        // exec'd by its pid.
-        let cc1 = process(4, &["/nix/store/x-gcc/libexec/cc1", "-quiet", "a.c"], 1);
-        assert_eq!(label(&cc1), "cc1");
-        let meson = process(
-            56,
-            &[
-                "/nix/store/y-python3/bin/python3.11",
-                "/nix/store/z-meson/bin/meson",
-                "setup",
-                "build",
-            ],
-            1,
-        );
-        assert_eq!(label(&meson), "meson setup");
-        let mut forked = process(7, &[], 1);
-        forked.argv.clear();
-        assert_eq!(label(&forked), "pid 7");
     }
 }

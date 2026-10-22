@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use rewind_trace::Trace;
 use rewind_trace::ending::{Ending, ExitStatus};
+use rewind_trace::io_records::{self, IoLog};
 use rewind_trace::manifest::{MANIFEST, Manifest, Parent, RunId, Source, Spec, TRACE, executing};
 use rewind_trace::schedule::{Schedule, stall_words};
 use rewind_trace::stop::Stop;
@@ -68,6 +69,9 @@ pub struct Run {
     /// Why the manifest was set aside, when it did not parse.
     pub manifest_warning: Option<String>,
     pub timeline: Timeline,
+    /// The run's read and write records: which step wrote each byte of
+    /// the files it made. Empty for a run recorded before runs made them.
+    pub io: IoLog,
     /// The bookmarks file an export opened from memory carried; a run on
     /// disk keeps its bookmarks in its directory instead.
     pub carried_bookmarks: Option<Vec<u8>>,
@@ -130,9 +134,10 @@ impl Run {
             Ok(m) => (Some(m), None),
             Err(e) => (None, Some(format!("{e:#}"))),
         };
-        let trace = Trace::from_bytes(&export.trace)
+        let (trace, io) = rewind_trace::records_from(&export.trace[..])
+            .and_then(|records| decode(&records))
             .with_context(|| format!("reading the trace in {name}"))?;
-        let mut run = Run::with_trace(path, origin, manifest, manifest_warning, trace);
+        let mut run = Run::with_trace(path, origin, manifest, manifest_warning, trace, io);
         run.carried_bookmarks = export.bookmarks;
         Ok(run)
     }
@@ -144,6 +149,7 @@ impl Run {
         manifest: Option<Manifest>,
         manifest_warning: Option<String>,
         trace: Trace,
+        io: IoLog,
     ) -> Run {
         let outcome = manifest.as_ref().and_then(|m| m.outcome.as_ref());
         let total_hint = outcome.map(|o| o.step);
@@ -155,6 +161,7 @@ impl Run {
             manifest,
             manifest_warning,
             timeline,
+            io,
             carried_bookmarks: None,
         }
     }
@@ -182,7 +189,8 @@ impl Run {
             },
         };
 
-        let trace = Trace::read(&trace_path)
+        let (trace, io) = rewind_trace::records(&trace_path)
+            .and_then(|records| decode(&records))
             .with_context(|| format!("reading {}", trace_path.display()))?;
         Ok(Run::with_trace(
             path.to_path_buf(),
@@ -190,6 +198,7 @@ impl Run {
             manifest,
             manifest_warning,
             trace,
+            io,
         ))
     }
 
@@ -741,6 +750,19 @@ pub enum Agreement {
         title: String,
         lines: Vec<String>,
     },
+}
+
+/// A trace file's records as the run's events and its read and write
+/// records. Read and write records that do not decode leave the run
+/// without them, as a run recorded before they existed is: its events
+/// still show.
+fn decode(records: &[(u64, Vec<u8>)]) -> std::io::Result<(Trace, IoLog)> {
+    let trace = Trace::decode(records)?;
+    let io = io_records::decode(records).unwrap_or_else(|e| {
+        log::warn!("the run's read and write records do not decode: {e}");
+        IoLog::default()
+    });
+    Ok((trace, io))
 }
 
 #[cfg(test)]

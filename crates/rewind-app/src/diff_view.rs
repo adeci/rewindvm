@@ -4,12 +4,19 @@
 //! differ within a changed line are marked; anything else is a hex dump
 //! of each copy, the bytes that differ marked. The matching itself is
 //! `rewind_trace::file_diff`.
+//!
+//! Each byte that differs, and each changed line, stands for a byte of
+//! its copy: a run with read and write records names the step whose
+//! write set that byte, which `rewind_trace::writes` finds, and the view
+//! offers to go there.
 
 use std::ops::Range;
 
 use rewind_trace::file_diff::{self, FileDiff, Kind, Row as Paired, Sides};
+use rewind_trace::writes::ByteWrite;
 
 use crate::compare::differing;
+use crate::describe::thousands;
 use crate::sideways::widest_line;
 use crate::viewer::{FetchedAll, HEX_WIDTH, hex_line, hex_spans};
 
@@ -149,6 +156,24 @@ pub enum Whose {
     Other,
 }
 
+/// Which of the two runs a copy is of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    This,
+    Other,
+}
+
+/// A part of a cell's text that stands for one byte of its copy: a
+/// differing byte's hex pair or character in a hex dump, or a whole
+/// changed line, which stands for the first byte of it that differs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    /// The part of the cell's text, by byte range.
+    pub range: Range<usize>,
+    /// The byte of the copy, by its offset from the start of the file.
+    pub offset: usize,
+}
+
 /// One copy's line, or line of a hex dump, in a row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cell {
@@ -163,6 +188,9 @@ pub struct Cell {
     pub marked: Vec<Range<usize>>,
     /// The bytes a hex dump line shows, for coloring them; empty for text.
     pub bytes: Vec<u8>,
+    /// The parts of the text that stand for a byte that differs; none in
+    /// a cell both copies share.
+    pub targets: Vec<Target>,
 }
 
 /// A row of the view.
@@ -241,31 +269,58 @@ pub fn lay_out(this: &[u8], other: &[u8], diff: &FileDiff, layout: Layout) -> La
 /// The rows of two text copies whose lines `lines` matches.
 fn text_rows(this: &[u8], other: &[u8], lines: &[file_diff::Line], layout: Layout) -> Vec<Row> {
     let (a, b) = (file_diff::lines_of(this), file_diff::lines_of(other));
-    let cell = |text: &str, index: usize, whose: Whose, marked: Vec<Range<usize>>| Cell {
-        text: text.to_string(),
-        number: Some(index + 1),
-        whose,
-        marked,
-        bytes: Vec::new(),
+    let (starts_a, starts_b) = (file_diff::line_starts(this), file_diff::line_starts(other));
+
+    // A line's cell. A line that differs stands for the byte of its copy
+    // at `column`, where it starts to differ.
+    let cell = |text: &str, index: usize, whose: Whose, marked: Vec<Range<usize>>, column| {
+        let targets = match whose {
+            Whose::Both => Vec::new(),
+            Whose::This => vec![Target {
+                range: 0..text.len(),
+                offset: file_diff::byte_in_line(this, &starts_a, index, column),
+            }],
+            Whose::Other => vec![Target {
+                range: 0..text.len(),
+                offset: file_diff::byte_in_line(other, &starts_b, index, column),
+            }],
+        };
+        Cell {
+            text: text.to_string(),
+            number: Some(index + 1),
+            whose,
+            marked,
+            bytes: Vec::new(),
+            targets,
+        }
     };
 
     // Each copy's cell of a side-by-side row: a changed line with the
-    // characters that differ from the other's marked.
+    // characters that differ from the other's marked, and a line only one
+    // copy has differing from its start.
     let cells = |row: Paired| -> (Option<Cell>, Option<Cell>) {
+        const LINE_START: usize = 0;
         match row {
             Paired::Same { a: i, b: j } => (
-                Some(cell(&a[i], i, Whose::Both, Vec::new())),
-                Some(cell(&b[j], j, Whose::Both, Vec::new())),
+                Some(cell(&a[i], i, Whose::Both, Vec::new(), LINE_START)),
+                Some(cell(&b[j], j, Whose::Both, Vec::new(), LINE_START)),
             ),
             Paired::Changed { a: i, b: j } => {
                 let (here, there) = differing(&a[i], &b[j]).unwrap_or_default();
+                let (here_at, there_at) = (here.start, there.start);
                 (
-                    Some(cell(&a[i], i, Whose::This, non_empty(here))),
-                    Some(cell(&b[j], j, Whose::Other, non_empty(there))),
+                    Some(cell(&a[i], i, Whose::This, non_empty(here), here_at)),
+                    Some(cell(&b[j], j, Whose::Other, non_empty(there), there_at)),
                 )
             }
-            Paired::OnlyA(i) => (Some(cell(&a[i], i, Whose::This, Vec::new())), None),
-            Paired::OnlyB(j) => (None, Some(cell(&b[j], j, Whose::Other, Vec::new()))),
+            Paired::OnlyA(i) => (
+                Some(cell(&a[i], i, Whose::This, Vec::new(), LINE_START)),
+                None,
+            ),
+            Paired::OnlyB(j) => (
+                None,
+                Some(cell(&b[j], j, Whose::Other, Vec::new(), LINE_START)),
+            ),
         }
     };
     let paired = file_diff::side_by_side(lines);
@@ -330,17 +385,27 @@ fn byte_rows(this: &[u8], other: &[u8], layout: Layout) -> Vec<Row> {
             if bytes.is_empty() {
                 return None;
             }
+
+            // Each differing byte's hex pair and character, each standing
+            // for the byte.
             let spans = hex_spans(bytes);
-            let marked = (0..bytes.len())
+            let targets: Vec<Target> = (0..bytes.len())
                 .filter(|&i| bytes.get(i) != against.get(i))
-                .flat_map(|i| [spans[1 + 2 * i].0.clone(), spans[2 + 2 * i].0.clone()])
+                .flat_map(|i| {
+                    [spans[1 + 2 * i].0.clone(), spans[2 + 2 * i].0.clone()].map(|range| Target {
+                        range,
+                        offset: offset + i,
+                    })
+                })
                 .collect();
+            let marked = targets.iter().map(|t| t.range.clone()).collect();
             Some(Cell {
                 text: hex_line(offset, bytes),
                 number: None,
                 whose: if same { Whose::Both } else { whose },
                 marked,
                 bytes: bytes.to_vec(),
+                targets: if same { Vec::new() } else { targets },
             })
         };
         let (here_cell, there_cell) = (
@@ -357,6 +422,130 @@ fn byte_rows(this: &[u8], other: &[u8], layout: Layout) -> Vec<Row> {
         }
     }
     rows
+}
+
+/// The offset of the first byte that differs in run `side`'s copy, as
+/// the first row that differs shows it; None when that copy has no row
+/// that differs.
+pub fn first_offset(laid: &Laid, side: Side) -> Option<usize> {
+    let whose = match side {
+        Side::This => Whose::This,
+        Side::Other => Whose::Other,
+    };
+    laid.rows
+        .iter()
+        .flat_map(|row| match row {
+            Row::Pair(here, there) => [here.as_ref(), there.as_ref()],
+            Row::One(cell) => [Some(cell), None],
+        })
+        .flatten()
+        .filter(|cell| cell.whose == whose)
+        .find_map(|cell| cell.targets.first())
+        .map(|target| target.offset)
+}
+
+/// Where in a copy a note about a write is: a byte of a hex dump, or a
+/// changed line by its number from 1, at the first byte of it that
+/// differs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    Byte { offset: usize },
+    Line { number: usize, offset: usize },
+}
+
+impl Place {
+    /// The place a cell's target stands for.
+    pub fn of(cell: &Cell, target: &Target) -> Place {
+        match cell.number {
+            Some(number) => Place::Line {
+                number,
+                offset: target.offset,
+            },
+            None => Place::Byte {
+                offset: target.offset,
+            },
+        }
+    }
+}
+
+/// What the view says about the write that set the byte at `place` in run
+/// `side`'s copy, `write`, or that no recorded write did.
+pub fn write_note(side: Side, place: Place, write: Option<&ByteWrite>) -> String {
+    let (run, action) = match side {
+        Side::This => ("this run", "Click to go there."),
+        Side::Other => ("the other run", "Click to show that run there."),
+    };
+
+    // Where the byte is: a byte alone, or the line it starts to differ
+    // at, then the byte by its number.
+    let (lead, offset) = match place {
+        Place::Byte { offset } => (None, offset),
+        Place::Line { number, offset } => (
+            Some(format!(
+                "line {number} first differs at byte {}.",
+                thousands(offset as u64)
+            )),
+            offset,
+        ),
+    };
+    let byte = format!("byte {}", thousands(offset as u64));
+
+    // The write, or that none set the byte, which names its run itself.
+    let said = match write {
+        Some(w) => format!(
+            "{byte} was written at step {} by {} (pid {}). {action}",
+            thousands(w.step),
+            w.program,
+            w.pid
+        ),
+        None => format!("No recorded write in {run} set {byte}."),
+    };
+    let names_run = write.is_none() && lead.is_none();
+    let sentences = match lead {
+        Some(lead) => format!("{lead} {}", capitalized(&said)),
+        None => said,
+    };
+
+    // The other run's notes start by naming that run, unless the note
+    // already does.
+    match side {
+        Side::Other if !names_run => format!("In the other run, {sentences}"),
+        Side::This | Side::Other => capitalized(&sentences),
+    }
+}
+
+/// `text` with its first letter a capital.
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// Whether a run recorded its writes to files, which the view needs to
+/// say which step wrote a byte.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Writes {
+    Recorded,
+    Unrecorded,
+}
+
+/// The line the view adds under its summary when either run did not
+/// record its writes; None when both did.
+pub fn unrecorded_note(this: Writes, other: Writes) -> Option<&'static str> {
+    match (this, other) {
+        (Writes::Recorded, Writes::Recorded) => None,
+        (Writes::Unrecorded, Writes::Recorded) => Some(
+            "This run did not record its file writes, so the step that wrote each byte is not known.",
+        ),
+        (Writes::Recorded, Writes::Unrecorded) => Some(
+            "The other run did not record its file writes, so the step that wrote each of its bytes is not known.",
+        ),
+        (Writes::Unrecorded, Writes::Unrecorded) => Some(
+            "Neither run recorded its file writes, so the step that wrote each byte is not known.",
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -587,6 +776,155 @@ mod tests {
         // Runs that never part, and a step no event pairs.
         assert_eq!(other_step(700, ends, None, Some(702)), 702);
         assert_eq!(other_step(3, ends, None, None), 3);
+    }
+
+    /// A changed line stands for its first byte that differs, by its
+    /// offset in its copy; a line only one copy has stands for its first
+    /// byte; a line both share stands for none. The first difference of
+    /// each copy is the changed line's byte.
+    #[test]
+    fn a_changed_line_stands_for_its_first_differing_byte() {
+        let this = b"CC = cc\nCFLAGS = -O1\nall: pool\n";
+        let other = b"CC = cc\nCFLAGS = -O2\nall: pool\nclean:\n";
+        let diff = file_diff::compare(this, other);
+        let laid = lay_out(this, other, &diff, Layout::SideBySide);
+        let Row::Pair(Some(here), Some(there)) = &laid.rows[1] else {
+            panic!("the changed lines share a row: {:?}", laid.rows[1]);
+        };
+        let whole = |cell: &Cell| Target {
+            range: 0..cell.text.len(),
+            offset: "CC = cc\nCFLAGS = -O".len(),
+        };
+        assert_eq!(here.targets, [whole(here)]);
+        assert_eq!(there.targets, [whole(there)]);
+        let Row::Pair(None, Some(clean)) = &laid.rows[3] else {
+            panic!("only the other run has clean: {:?}", laid.rows[3]);
+        };
+        assert_eq!(
+            clean.targets[0].offset,
+            "CC = cc\nCFLAGS = -O2\nall: pool\n".len()
+        );
+        let Row::Pair(Some(shared), _) = &laid.rows[0] else {
+            panic!("both have the first line: {:?}", laid.rows[0]);
+        };
+        assert!(shared.targets.is_empty());
+        assert_eq!(first_offset(&laid, Side::This), Some(19));
+        assert_eq!(first_offset(&laid, Side::Other), Some(19));
+    }
+
+    /// Two binary copies that differ at bytes 9 and 10: the line holding
+    /// them stands for byte 9 by its hex pair and its character, and byte
+    /// 10 the same, in both copies; one under the other too.
+    #[test]
+    fn a_differing_byte_stands_for_itself_twice() {
+        let this: Vec<u8> = (0u8..20).collect();
+        let mut other = this.clone();
+        other[9] = b'A';
+        other[10] = b'B';
+        let diff = file_diff::compare(&this, &other);
+        for layout in [Layout::SideBySide, Layout::Interleaved] {
+            let laid = lay_out(&this, &other, &diff, layout);
+            let cells: Vec<&Cell> = laid
+                .rows
+                .iter()
+                .flat_map(|row| match row {
+                    Row::Pair(here, there) => [here.as_ref(), there.as_ref()],
+                    Row::One(cell) => [Some(cell), None],
+                })
+                .flatten()
+                .filter(|cell| cell.whose != Whose::Both)
+                .collect();
+            assert_eq!(cells.len(), 2);
+            for cell in cells {
+                let offsets: Vec<usize> = cell.targets.iter().map(|t| t.offset).collect();
+                assert_eq!(offsets, [9, 9, 10, 10]);
+                let parts: Vec<&str> = cell
+                    .targets
+                    .iter()
+                    .map(|t| &cell.text[t.range.clone()])
+                    .collect();
+                assert_eq!(
+                    parts,
+                    cell.marked
+                        .iter()
+                        .map(|r| &cell.text[r.clone()])
+                        .collect::<Vec<_>>()
+                );
+            }
+            assert_eq!(first_offset(&laid, Side::This), Some(9));
+        }
+    }
+
+    /// The notes a byte, a line and the other run's byte get, with a write
+    /// and without one, and the note for runs that did not record their
+    /// writes.
+    #[test]
+    fn a_write_is_named_in_plain_words() {
+        let write = ByteWrite {
+            step: 13_232,
+            pid: 56,
+            program: "meson setup".into(),
+        };
+        assert_eq!(
+            write_note(Side::This, Place::Byte { offset: 216 }, Some(&write)),
+            "Byte 216 was written at step 13,232 by meson setup (pid 56). Click to go there."
+        );
+        assert_eq!(
+            write_note(Side::Other, Place::Byte { offset: 1_216 }, Some(&write)),
+            "In the other run, byte 1,216 was written at step 13,232 by meson setup (pid 56). \
+             Click to show that run there."
+        );
+        assert_eq!(
+            write_note(
+                Side::This,
+                Place::Line {
+                    number: 3,
+                    offset: 41
+                },
+                Some(&write)
+            ),
+            "Line 3 first differs at byte 41. Byte 41 was written at step 13,232 by meson setup \
+             (pid 56). Click to go there."
+        );
+        assert_eq!(
+            write_note(Side::This, Place::Byte { offset: 7 }, None),
+            "No recorded write in this run set byte 7."
+        );
+        assert_eq!(
+            write_note(Side::Other, Place::Byte { offset: 7 }, None),
+            "No recorded write in the other run set byte 7."
+        );
+        assert_eq!(
+            write_note(
+                Side::Other,
+                Place::Line {
+                    number: 2,
+                    offset: 9
+                },
+                None
+            ),
+            "In the other run, line 2 first differs at byte 9. No recorded write in the other \
+             run set byte 9."
+        );
+        assert_eq!(unrecorded_note(Writes::Recorded, Writes::Recorded), None);
+        assert_eq!(
+            unrecorded_note(Writes::Unrecorded, Writes::Recorded),
+            Some(
+                "This run did not record its file writes, so the step that wrote each byte is not known."
+            )
+        );
+        assert_eq!(
+            unrecorded_note(Writes::Recorded, Writes::Unrecorded),
+            Some(
+                "The other run did not record its file writes, so the step that wrote each of its bytes is not known."
+            )
+        );
+        assert_eq!(
+            unrecorded_note(Writes::Unrecorded, Writes::Unrecorded),
+            Some(
+                "Neither run recorded its file writes, so the step that wrote each byte is not known."
+            )
+        );
     }
 
     /// Copies with the same bytes are laid out with nothing marked.
