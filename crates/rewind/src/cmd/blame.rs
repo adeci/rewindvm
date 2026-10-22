@@ -1,27 +1,43 @@
 //! `rewind blame`: why a file came out different in two runs of the same
-//! build. It works from what runs record today, the opens for writing,
-//! renames, execs and forks in the trace, and reads files at steps by
-//! forking the run, as `rewind cat` does.
+//! build. It works from the trace: the opens for writing, renames, execs
+//! and forks among its events, and in runs that have them, the read and
+//! write records (see rewind_trace::io_records). Files are read at steps
+//! by forking the run, as `rewind cat` does.
 //!
 //! The file's bytes are compared at each run's end. The writer of the
 //! file is the last process to open it for writing, following renames
 //! back to the file renamed into place. A writer that copied another file
 //! of the run, such as `install` copying a build product into an output,
-//! is followed back to that file. At the process that made the bytes, the
-//! step a differing byte took its final value is found by bisection over
-//! the steps the file was open, and the two writers' command lines are
-//! compared. Arguments the two runs give in another order are traced to
-//! the step each run created them on, since on the VM's tmpfs a directory
-//! lists its newest entries first.
+//! is followed back to that file, and one that rewrote the file in place,
+//! as strip does, to the file's earlier writer. The origin is the earliest
+//! writer whose file already differed between the runs once it was done.
+//! At the origin, the step a differing byte took its final value is found,
+//! and the two writers' command lines are compared. Arguments the two runs
+//! give in another order are traced to the step each run created them on,
+//! since on the VM's tmpfs a directory lists its newest entries first.
 //!
-//! No run records its writes yet, so every writer is found by forking,
-//! and `blame` warns before it starts what that may cost.
+//! A run with read and write records names each of these directly. Its
+//! write records say which write last covered the byte, its read-open
+//! records say which file a writer copied and which files the build made
+//! that the writer read, and a file nothing changed after its writer was
+//! done is read at the run's end, where a keyframe is, rather than by
+//! replaying to the middle of the run. From the origin, blame then
+//! follows what the writers read back: the first file the build made that
+//! differs between the runs, to its writers, and so on, as from a library
+//! to the object it was linked from and the source that was compiled.
+//!
+//! A run recorded before runs had read and write records has none, and
+//! blame finds its writers by forking it: copies by name and content, and
+//! the step by bisection over the steps the writer had the file open. It
+//! warns before it starts what that may cost.
 
+use std::collections::HashMap;
 use std::process::ExitCode;
 
 use anyhow::{Result, bail};
 use rewind_core::inspect::Inspection;
 use rewind_core::{Home, Run};
+use rewind_trace::io_records::{FileId, Io, IoLog, IoRecord};
 use rewind_trace::{Event, EventKind, Process, Trace};
 
 use crate::{RUN_HELP, RUN_LONG_HELP};
@@ -41,14 +57,20 @@ const MAX_SAME_NAME: usize = 8;
 /// Programs whose writes are copies of a file named in their arguments.
 const COPIERS: &[&str] = &["install", "cp", "mv", "ln", "rsync", "cat"];
 
-/// Whether a run recorded its writes to files and its opens for reading.
+/// The open flag that empties a file as it is opened, as the kernel
+/// numbers it.
+const O_TRUNC: u32 = 0o1000;
+
+/// How many of the files the build made that a writer read are named
+/// when none of them differs.
+const INPUTS_LISTED: usize = 8;
+
+/// Whether a run recorded its writes to files and its opens of them.
 /// Runs with these records name each file's writers directly; runs
 /// without them leave `blame` to find writers by forking and bisecting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IoRecords {
     Absent,
-    // Nothing makes a run with records yet; the tests mark runs this way.
-    #[allow(dead_code)]
     Present,
 }
 
@@ -67,13 +89,13 @@ struct ProbeCost {
 }
 
 impl ProbeCost {
-    fn of(run: &Run) -> Result<ProbeCost> {
+    fn of(run: &Run, records: IoRecords) -> Result<ProbeCost> {
         Ok(ProbeCost {
             id: run.manifest.id.to_string(),
             steps: run.last_step()?,
             keyframes: run.keyframes().map(|k| k.steps()).unwrap_or_default(),
             wall_ms: run.manifest.outcome.as_ref().map(|o| o.wall_ms),
-            records: io_records(run),
+            records,
         })
     }
 
@@ -104,11 +126,14 @@ impl ProbeCost {
     }
 }
 
-/// Whether a run recorded its reads and writes. No run does yet; once
-/// records are a run input, as the seed is, this reads them from the
-/// run's spec.
-fn io_records(_run: &Run) -> IoRecords {
-    IoRecords::Absent
+/// Whether a run recorded its reads and writes, from its read and write
+/// records: a run whose guest kernel buffers them has them from boot on,
+/// and one recorded before they existed has none.
+fn io_records(log: &IoLog) -> IoRecords {
+    if log.records.is_empty() {
+        return IoRecords::Absent;
+    }
+    IoRecords::Present
 }
 
 /// The fewest and the most probes, both runs together, that blame made on
@@ -128,59 +153,52 @@ const PROBE_OVERHEAD_SECS: f64 = 1.0;
 /// replay from boot took about 4.5 min, blame took 12 to 22 min.
 const LONG_REPLAYS: (f64, f64) = (3.0, 5.0);
 
-/// How to avoid bisecting, for the last line of the warning.
-const RECORD_AGAIN: &str = "To skip this, record the runs again with --record-io, or with \
-     check --property same-output; the new runs may not show the same difference.";
+/// How to avoid replaying, for the last line of the warning.
+const RECORD_AGAIN: &str = "Runs recorded with this version of rewind have the records, but a \
+     new recording may not show the same difference.";
 
-/// The warning `blame` prints before it forks runs that have no write
-/// records, or None when every run has them.
+/// The warning `blame` prints before it forks runs that have no read and
+/// write records, or None when every run has them: only runs recorded
+/// before records existed lack them.
 fn bisection_warning(costs: &[ProbeCost]) -> Option<String> {
     let without: Vec<&ProbeCost> = costs
         .iter()
         .filter(|c| c.records == IoRecords::Absent)
         .collect();
-    let worst = without.iter().max_by_key(|c| c.longest_replay())?;
+    if without.is_empty() {
+        return None;
+    }
 
-    // Which runs blame forks.
+    // Which runs have no records.
     let names: Vec<&str> = without.iter().map(|c| short(&c.id)).collect();
     let what = match names.as_slice() {
-        [one] => format!("rewind: run {one} has no write records, so blame forks it"),
+        [one] => format!("rewind: run {one} has no read and write records."),
         _ => format!(
-            "rewind: runs {} have no write records, so blame forks them",
+            "rewind: runs {} have no read and write records.",
             names.join(" and ")
         ),
     };
 
-    // The longest replay a probe may make, and the whole blame: each
-    // probe's overhead, and a few long replays in each run.
-    let steps = worst.longest_replay();
+    // What replaying costs: each probe's overhead, and a few long replays
+    // in each run.
     let replays: Option<Vec<f64>> = without
         .iter()
         .map(|c| c.seconds(c.longest_replay()))
         .collect();
     let (fewest, most) = PROBES_MEASURED;
     let (few, many) = LONG_REPLAYS;
-    let cost = match (worst.seconds(steps), replays) {
-        (Some(secs), Some(replays)) => {
+    let cost = match replays {
+        Some(replays) => {
             let long: f64 = replays.iter().sum();
-            format!(
-                ", about {} at the speed run {} was recorded. A blame takes {fewest} to {most} \
-                 probes, about {} in all",
-                duration(secs),
-                short(&worst.id),
-                span(
-                    fewest as f64 * PROBE_OVERHEAD_SECS + few * long,
-                    most as f64 * PROBE_OVERHEAD_SECS + many * long
-                )
-            )
+            let time = span(
+                fewest as f64 * PROBE_OVERHEAD_SECS + few * long,
+                most as f64 * PROBE_OVERHEAD_SECS + many * long,
+            );
+            format!("Without them, blame replays the runs many times, which may take about {time}.")
         }
-        _ => format!(". A blame takes {fewest} to {most} probes"),
+        None => "Without them, blame replays the runs many times, which may take minutes.".into(),
     };
-    Some(format!(
-        "{what} and bisects to find each writer.\nEach probe replays up to {} steps from the \
-         nearest keyframe{cost}.\n{RECORD_AGAIN}",
-        grouped(steps)
-    ))
+    Some(format!("{what}\n{cost}\n{RECORD_AGAIN}"))
 }
 
 /// A range of durations, in the unit of its upper end: "2 to 3 min".
@@ -209,15 +227,6 @@ fn grouped(n: u64) -> String {
     out
 }
 
-/// A duration in seconds, or minutes once it passes a minute and a half.
-fn duration(secs: f64) -> String {
-    if secs < 90.0 {
-        format!("{} s", secs.round() as u64)
-    } else {
-        format!("{} min", (secs / 60.0).round() as u64)
-    }
-}
-
 /// The arguments of `rewind blame`.
 #[derive(clap::Args)]
 pub struct BlameArgs {
@@ -241,6 +250,8 @@ struct Writer {
     /// The step of the open for writing, and of the close that ended it.
     open: u64,
     close: u64,
+    /// The flags the file was opened with.
+    flags: u32,
 }
 
 /// What made a file's bytes in one run: the copies back to the process
@@ -263,6 +274,116 @@ enum Verdict {
     Differs,
 }
 
+/// One run, as blame reads it: its trace, its read and write records when
+/// it has them, and the step its job exited at, where files are read
+/// cheaply.
+struct Side<'a> {
+    home: &'a Home,
+    run: &'a Run,
+    trace: &'a Trace,
+    log: Option<&'a IoLog>,
+    end: u64,
+    made: Made<'a>,
+}
+
+impl<'a> Side<'a> {
+    fn new(home: &'a Home, run: &'a Run, log: Option<&'a IoLog>) -> Result<Side<'a>> {
+        let trace = run.trace()?;
+        Ok(Side {
+            home,
+            run,
+            trace,
+            log,
+            end: end_step(run)?,
+            made: Made::of(trace),
+        })
+    }
+
+    fn id(&self) -> &str {
+        short(&self.run.manifest.id)
+    }
+
+    /// The step to read a writer's file at to see it as the writer left
+    /// it: the run's end when the run has records and nothing changed the
+    /// file since, else the writer's close.
+    fn done_step(&self, writer: &Writer) -> u64 {
+        let Some(log) = self.log else {
+            return writer.close;
+        };
+        let file = file_of(log, writer);
+        if changed_after(self.trace, self.log, &writer.path, file, writer.close) {
+            return writer.close;
+        }
+        self.end
+    }
+}
+
+/// For each path, the steps a process of the run opened it for writing or
+/// renamed a file to it at, in order: the files the build made.
+struct Made<'a>(HashMap<&'a str, Vec<u64>>);
+
+impl<'a> Made<'a> {
+    fn of(trace: &'a Trace) -> Made<'a> {
+        let mut made: HashMap<&str, Vec<u64>> = HashMap::new();
+        for e in &trace.events {
+            let path = match &e.kind {
+                EventKind::Open { path, .. } => path,
+                EventKind::Rename { to, .. } => to,
+                _ => continue,
+            };
+            made.entry(path.as_str()).or_default().push(e.step);
+        }
+        Made(made)
+    }
+
+    /// Whether the build had made `path` by `step`.
+    fn by(&self, path: &str, step: u64) -> bool {
+        self.0
+            .get(path)
+            .is_some_and(|steps| steps.first().is_some_and(|first| *first <= step))
+    }
+}
+
+/// Whether anything changed `path` after `step`: an open for writing, a
+/// rename from or to it, an unlink, or a write to `file` when the file and
+/// the records are known. Such a path is read as it was at the step; any
+/// other can be read at the run's end, which costs no replay to the middle
+/// of the run.
+fn changed_after(
+    trace: &Trace,
+    log: Option<&IoLog>,
+    path: &str,
+    file: Option<FileId>,
+    step: u64,
+) -> bool {
+    let events = &trace.events[trace.index_after(step)..];
+    let touched = events.iter().any(|e| match &e.kind {
+        EventKind::Open { path: p, .. } | EventKind::Unlink { path: p } => p == path,
+        EventKind::Rename { from, to } => from == path || to == path,
+        _ => false,
+    });
+    let written = match (log, file) {
+        (Some(log), Some(file)) => log
+            .records
+            .iter()
+            .any(|r| r.step > step && matches!(r.io, Io::Write { file: f, .. } if f == file)),
+        _ => false,
+    };
+    touched || written
+}
+
+/// What a writer did with the file before it: copied another file of the
+/// run into it, rewrote it in place, or made its bytes from other inputs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Source {
+    Copied(String),
+    /// It read the file, or opened it without emptying it, so the earlier
+    /// writer's bytes may be in it.
+    Rewritten,
+    /// None of the above: a first writer.
+    Made,
+}
+
 pub fn blame(home: &Home, args: BlameArgs) -> Result<ExitCode> {
     let BlameArgs {
         left,
@@ -271,129 +392,830 @@ pub fn blame(home: &Home, args: BlameArgs) -> Result<ExitCode> {
         offset,
     } = args;
     let runs = [Run::find(home, &left)?, Run::find(home, &right)?];
+    let logs = [runs[0].io()?, runs[1].io()?];
 
-    // Without write records, even reading the file is done by forking the
-    // runs, and finding each writer can take minutes; say so first.
-    let costs = [ProbeCost::of(&runs[0])?, ProbeCost::of(&runs[1])?];
+    // Without read and write records, even reading the file is done by
+    // forking the runs, and finding each writer can take minutes; say so
+    // first.
+    let records = [io_records(&logs[0]), io_records(&logs[1])];
+    let costs = [
+        ProbeCost::of(&runs[0], records[0])?,
+        ProbeCost::of(&runs[1], records[1])?,
+    ];
     if let Some(warning) = bisection_warning(&costs) {
         eprintln!("{warning}");
     }
+    let present = |i: usize| (records[i] == IoRecords::Present).then_some(&logs[i]);
+    let sides = [
+        Side::new(home, &runs[0], present(0))?,
+        Side::new(home, &runs[1], present(1))?,
+    ];
+    let ids = [sides[0].id(), sides[1].id()];
+
+    // Records the guest had no room for leave gaps, which blame cannot
+    // see into.
+    for side in &sides {
+        let Some(log) = side.log else {
+            continue;
+        };
+        let lost = log.lost();
+        if lost > 0 {
+            eprintln!(
+                "rewind: run {} is missing {lost} read and write records, because its buffer was \
+                 full. Blame may miss some reads or writes.",
+                side.id()
+            );
+        }
+    }
 
     // The file as each run left it at the job's exit.
-    let ends = [end_step(&runs[0])?, end_step(&runs[1])?];
     let finals = [
-        read(home, &runs[0], ends[0], &path)?,
-        read(home, &runs[1], ends[1], &path)?,
+        read(home, &runs[0], sides[0].end, &path)?,
+        read(home, &runs[1], sides[1].end, &path)?,
     ];
     let (Some(a), Some(b)) = (&finals[0], &finals[1]) else {
         bail!("{path} is missing at the end of one of the runs");
     };
     let Some(first) = offset.or_else(|| first_difference(a, b)) else {
-        println!("{path} is identical in both runs ({} bytes)", a.len());
+        println!(
+            "{path} is the same in both runs ({} bytes).",
+            grouped(a.len() as u64)
+        );
         return Ok(ExitCode::SUCCESS);
     };
     let differing =
         a.iter().zip(b.iter()).filter(|(x, y)| x != y).count() + a.len().abs_diff(b.len());
-    println!(
-        "{path}: {differing} of {} bytes differ, the first at offset {first} ({first:#x})",
-        a.len().max(b.len())
-    );
-    for (run, bytes) in runs.iter().zip([a, b]) {
-        println!("  {}  {}", short(&run.manifest.id), window(bytes, first));
-    }
-    println!();
 
     // Each run's chain of writers, back to the first.
-    let mut chains = Vec::new();
-    for (run, end) in runs.iter().zip(ends) {
-        chains.push(chain(home, run, end, &path)?);
-    }
+    let chains = [chain(&sides[0], &path)?, chain(&sides[1], &path)?];
 
     // The origin is the earliest writer whose file already differed
     // between the runs once it was done; the chains are lined up from
-    // their first writers.
+    // their first writers. With records on both sides, writers after the
+    // origin are compared only where that is cheap.
+    let both = sides.iter().all(|s| s.log.is_some());
     let depth = chains[0].hops.len().min(chains[1].hops.len());
-    let mut verdicts = vec![Verdict::Same; depth];
+    let mut verdicts = vec![None; depth];
+    let mut origin = None;
     for (k, verdict) in verdicts.iter_mut().enumerate() {
-        let [x, y] = [
-            &chains[0].hops[chains[0].hops.len() - 1 - k],
-            &chains[1].hops[chains[1].hops.len() - 1 - k],
-        ];
-        let left = read(home, &runs[0], x.close, &x.path)?;
-        let right = read(home, &runs[1], y.close, &y.path)?;
-        if left != right {
-            *verdict = Verdict::Differs;
+        let [x, y] = [chains[0].at(k), chains[1].at(k)];
+        let steps = [sides[0].done_step(x), sides[1].done_step(y)];
+        let cheap = steps[0] == sides[0].end && steps[1] == sides[1].end;
+        if both && origin.is_some() && !cheap {
+            continue;
         }
-    }
-    let origin_k = verdicts
-        .iter()
-        .position(|v| *v == Verdict::Differs)
-        .unwrap_or(0);
-    for (run, chain) in runs.iter().zip(&chains) {
-        println!("run {}, newest writer first:", short(&run.manifest.id));
-        let n = chain.hops.len();
-        for (i, hop) in chain.hops.iter().enumerate() {
-            let k = n - 1 - i;
-            let how = match (verdicts.get(k), k == origin_k) {
-                (Some(Verdict::Differs), true) => "differs first here",
-                (Some(Verdict::Differs), false) => "differs",
-                (Some(Verdict::Same), _) => "same in both runs",
-                (None, _) => "",
-            };
-            let copy = if i + 1 < n && chain.hops[i + 1].path != hop.path {
-                format!(", a copy of {}", chain.hops[i + 1].path)
-            } else {
-                String::new()
-            };
-            println!(
-                "  {:>7}..{:<7} pid {:<5} {}{copy}  [{how}]",
-                hop.open,
-                hop.close,
-                hop.process.pid,
-                argv_line(&hop.process.argv),
-            );
+        let left = read(home, &runs[0], steps[0], &x.path)?;
+        let right = read(home, &runs[1], steps[1], &y.path)?;
+        let v = if left == right {
+            Verdict::Same
+        } else {
+            Verdict::Differs
+        };
+        if v == Verdict::Differs && origin.is_none() {
+            origin = Some(k);
         }
+        *verdict = Some(v);
     }
-    println!();
-
-    // When the byte took its final value, at the process that made it.
+    let origin_k = origin.unwrap_or(0);
     let origins = [
         chains[0].at(origin_k).clone(),
         chains[1].at(origin_k).clone(),
     ];
-    for (run, writer) in runs.iter().zip(&origins) {
-        let Some(bytes) = read(home, run, writer.close, &writer.path)? else {
-            continue;
-        };
-        let at = settle(home, run, writer, &bytes, first)?;
+
+    // When the byte got the value it ends with: from the write records,
+    // or by bisection without them.
+    let settled = [
+        settled(&sides[0], &origins[0], first)?,
+        settled(&sides[1], &origins[1], first)?,
+    ];
+
+    // What the writers read that the build made, followed back to where
+    // the difference starts.
+    let followed = if both {
+        Some(follow_inputs(&sides, origins.clone())?)
+    } else {
+        None
+    };
+
+    // The answer first.
+    let [x, y] = &origins;
+    let at = |s: &Settled| {
+        s.step
+            .map_or("an unknown step".into(), |s| format!("step {}", grouped(s)))
+    };
+    println!(
+        "{} differs at byte {}. {} wrote that byte at {} in run {} and at {} in run {}.",
+        base_name(&path),
+        grouped(first as u64),
+        who(x, y, &ids),
+        at(&settled[0]),
+        ids[0],
+        at(&settled[1]),
+        ids[1]
+    );
+    println!();
+
+    // The bytes themselves.
+    println!(
+        "{} of {} bytes differ. The bytes from byte {}:",
+        grouped(differing as u64),
+        grouped(a.len().max(b.len()) as u64),
+        grouped(first as u64)
+    );
+    for (id, bytes) in ids.iter().zip([a, b]) {
+        println!("  {id}  {}", window(bytes, first));
+    }
+    println!();
+
+    // Who wrote the file, from the last writer back.
+    print_chain(&chains[0], &verdicts, origin_k, &path, ids[0]);
+    let programs = |c: &Chain| c.hops.iter().map(|h| label(&h.process)).collect::<Vec<_>>();
+    if programs(&chains[0]) == programs(&chains[1]) {
         println!(
-            "run {}: offset {first} of {} took its final value between steps {} and {} (pid {}, {})",
-            short(&run.manifest.id),
-            writer.path,
-            at.saturating_sub(1),
-            at,
-            writer.process.pid,
-            writer.process.name()
+            "Run {} made the file the same way, with the same programs.",
+            ids[1]
         );
+    } else {
+        print_chain(&chains[1], &verdicts, origin_k, &path, ids[1]);
+    }
+    println!();
+
+    // How the byte was written, and by another process than the writer
+    // when one shared its file; once when both runs wrote it alike.
+    let lines: Vec<String> = sides
+        .iter()
+        .zip(&settled)
+        .zip(&origins)
+        .map(|((side, s), writer)| match &s.write {
+            Some(w) => {
+                let pid = pid_of(side.trace, w.tid, w.step);
+                let by = if pid == writer.process.pid {
+                    String::new()
+                } else {
+                    format!(" by pid {pid}")
+                };
+                format!(
+                    "one write of {} bytes{by}, from byte {}, set byte {}.",
+                    grouped(u64::from(w.count)),
+                    grouped(w.pos),
+                    grouped(first as u64)
+                )
+            }
+            None => "blame found the step by replaying the run, since no write record covers \
+                     the byte."
+                .to_string(),
+        })
+        .collect();
+    if lines[0] == lines[1] {
+        println!("In both runs, {}", lines[0]);
+    } else {
+        for (id, line) in ids.iter().zip(&lines) {
+            println!("In run {id}, {line}");
+        }
     }
     println!();
 
     // Whether the writers were asked for different things.
-    let traces = [runs[0].trace()?, runs[1].trace()?];
-    explain_argv(&origins, &traces, &runs);
+    explain_argv(&origins, &[sides[0].trace, sides[1].trace], &ids);
 
-    // Where the two runs first behave differently.
-    match traces[0].divergence(traces[1]) {
-        None => println!("the two runs are identical"),
-        Some(d) => println!(
-            "the runs' events first differ at step {} in {} and {} in {}",
-            d.left_step,
-            short(&runs[0].manifest.id),
-            d.right_step,
-            short(&runs[1].manifest.id)
-        ),
+    // What they read, and the conclusion.
+    match followed {
+        Some(followed) => print_followed(&followed, &ids),
+        None => {
+            let name = label(&x.process);
+            if x.process.argv == y.process.argv {
+                println!(
+                    "Likely cause: something {name} read, or randomness inside {name}. Without \
+                     read records, blame cannot tell which."
+                );
+            } else {
+                println!("Likely cause: {name} ran with different command lines in the two runs.");
+            }
+        }
     }
     Ok(ExitCode::FAILURE)
+}
+
+/// When a writer gave the byte the value it ends with: the step, and the
+/// write that did it when the records say.
+struct Settled {
+    step: Option<u64>,
+    write: Option<FinalWrite>,
+}
+
+fn settled(side: &Side, writer: &Writer, offset: usize) -> Result<Settled> {
+    let write = side
+        .log
+        .and_then(|log| final_write(log, writer, offset as u64));
+    if let Some(w) = write {
+        return Ok(Settled {
+            step: Some(w.step),
+            write: Some(w),
+        });
+    }
+    let Some(bytes) = read(side.home, side.run, writer.close, &writer.path)? else {
+        return Ok(Settled {
+            step: None,
+            write: None,
+        });
+    };
+    Ok(Settled {
+        step: Some(settle(side.home, side.run, writer, &bytes, offset)?),
+        write: None,
+    })
+}
+
+/// A writer in both runs, by its program, with its pid when that is the
+/// same in both.
+fn who(x: &Writer, y: &Writer, ids: &[&str; 2]) -> String {
+    let name = label(&x.process);
+    if x.process.pid == y.process.pid {
+        return format!("{name} (pid {})", x.process.pid);
+    }
+    format!(
+        "{name} (pid {} in run {}, {} in run {})",
+        x.process.pid, ids[0], y.process.pid, ids[1]
+    )
+}
+
+/// One run's writers of the file, from the last back, a sentence each
+/// for what the writer did and one for what comparing the runs showed.
+fn print_chain(chain: &Chain, verdicts: &[Option<Verdict>], origin_k: usize, path: &str, id: &str) {
+    println!("Who wrote the file in run {id}, from the last writer back:");
+    let n = chain.hops.len();
+    for (i, hop) in chain.hops.iter().enumerate() {
+        let k = n - 1 - i;
+        let name = format!("{} (pid {})", label(&hop.process), hop.process.pid);
+        let step = grouped(hop.open);
+        let what = match chain.hops.get(i + 1) {
+            Some(earlier) if earlier.path != hop.path => {
+                format!(
+                    "{name} copied it from {}, starting at step {step}.",
+                    earlier.path
+                )
+            }
+            Some(_) => format!("{name} changed it in place, starting at step {step}."),
+            None if hop.path != path => {
+                format!("{name} wrote {}, starting at step {step}.", hop.path)
+            }
+            None => format!("{name} wrote it, starting at step {step}."),
+        };
+        let copy = chain.hops.get(i + 1).is_some_and(|e| e.path != hop.path);
+        let then = match (verdicts.get(k).copied().flatten(), k == origin_k) {
+            (Some(Verdict::Differs), true) if k == 0 => {
+                "It is the first writer, and the file already differs when it is done."
+            }
+            (Some(Verdict::Differs), true) => {
+                "The file was the same in both runs before this, so the difference starts here."
+            }
+            (Some(Verdict::Differs), false) if copy => {
+                "Its source already differs, so the copy did not cause the difference."
+            }
+            (Some(Verdict::Differs), false) => {
+                "The file differs after it, but the difference started earlier."
+            }
+            (Some(Verdict::Same), _) => "The file is the same in both runs after it.",
+            (None, _) if k < verdicts.len() => {
+                "Not checked: an earlier writer already made the bytes differ."
+            }
+            (None, _) => "",
+        };
+        println!("  {what} {then}");
+    }
+}
+
+/// One writer blame went back to through what it read, in both runs, and
+/// what it read that the build made.
+struct Hop {
+    /// The file that led here, as each run named it; None at the origin.
+    via: Option<(Input, Input)>,
+    writers: [Writer; 2],
+    /// How many files the build made each writer read, and how many
+    /// others.
+    made: [usize; 2],
+    others: [usize; 2],
+    /// The files the build made both writers read, lined up, and whether
+    /// each is the same in both runs; None where it could not be read.
+    pairs: Vec<(Input, Input)>,
+    compared: Vec<Option<Verdict>>,
+}
+
+/// Why following the inputs back stopped.
+enum Stop {
+    /// Every file the build made that the last writers read is the same.
+    SameInputs,
+    /// More than one of them could not be compared, and none differs.
+    Uncompared(usize),
+    /// No process of the run wrote the file that led on.
+    NoWriter(String),
+    /// [`MAX_HOPS`] writers back, and still going.
+    TooFar,
+}
+
+/// From the origin's writers back through what they read: at each, the
+/// files the build made that both writers read, compared where the runs'
+/// ends show them, and the first that differs, or else the one that could
+/// not be compared, followed to its writers. Stops at writers whose inputs
+/// from the build were the same.
+fn follow_inputs(sides: &[Side; 2], origins: [Writer; 2]) -> Result<(Vec<Hop>, Stop)> {
+    let logs = [
+        sides[0].log.expect("records on both sides"),
+        sides[1].log.expect("records on both sides"),
+    ];
+    let mut hops = Vec::new();
+    let mut writers = origins;
+    let mut via = None;
+    for _ in 0..MAX_HOPS {
+        let (left, left_others) = inputs_of(&sides[0].made, logs[0], &writers[0]);
+        let (right, right_others) = inputs_of(&sides[1].made, logs[1], &writers[1]);
+
+        // Both writers' inputs, compared where the ends show them.
+        let pairs = pair_inputs(&left, &right);
+        let lefts: Vec<&Input> = pairs.iter().map(|(l, _)| l).collect();
+        let rights: Vec<&Input> = pairs.iter().map(|(_, r)| r).collect();
+        let bytes = [
+            read_inputs(&sides[0], &lefts)?,
+            read_inputs(&sides[1], &rights)?,
+        ];
+        let compared: Vec<Option<Verdict>> = (0..pairs.len())
+            .map(|i| match (&bytes[0][i], &bytes[1][i]) {
+                (Some(a), Some(b)) if a == b => Some(Verdict::Same),
+                (Some(_), Some(_)) => Some(Verdict::Differs),
+                _ => None,
+            })
+            .collect();
+
+        // The next hop: the first input that differs, or else the only one
+        // that could not be compared.
+        let differs = compared.iter().position(|v| *v == Some(Verdict::Differs));
+        let unknown: Vec<usize> = (0..pairs.len())
+            .filter(|&i| compared[i].is_none())
+            .collect();
+        let next = match (differs, unknown.as_slice()) {
+            (Some(i), _) => Some(i),
+            (None, [only]) => Some(*only),
+            (None, _) => None,
+        };
+        let hop = Hop {
+            via: via.take(),
+            writers: writers.clone(),
+            made: [left.len(), right.len()],
+            others: [left_others, right_others],
+            pairs,
+            compared,
+        };
+        let Some(next) = next else {
+            let stop = match unknown.len() {
+                0 => Stop::SameInputs,
+                n => Stop::Uncompared(n),
+            };
+            hops.push(hop);
+            return Ok((hops, stop));
+        };
+
+        // That input's writers, in each run.
+        let (l, r) = hop.pairs[next].clone();
+        hops.push(hop);
+        let (Some(wl), Some(wr)) = (
+            last_writer(sides[0].trace, &l.path, l.step),
+            last_writer(sides[1].trace, &r.path, r.step),
+        ) else {
+            return Ok((hops, Stop::NoWriter(l.path)));
+        };
+        writers = [wl, wr];
+        via = Some((l, r));
+    }
+    Ok((hops, Stop::TooFar))
+}
+
+/// What following the inputs found, a few lines a writer, then the
+/// conclusion.
+fn print_followed((hops, stop): &(Vec<Hop>, Stop), ids: &[&str; 2]) {
+    for hop in hops {
+        let [x, y] = &hop.writers;
+
+        // Who this writer is, and how blame got to it.
+        if let Some((l, r)) = &hop.via {
+            println!(
+                "{} wrote {} at step {}.",
+                who(x, y, ids),
+                pair_paths(&(l.clone(), r.clone()), ids),
+                grouped(x.open)
+            );
+            if x.process.argv != y.process.argv {
+                print_argv_difference(x, y, ids);
+            }
+        }
+        println!("What {} read:", label(&x.process));
+
+        // What it read that the build made, and how that compared.
+        let made = format!("{} {}", counted(hop.made, ids), files(hop.made[0]));
+        let differ: Vec<usize> = (0..hop.pairs.len())
+            .filter(|&i| hop.compared[i] == Some(Verdict::Differs))
+            .collect();
+        let unknown: Vec<usize> = (0..hop.pairs.len())
+            .filter(|&i| hop.compared[i].is_none())
+            .collect();
+        let inputs: Vec<&Input> = hop.pairs.iter().map(|(l, _)| l).collect();
+        match (differ.first(), unknown.as_slice()) {
+            (Some(&i), _) => {
+                println!(
+                    "  {made} that the build made. {} between the runs. The first is {}.",
+                    match differ.len() {
+                        1 => "1 of them differs".to_string(),
+                        n => format!("{n} of them differ"),
+                    },
+                    pair_paths(&hop.pairs[i], ids)
+                );
+            }
+            (None, [only]) => {
+                println!(
+                    "  {made} that the build made. One, {}, was deleted or changed before the \
+                     run ended, so blame cannot compare it.",
+                    pair_paths(&hop.pairs[*only], ids)
+                );
+            }
+            (None, []) if hop.pairs.is_empty() => {
+                println!("  No files that the build made.");
+            }
+            (None, []) => {
+                println!(
+                    "  {made} that the build made, all the same in both runs{}.",
+                    listed(&inputs)
+                );
+            }
+            (None, many) => {
+                println!(
+                    "  {made} that the build made. None of them differs, but blame could not \
+                     compare {}.",
+                    many.len()
+                );
+            }
+        }
+        println!(
+            "  {} other {} that the build did not make, such as programs and libraries.",
+            counted(hop.others, ids),
+            files(hop.others[0])
+        );
+    }
+    println!();
+
+    // The conclusion, from where the following stopped.
+    let Some(last) = hops.last() else {
+        return;
+    };
+    let [x, y] = &last.writers;
+    let name = who(x, y, ids);
+    match stop {
+        Stop::SameInputs if x.process.argv == y.process.argv => println!(
+            "Likely cause: something inside {name}, such as randomness or the order its threads \
+             ran in. Its command line and the files the build made that it read are the same in \
+             both runs."
+        ),
+        Stop::SameInputs => println!(
+            "Likely cause: {name} ran with different command lines in the two runs. The files \
+             the build made that it read are the same in both runs."
+        ),
+        Stop::Uncompared(n) => println!(
+            "Likely cause: inside {name}, or in one of the {n} files it read that blame could \
+             not compare."
+        ),
+        Stop::NoWriter(path) => println!(
+            "Likely cause: not found. No process of the runs wrote {path}, which {name} read, so \
+             blame stops there."
+        ),
+        Stop::TooFar => println!(
+            "Likely cause: not found within {MAX_HOPS} writers back. The last one blame reached \
+             is {name}."
+        ),
+    }
+}
+
+/// A count in both runs: once when the same, else both.
+fn counted([a, b]: [usize; 2], ids: &[&str; 2]) -> String {
+    if a == b {
+        return grouped(a as u64);
+    }
+    format!(
+        "{} ({} in run {})",
+        grouped(a as u64),
+        grouped(b as u64),
+        ids[1]
+    )
+}
+
+/// "file" or "files", for a count.
+fn files(n: usize) -> &'static str {
+    if n == 1 {
+        return "file";
+    }
+    "files"
+}
+
+/// Where two writers' command lines first differ.
+fn print_argv_difference(x: &Writer, y: &Writer, ids: &[&str; 2]) {
+    let (a, b) = (&x.process.argv, &y.process.argv);
+    let i = (0..a.len().max(b.len()))
+        .find(|&i| a.get(i) != b.get(i))
+        .unwrap_or(0);
+    let arg = |v: &[String]| v.get(i).cloned().unwrap_or_else(|| "nothing".into());
+    println!(
+        "  Its command lines differ. Argument {i} is {} in run {} and {} in run {}.",
+        arg(a),
+        ids[0],
+        arg(b),
+        ids[1]
+    );
+}
+
+/// The process thread `tid` belonged to at `step`, by the trace's forks;
+/// the thread itself when the trace does not say.
+fn pid_of(trace: &Trace, tid: u32, step: u64) -> u32 {
+    trace
+        .processes()
+        .iter()
+        .filter(|p| p.alive_at(step))
+        .find(|p| p.pid == tid || p.threads.iter().any(|t| t.0 == tid))
+        .map_or(tid, |p| p.pid)
+}
+
+/// Whether thread `tid` is one of `process`'s.
+fn thread_of(process: &Process, tid: u32) -> bool {
+    process.pid == tid || process.threads.iter().any(|t| t.0 == tid)
+}
+
+/// The file the writer opened: the first write-open of its path by one of
+/// its threads from its open for writing to its close. The open's record
+/// is taken at a step after the open's event, at the latest at the close.
+fn file_of(log: &IoLog, writer: &Writer) -> Option<FileId> {
+    log.records
+        .iter()
+        .filter(|r| r.step >= writer.open && r.step <= writer.close)
+        .find_map(|r| match r.io {
+            Io::WriteOpen { tid, file, path }
+                if log.path(path) == writer.path && thread_of(&writer.process, tid) =>
+            {
+                Some(file)
+            }
+            _ => None,
+        })
+}
+
+/// The last write a writer's file took at `offset` while the writer had
+/// it open, from any thread: the one that gave the byte its final value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FinalWrite {
+    step: u64,
+    tid: u32,
+    pos: u64,
+    count: u32,
+}
+
+fn final_write(log: &IoLog, writer: &Writer, offset: u64) -> Option<FinalWrite> {
+    let file = file_of(log, writer)?;
+    log.records
+        .iter()
+        .rev()
+        .filter(|r| r.step >= writer.open && r.step <= writer.close)
+        .find_map(|r| match r.io {
+            Io::Write {
+                tid,
+                file: f,
+                pos,
+                count,
+            } if f == file && (pos..pos + u64::from(count)).contains(&offset) => Some(FinalWrite {
+                step: r.step,
+                tid,
+                pos,
+                count,
+            }),
+            _ => None,
+        })
+}
+
+/// The read-opens of `process`'s threads from its last exec at or before
+/// `from` to `until`, each path once at its first read: what the program
+/// it ran then read.
+fn reads_of(log: &IoLog, process: &Process, from: u64, until: u64) -> Vec<(u64, String)> {
+    let start = process
+        .execs
+        .iter()
+        .rev()
+        .find(|(at, _)| *at <= from)
+        .map_or(process.start, |(at, _)| *at);
+    let mut seen = std::collections::HashSet::new();
+    log.records
+        .iter()
+        .filter(|r| r.step >= start && r.step <= until)
+        .filter_map(|r: &IoRecord| match r.io {
+            Io::ReadOpen { tid, path } if thread_of(process, tid) && seen.insert(path) => {
+                Some((r.step, log.path(path).to_string()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// What a writer did with the file before it, from its read-open
+/// records: copied a file of the run it read that it names in its
+/// arguments, as a copier does, or that has the same name, as an install
+/// step's copy has; rewrote it, having read it first or opened it without
+/// emptying it; or made it.
+fn source_by_records(made: &Made, log: &IoLog, writer: &Writer) -> Source {
+    let reads = reads_of(log, &writer.process, writer.open, writer.close);
+    let name = writer.path.rsplit('/').next().unwrap_or(&writer.path);
+    let program = writer.process.name();
+    let copier = COPIERS.contains(&program.rsplit('/').next().unwrap_or(&program));
+
+    // A file of the run it read and copied, the latest such first.
+    let named = |path: &str| {
+        writer.process.argv.iter().skip(1).any(|arg| {
+            let arg = arg.trim_start_matches("./");
+            !arg.starts_with('-') && (path == arg || path.ends_with(&format!("/{arg}")))
+        })
+    };
+    let copied = reads.iter().rev().find(|(step, path)| {
+        *path != writer.path
+            && made.by(path, *step)
+            && ((copier && named(path)) || path.rsplit('/').next() == Some(name))
+    });
+    if let Some((_, path)) = copied {
+        return Source::Copied(path.clone());
+    }
+
+    // The file itself, read before the writer opened it for writing, or
+    // opened without being emptied.
+    let read_first = reads
+        .iter()
+        .any(|(step, path)| *path == writer.path && *step <= writer.open);
+    let kept = writer.flags & O_TRUNC == 0 && made.by(&writer.path, writer.open.saturating_sub(1));
+    if read_first || kept {
+        return Source::Rewritten;
+    }
+    Source::Made
+}
+
+/// One file the build made that a writer read: its path and the step the
+/// writer first read it at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Input {
+    path: String,
+    step: u64,
+}
+
+/// The files the build made that a writer read while it ran its program,
+/// other than the one it wrote, and how many other files it read.
+fn inputs_of(made: &Made, log: &IoLog, writer: &Writer) -> (Vec<Input>, usize) {
+    let reads = reads_of(log, &writer.process, writer.open, writer.close);
+    let total = reads.len();
+    let made: Vec<Input> = reads
+        .into_iter()
+        .filter(|(step, path)| *path != writer.path && made.by(path, *step))
+        .map(|(step, path)| Input { path, step })
+        .collect();
+    let others = total - made.len();
+    (made, others)
+}
+
+/// The inputs of two writers lined up: the same path in both, then, of
+/// the rest, those with the same extension in the order they were read,
+/// as a compiler's temporary files with random names line up.
+fn pair_inputs(left: &[Input], right: &[Input]) -> Vec<(Input, Input)> {
+    let mut pairs = Vec::new();
+    let mut rest_left = Vec::new();
+    let mut rest_right: Vec<&Input> = right
+        .iter()
+        .filter(|r| !left.iter().any(|l| l.path == r.path))
+        .collect();
+    for l in left {
+        match right.iter().find(|r| r.path == l.path) {
+            Some(r) => pairs.push((l.clone(), r.clone())),
+            None => rest_left.push(l),
+        }
+    }
+    let extension = |p: &str| p.rsplit_once('.').map(|(_, e)| e.to_string());
+    for l in rest_left {
+        let Some(at) = rest_right
+            .iter()
+            .position(|r| extension(&r.path) == extension(&l.path))
+        else {
+            continue;
+        };
+        pairs.push((l.clone(), rest_right.remove(at).clone()));
+    }
+    pairs.sort_by_key(|(l, _)| l.step);
+    pairs
+}
+
+/// Each input's bytes as the writer read them, where the run's end shows
+/// them: inputs nothing changed after the writer read them, read in one
+/// fork at the end. None for the rest, and for inputs gone by then.
+fn read_inputs(side: &Side, inputs: &[&Input]) -> Result<Vec<Option<Vec<u8>>>> {
+    let readable: Vec<String> = inputs
+        .iter()
+        .filter(|i| !changed_after(side.trace, side.log, &i.path, None, i.step))
+        .map(|i| i.path.clone())
+        .collect();
+    let mut found: HashMap<String, Vec<u8>> = HashMap::new();
+    if !readable.is_empty() {
+        let answer = rewind_core::inspect::files(side.home, side.run, side.end, None, &readable)?;
+        if let Inspection::Contents(bytes) = answer {
+            for (name, body) in rewind_init::sections(&bytes).unwrap_or_default() {
+                found.insert(name, body.to_vec());
+            }
+        }
+    }
+    Ok(inputs.iter().map(|i| found.remove(&i.path)).collect())
+}
+
+/// The last part of a path.
+fn base_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// A command line cut short for a line of its own: its first few
+/// arguments, store paths by their last part.
+fn brief(argv: &[String]) -> String {
+    const SHOWN: usize = 3;
+    let mut words: Vec<&str> = argv
+        .iter()
+        .take(SHOWN)
+        .map(|a| {
+            if a.starts_with("/nix/store/") {
+                return base_name(a);
+            }
+            a.as_str()
+        })
+        .collect();
+    if argv.len() > SHOWN {
+        words.push("…");
+    }
+    words.join(" ")
+}
+
+/// A pair of inputs' paths: once when they are the same, else the first
+/// run's with the second's after it.
+fn pair_paths((l, r): &(Input, Input), ids: &[&str; 2]) -> String {
+    if l.path == r.path {
+        return l.path.clone();
+    }
+    format!("{} ({} in run {})", l.path, r.path, ids[1])
+}
+
+/// Programs that run a script named by their first argument, which names
+/// the process better than they do.
+const INTERPRETERS: &[&str] = &["sh", "bash", "perl", "ruby", "node"];
+
+/// How many plain words after a program, such as meson's `setup`, name
+/// what it was asked to do.
+const LABEL_WORDS: usize = 1;
+
+/// A process by its program, for a sentence: the program's file name, the
+/// script's after an interpreter such as python3, and the plain word
+/// after it, as in `meson setup`.
+fn label(process: &Process) -> String {
+    let argv = &process.argv;
+    let Some(first) = argv.first() else {
+        return format!("pid {}", process.pid);
+    };
+    let interpreted = |a: &str| {
+        let base = base_name(a);
+        base.starts_with("python") || INTERPRETERS.contains(&base)
+    };
+    let start = match argv.get(1) {
+        Some(script) if interpreted(first) && script.contains('/') => 1,
+        _ => 0,
+    };
+    let plain = |w: &&String| {
+        w.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            && w.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    };
+    let mut words = vec![base_name(&argv[start]).to_string()];
+    words.extend(
+        argv[start + 1..]
+            .iter()
+            .take_while(plain)
+            .take(LABEL_WORDS)
+            .cloned(),
+    );
+    words.join(" ")
+}
+
+/// The first few of `inputs`, after a colon, for a line that counts them.
+fn listed(inputs: &[&Input]) -> String {
+    if inputs.is_empty() {
+        return String::new();
+    }
+    let mut names: Vec<&str> = inputs
+        .iter()
+        .take(INPUTS_LISTED)
+        .map(|i| i.path.as_str())
+        .collect();
+    if inputs.len() > INPUTS_LISTED {
+        names.push("…");
+    }
+    format!(": {}", names.join(", "))
 }
 
 /// The step a run's job exited at, else its last step.
@@ -442,42 +1264,47 @@ fn short(id: &str) -> &str {
     &id[..id.len().min(8)]
 }
 
-fn argv_line(argv: &[String]) -> String {
-    let words: Vec<String> = argv
-        .iter()
-        .map(|a| match a.rsplit_once('/') {
-            Some((dir, base)) if dir.starts_with("/nix/store/") && argv[0] == *a => base.into(),
-            _ => a.clone(),
-        })
-        .collect();
-    words.join(" ")
-}
-
-/// The writers of `path` in `run`, from the last one back: through
+/// The writers of `path` in a run, from the last one back: through
 /// copies to the file copied, and through rewrites in place, as ranlib
 /// and strip make, to the file's earlier writers.
-fn chain(home: &Home, run: &Run, end: u64, path: &str) -> Result<Chain> {
-    let trace = run.trace()?;
+fn chain(side: &Side, path: &str) -> Result<Chain> {
+    let trace = side.trace;
     let mut hops = Vec::new();
     let mut path = path.to_string();
-    let mut before = end;
+    let mut before = side.end;
     for _ in 0..MAX_HOPS {
         let Some(writer) = last_writer(trace, &path, before) else {
             break;
         };
 
-        // A copier's source is the argument naming a file the run wrote
-        // earlier with the same bytes. Any other writer may have read the
-        // file it rewrites, so its earlier writer comes next.
-        let source = copied_from(home, run, trace, &writer)?;
+        // What the writer did with the file before it, from its read-open
+        // records. Without them, a copier's source is the argument naming
+        // a file the run wrote earlier with the same bytes, and any other
+        // writer may have read the file it rewrites, so its earlier writer
+        // comes next.
+        let source = match side.log {
+            Some(log) => source_by_records(&side.made, log, &writer),
+            None => match copied_from(side.home, side.run, trace, &writer)? {
+                Some(copied) => Source::Copied(copied),
+                None => Source::Rewritten,
+            },
+        };
         before = writer.open.saturating_sub(1);
-        path = source.unwrap_or_else(|| writer.path.clone());
+        let next = match source {
+            Source::Copied(copied) => Some(copied),
+            Source::Rewritten => Some(writer.path.clone()),
+            Source::Made => None,
+        };
         hops.push(writer);
+        let Some(next) = next else {
+            break;
+        };
+        path = next;
     }
     if hops.is_empty() {
         bail!(
             "no process of run {} opened {path} for writing",
-            run.manifest.id
+            side.run.manifest.id
         );
     }
     Ok(Chain { hops })
@@ -496,7 +1323,10 @@ fn last_writer(trace: &Trace, path: &str, before: u64) -> Option<Writer> {
             EventKind::Rename { from, to } if *to == path => {
                 path = from.clone();
             }
-            EventKind::Open { path: opened, .. } if *opened == path => {
+            EventKind::Open {
+                path: opened,
+                flags,
+            } if *opened == path => {
                 let process = processes.iter().find(|p| p.pid == e.pid)?.as_of(e.step);
                 let close = close_after(&trace.events[i + 1..], e, &path, &process);
                 return Some(Writer {
@@ -504,6 +1334,7 @@ fn last_writer(trace: &Trace, path: &str, before: u64) -> Option<Writer> {
                     process,
                     open: e.step,
                     close,
+                    flags: *flags,
                 });
             }
             _ => {}
@@ -628,41 +1459,45 @@ fn settle(home: &Home, run: &Run, writer: &Writer, last: &[u8], offset: usize) -
 
 /// Compares the two writers' command lines, and traces arguments given in
 /// another order to the steps the runs created them on.
-fn explain_argv(origins: &[Writer; 2], traces: &[&Trace; 2], runs: &[Run; 2]) {
-    let (a, b) = (&origins[0].process.argv, &origins[1].process.argv);
+fn explain_argv(origins: &[Writer; 2], traces: &[&Trace; 2], ids: &[&str; 2]) {
+    let [x, y] = origins;
+    let name = label(&x.process);
+    let (a, b) = (&x.process.argv, &y.process.argv);
     if a == b {
-        println!("both writers ran the same command line: {}", argv_line(a));
-        println!("the difference is in what they read, or in their own scheduling");
+        println!(
+            "{name} ran with the same command line in both runs, so the difference comes from \
+             something it read or from randomness."
+        );
         println!();
         return;
     }
-    println!("the writers' command lines differ:");
-    for (run, argv) in runs.iter().zip([a, b]) {
-        println!("  {}  {}", short(&run.manifest.id), argv_line(argv));
-    }
 
-    // The same arguments in another order: when each run created each.
+    // Other arguments, beyond another order.
     let mut sorted_a = a.clone();
     let mut sorted_b = b.clone();
     sorted_a.sort();
     sorted_b.sort();
     if sorted_a != sorted_b {
-        println!("  the arguments themselves differ, beyond their order");
+        println!("{name} ran with different command lines in the two runs.");
+        print_argv_difference(x, y, ids);
         println!();
         return;
     }
+
+    // The same arguments in another order: when each run created each.
     let Some(i) = (0..a.len()).find(|&i| a[i] != b[i]) else {
         return;
     };
     println!(
-        "  the same {} arguments in another order, from argument {i} on",
+        "{name} got the same {} arguments in both runs, but in a different order from \
+         argument {i} on.",
         a.len()
     );
     for arg in [&a[i], &b[i]] {
         let steps: Vec<String> = traces
             .iter()
-            .zip(runs)
-            .map(|(t, r)| {
+            .zip(ids)
+            .map(|(t, id)| {
                 let created = t.events.iter().find_map(|e| match &e.kind {
                     EventKind::Open { path, .. }
                         if path.ends_with(&format!("/{}", arg.trim_start_matches("./"))) =>
@@ -672,12 +1507,12 @@ fn explain_argv(origins: &[Writer; 2], traces: &[&Trace; 2], runs: &[Run; 2]) {
                     _ => None,
                 });
                 match created {
-                    Some(step) => format!("step {step} in {}", short(&r.manifest.id)),
-                    None => format!("not created in {}", short(&r.manifest.id)),
+                    Some(step) => format!("at step {} in run {id}", grouped(step)),
+                    None => format!("not at all in run {id}"),
                 }
             })
             .collect();
-        println!("  {arg} was created at {}", steps.join(", "));
+        println!("  {arg} was created {}.", steps.join(" and "));
     }
 
     // Who built the command line: what the writer's process ran before,
@@ -695,12 +1530,12 @@ fn explain_argv(origins: &[Writer; 2], traces: &[&Trace; 2], runs: &[Run; 2]) {
             .processes()
             .into_iter()
             .filter(|c| c.parent == p.pid && c.start > *from && c.start < *to)
-            .map(|c| argv_line(&c.argv))
+            .map(|c| brief(&c.argv))
             .collect();
         println!(
-            "  pid {} ran {} first, and started: {}",
+            "  Before that, pid {} ran {} and started: {}.",
             p.pid,
-            argv_line(shell),
+            brief(shell),
             children.join("; ")
         );
         break;
@@ -710,8 +1545,10 @@ fn explain_argv(origins: &[Writer; 2], traces: &[&Trace; 2], runs: &[Run; 2]) {
 
 #[cfg(test)]
 mod tests {
-    // The warning blame prints before it forks runs to find their writers:
-    // built from run costs made by hand, with and without write records.
+    // The warning blame prints before it forks runs to find their writers,
+    // built from run costs made by hand, with and without read and write
+    // records; and what blame reads from the records, from traces and
+    // logs made by hand.
     use super::*;
 
     /// A neatvnc-sized run: 30,056 steps recorded in 15.1 s, with one
@@ -728,23 +1565,27 @@ mod tests {
 
     #[test]
     fn runs_without_records_warn_before_bisecting() {
-        // Neither run has records: the warning names both runs, says a
-        // probe may replay from boot to the exit keyframe, and how to
-        // avoid it, in at most three lines.
+        // Neither run has records: the warning names both runs, says
+        // what replaying them costs, and how new runs avoid it, in at
+        // most three lines.
         let runs = [
             neatvnc("a84b0112f11563fc", IoRecords::Absent),
             neatvnc("863054ef27a743e7", IoRecords::Absent),
         ];
         let warning = bisection_warning(&runs).expect("a warning");
         assert!(
-            warning.contains("a84b0112 and 863054ef have no write records"),
+            warning.contains("a84b0112 and 863054ef have no read and write records."),
             "{warning}"
         );
-        assert!(warning.contains("30,052 steps"), "{warning}");
         // 20 to 43 probes of a second each, plus 3 to 5 replays of 15 s
         // from boot in each of the two runs.
         assert!(warning.contains("about 2 to 3 min"), "{warning}");
-        assert!(warning.contains("--record-io"), "{warning}");
+        // Records are not a run input: new runs have them, with no flag.
+        assert!(
+            warning.contains("recorded with this version of rewind"),
+            "{warning}"
+        );
+        assert!(!warning.contains("--record-io"), "{warning}");
         assert!(warning.lines().count() <= 3, "{warning}");
     }
 
@@ -768,9 +1609,297 @@ mod tests {
         ];
         let warning = bisection_warning(&runs).expect("a warning");
         assert!(
-            warning.contains("run 863054ef has no write records"),
+            warning.contains("run 863054ef has no read and write records"),
             "{warning}"
         );
         assert!(!warning.contains("a84b0112"), "{warning}");
+    }
+
+    /// The path ids of the logs below.
+    const LIB_BUILT: u32 = 0;
+    const LIB_OUT: u32 = 1;
+    const OBJECT: u32 = 2;
+    const LIBC: u32 = 3;
+
+    fn log(records: Vec<(u64, Io)>) -> IoLog {
+        IoLog {
+            records: records
+                .into_iter()
+                .map(|(step, io)| IoRecord { step, io })
+                .collect(),
+            paths: vec![
+                "/build/lib.so".into(),
+                "/out/lib.so".into(),
+                "/build/a.o".into(),
+                "/nix/store/glibc/lib/libc.so.6".into(),
+            ],
+        }
+    }
+
+    fn process(pid: u32, argv: &[&str], start: u64) -> Process {
+        let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+        Process {
+            pid,
+            parent: 1,
+            argv: argv.clone(),
+            execd: true,
+            forked_argv: Vec::new(),
+            execs: vec![(start, argv)],
+            start,
+            end: None,
+            status: None,
+            threads: Vec::new(),
+        }
+    }
+
+    fn writer(path: &str, process: Process, open: u64, close: u64, flags: u32) -> Writer {
+        Writer {
+            path: path.into(),
+            process,
+            open,
+            close,
+            flags,
+        }
+    }
+
+    /// A trace in which the linker opens /build/a.o for writing at step 2
+    /// (the compiler's output) and /build/lib.so at 10, and the install
+    /// step opens /out/lib.so at 20.
+    fn built() -> Trace {
+        let open = |step, pid, path: &str| Event {
+            step,
+            pid,
+            tid: pid,
+            kind: EventKind::Open {
+                path: path.into(),
+                flags: O_TRUNC,
+            },
+        };
+        Trace {
+            events: vec![
+                open(2, 9, "/build/a.o"),
+                open(10, 10, "/build/lib.so"),
+                open(20, 20, "/out/lib.so"),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_copy_is_found_from_what_the_copier_read() {
+        // install read the library the build made, named in its
+        // arguments, and then wrote the output: the output is a copy of
+        // it.
+        let trace = built();
+        let install = process(20, &["install", "/build/lib.so", "/out/lib.so"], 18);
+        let log = log(vec![
+            (
+                19,
+                Io::ReadOpen {
+                    tid: 20,
+                    path: LIB_BUILT,
+                },
+            ),
+            (
+                21,
+                Io::WriteOpen {
+                    tid: 20,
+                    file: 1,
+                    path: LIB_OUT,
+                },
+            ),
+        ]);
+        let w = writer("/out/lib.so", install, 20, 22, O_TRUNC);
+        assert_eq!(
+            source_by_records(&Made::of(&trace), &log, &w),
+            Source::Copied("/build/lib.so".into())
+        );
+    }
+
+    #[test]
+    fn a_file_read_before_it_is_written_is_rewritten() {
+        // strip read the output, then opened it for writing: the bytes it
+        // wrote came from the output's earlier writer, which comes next.
+        let trace = built();
+        let strip = process(30, &["strip", "/out/lib.so"], 28);
+        let log = log(vec![
+            (
+                29,
+                Io::ReadOpen {
+                    tid: 30,
+                    path: LIB_OUT,
+                },
+            ),
+            (
+                32,
+                Io::WriteOpen {
+                    tid: 30,
+                    file: 1,
+                    path: LIB_OUT,
+                },
+            ),
+        ]);
+        let w = writer("/out/lib.so", strip, 31, 33, O_TRUNC);
+        assert_eq!(
+            source_by_records(&Made::of(&trace), &log, &w),
+            Source::Rewritten
+        );
+    }
+
+    #[test]
+    fn a_linker_makes_its_output() {
+        // The linker read an object the build made and the C library,
+        // neither of the output's name: its output's bytes are its own.
+        let trace = built();
+        let ld = process(10, &["ld", "-o", "/build/lib.so", "/build/a.o"], 8);
+        let log = log(vec![
+            (
+                9,
+                Io::ReadOpen {
+                    tid: 10,
+                    path: OBJECT,
+                },
+            ),
+            (
+                9,
+                Io::ReadOpen {
+                    tid: 10,
+                    path: LIBC,
+                },
+            ),
+            (
+                11,
+                Io::WriteOpen {
+                    tid: 10,
+                    file: 0,
+                    path: LIB_BUILT,
+                },
+            ),
+        ]);
+        let w = writer("/build/lib.so", ld, 10, 12, O_TRUNC);
+        assert_eq!(source_by_records(&Made::of(&trace), &log, &w), Source::Made);
+    }
+
+    #[test]
+    fn the_final_write_is_the_last_to_cover_the_byte() {
+        // The linker wrote its output front to back, then went back to
+        // patch bytes 50 to 59: byte 55 took its final value in the
+        // patch, and byte 120 in the second write. A write by the same
+        // thread to another file does not count.
+        let ld = process(10, &["ld"], 8);
+        let write = |pos, count| Io::Write {
+            tid: 10,
+            file: 0,
+            pos,
+            count,
+        };
+        let log = log(vec![
+            (
+                11,
+                Io::WriteOpen {
+                    tid: 10,
+                    file: 0,
+                    path: LIB_BUILT,
+                },
+            ),
+            (12, write(0, 100)),
+            (13, write(100, 50)),
+            (14, write(50, 10)),
+            (
+                15,
+                Io::Write {
+                    tid: 10,
+                    file: 3,
+                    pos: 0,
+                    count: 200,
+                },
+            ),
+        ]);
+        let w = writer("/build/lib.so", ld, 10, 16, O_TRUNC);
+        let patch = final_write(&log, &w, 55).unwrap();
+        assert_eq!((patch.step, patch.pos, patch.count), (14, 50, 10));
+        assert_eq!(final_write(&log, &w, 120).unwrap().step, 13);
+        assert_eq!(final_write(&log, &w, 500), None);
+    }
+
+    #[test]
+    fn inputs_are_the_files_the_build_made() {
+        // The linker read an object the build made and the C library from
+        // the store: one input, and one other file.
+        let trace = built();
+        let ld = process(10, &["ld"], 8);
+        let log = log(vec![
+            (
+                9,
+                Io::ReadOpen {
+                    tid: 10,
+                    path: OBJECT,
+                },
+            ),
+            (
+                9,
+                Io::ReadOpen {
+                    tid: 10,
+                    path: LIBC,
+                },
+            ),
+        ]);
+        let w = writer("/build/lib.so", ld, 10, 12, O_TRUNC);
+        let (inputs, others) = inputs_of(&Made::of(&trace), &log, &w);
+        assert_eq!(
+            inputs,
+            vec![Input {
+                path: "/build/a.o".into(),
+                step: 9
+            }]
+        );
+        assert_eq!(others, 1);
+    }
+
+    #[test]
+    fn inputs_pair_by_path_then_by_extension() {
+        // Both assemblers read the same header and a temporary file of
+        // another random name in each run: the header pairs with itself,
+        // and the two temporary files with each other.
+        let input = |path: &str, step| Input {
+            path: path.into(),
+            step,
+        };
+        let left = [input("/tmp/ccAbc.s", 5), input("/build/x.h", 6)];
+        let right = [input("/build/x.h", 7), input("/tmp/ccXyz.s", 8)];
+        let pairs = pair_inputs(&left, &right);
+        let paths: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|(l, r)| (l.path.as_str(), r.path.as_str()))
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                ("/tmp/ccAbc.s", "/tmp/ccXyz.s"),
+                ("/build/x.h", "/build/x.h")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_process_is_named_by_its_program() {
+        // A compiler by its file name, a Python program by its script and
+        // its subcommand rather than by python3, and a process that never
+        // exec'd by its pid.
+        let cc1 = process(4, &["/nix/store/x-gcc/libexec/cc1", "-quiet", "a.c"], 1);
+        assert_eq!(label(&cc1), "cc1");
+        let meson = process(
+            56,
+            &[
+                "/nix/store/y-python3/bin/python3.11",
+                "/nix/store/z-meson/bin/meson",
+                "setup",
+                "build",
+            ],
+            1,
+        );
+        assert_eq!(label(&meson), "meson setup");
+        let mut forked = process(7, &[], 1);
+        forked.argv.clear();
+        assert_eq!(label(&forked), "pid 7");
     }
 }

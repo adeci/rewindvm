@@ -198,12 +198,13 @@ enum Command {
     /// --file or --outputs, compares the files the runs left behind
     /// instead of their events.
     Diff(cmd::view::DiffArgs),
-    /// Why a file differs between two runs: the process and the step that
-    /// wrote a differing byte, followed back through copies, and how the
-    /// two writers' command lines differ.
+    /// Why a file differs between two runs: which program wrote the first
+    /// differing byte and at which step, what that program read, and the
+    /// likely cause.
     ///
-    /// It reads the file at steps by forking the runs, as `rewind cat`
-    /// does.
+    /// It reads files at steps by forking the runs, as `rewind cat` does.
+    /// Runs recorded before read and write records existed have to be
+    /// replayed many times, which takes longer.
     Blame(cmd::blame::BlameArgs),
 }
 
