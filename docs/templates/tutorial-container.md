@@ -174,7 +174,7 @@ $ rewind replay {{failing|short}} --from {{window_from}}
 <!-- assert: rewind replay {{failing}} | grep -q '^identical' -->
 
 `--from` starts at the nearest keyframe before the step. A run replays on any
-machine with the same CPU vendor.
+machine with the same CPU vendor that has the features of the run's CPU model.
 
 ## Fork it
 

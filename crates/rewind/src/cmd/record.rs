@@ -1326,7 +1326,11 @@ enum ClockArg {
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum CpuArg {
+    /// A fixed x86-64-v3 CPU, the same on every host that has its features.
     V3,
+    /// The v3 CPU without ERMS, for hosts that lack ERMS.
+    V3Compat,
+    /// This machine's own features.
     Host,
 }
 
@@ -1334,9 +1338,37 @@ impl From<CpuArg> for rewind_vmm::CpuModel {
     fn from(c: CpuArg) -> Self {
         match c {
             CpuArg::V3 => rewind_vmm::CpuModel::V3,
+            CpuArg::V3Compat => rewind_vmm::CpuModel::V3Compat,
             CpuArg::Host => rewind_vmm::CpuModel::Host,
         }
     }
+}
+
+/// What a run without --cpu says on a host that gets the v3-compat model.
+const V3_COMPAT_NOTICE: &str = "this CPU lacks ERMS (fast REP MOVSB), which --cpu v3 needs, \
+     so runs use --cpu v3-compat, which is v3 without ERMS and replays on hosts with or \
+     without ERMS";
+
+/// The CPU model a run shows the guest. A model given with --cpu is checked
+/// against this host now, before a Nix closure is packed for minutes. With
+/// none given, the model is v3, or v3-compat with a line saying so where
+/// this host lacks only ERMS.
+fn resolve_cpu(arg: Option<CpuArg>) -> Result<rewind_vmm::CpuModel> {
+    let kvm = rewind_vmm::kvm::open()?;
+
+    // A model asked for by name, which this host must be able to show.
+    if let Some(arg) = arg {
+        let model = arg.into();
+        rewind_vmm::cpu::check(&kvm, model)?;
+        return Ok(model);
+    }
+
+    // No model asked for: the one this host's features allow.
+    let model = rewind_vmm::cpu::default_model(&kvm)?;
+    if model == rewind_vmm::CpuModel::V3Compat {
+        eprintln!("rewind: {V3_COMPAT_NOTICE}");
+    }
+    Ok(model)
 }
 
 /// The machine options every way of starting a run shares.
@@ -1364,9 +1396,15 @@ pub(crate) struct MachineArgs {
     #[arg(long, default_value_t = 0)]
     schedule_from: u64,
     /// The CPU the VM sees: a fixed x86-64-v3 model that replays on any
-    /// machine supporting it, or this machine's own features.
-    #[arg(long, value_enum, default_value_t = CpuArg::V3)]
-    cpu: CpuArg,
+    /// machine supporting it, the same model without ERMS, or this
+    /// machine's own features.
+    ///
+    /// Defaults to v3, or to v3-compat on a machine that lacks only ERMS.
+    #[arg(long, value_enum)]
+    cpu: Option<CpuArg>,
+    /// The CPU model `cpu` resolved to, once per command.
+    #[arg(skip)]
+    resolved_cpu: Option<rewind_vmm::CpuModel>,
     /// What moves the VM's clock besides exits: the work done inside it,
     /// counted by this machine's branch counter (`branches`), or nothing
     /// (`exits`).
@@ -1584,6 +1622,12 @@ fn prepare(
     // KVM first: packing a Nix closure into an image can take minutes, and
     // a machine without KVM would only say so after them.
     rewind_vmm::kvm::open()?;
+
+    // The CPU model and the clock, resolved once for every run the command
+    // makes, so a notice about either is printed once.
+    if machine.resolved_cpu.is_none() {
+        machine.resolved_cpu = Some(resolve_cpu(machine.cpu)?);
+    }
     if machine.resolved_clock.is_none() {
         machine.resolved_clock = Some(resolve_clock(home, guest, machine.clock)?);
     }
@@ -1699,6 +1743,9 @@ fn execute(
     start: Start,
     announce: Announce,
 ) -> Result<Run> {
+    let cpu = machine
+        .resolved_cpu
+        .context("the CPU model was not resolved before the run")?;
     let spec = Spec {
         kernel: guest.kernel.clone(),
         initrd: guest.initrd.clone(),
@@ -1715,14 +1762,14 @@ fn execute(
         schedule_until: machine.schedule_until,
         inherited_schedules: Vec::new(),
         reseeds: Vec::new(),
-        cpu: machine.cpu.into(),
+        cpu,
         clock: machine.resolved_clock.unwrap_or_default(),
         preemption: if machine.experimental_preempt {
             rewind_vmm::Preemption::AtBranchCounts
         } else {
             rewind_vmm::Preemption::AtExits
         },
-        extras: rewind_vmm::extras_for(machine.cpu.into())?,
+        extras: rewind_vmm::extras_for(cpu)?,
         cmdline: format!("{BASE_CMDLINE} {}", machine.kernel_args)
             .trim()
             .to_string(),

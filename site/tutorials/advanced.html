@@ -660,7 +660,7 @@ db259d548c9a8e5f  exited:2          5164 steps  mylib-0.3.0 (fork of c2ca1ecd224
         ><code><span class="cmd"><span class="prompt">$</span> rewind show @</span>
 d7613fabd9c4bb6d  exited:0          6735 steps  mylib-0.3.0 (fork of c2ca1ecd2243eff6 at 5005, schedule 4)
 ...
-rewind nix /nix/store/...-mylib-0.3.0.drv --epoch 1790985600 --schedule 3 --schedule-from 4821 --schedule-until 5081 --clock branches --name mylib-0.3.0  # c2ca1ecd2243eff6
+rewind nix /nix/store/...-mylib-0.3.0.drv --epoch 1790985600 --schedule 3 --schedule-from 4821 --schedule-until 5081 --cpu v3 --clock branches --name mylib-0.3.0  # c2ca1ecd2243eff6
 rewind fork c2ca1ecd2243eff6 5005 --schedule 4  # d7613fabd9c4bb6d</code></pre>
         <p>The failing run's command makes it again, with the same id:</p>
         <pre
@@ -959,6 +959,14 @@ identical: 1756 events over 5145 steps</code></pre>
           any machine with the same CPU vendor. Without <code>--replayable</code> it is the events
           alone, 18.0 KB: enough to read and to scrub in the app, whose Export button writes the
           replayable kind. Both kinds carry the run's bookmarks.
+        </p>
+        <p>
+          The other machine also needs the features of the run's CPU model. A run without
+          <code>--cpu</code> gets <code>v3</code>, whose features include ERMS, the fast
+          <code>rep movsb</code> flag. On a host that lacks only ERMS it gets
+          <code>v3-compat</code> instead, the same CPU with ERMS hidden, and rewind prints a line
+          saying so. A <code>v3</code> run needs a host with ERMS, and a <code>v3-compat</code> run
+          replays on hosts with or without it.
         </p>
       </section>
 

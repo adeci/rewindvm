@@ -427,7 +427,7 @@ schedule 4 fork:
 $ rewind show @
 d7613fabd9c4bb6d  exited:0          6735 steps  mylib-0.3.0 (fork of c2ca1ecd2243eff6 at 5005, schedule 4)
 ...
-rewind nix /nix/store/...-mylib-0.3.0.drv --epoch 1790985600 --schedule 3 --schedule-from 4821 --schedule-until 5081 --clock branches --name mylib-0.3.0  # c2ca1ecd2243eff6
+rewind nix /nix/store/...-mylib-0.3.0.drv --epoch 1790985600 --schedule 3 --schedule-from 4821 --schedule-until 5081 --cpu v3 --clock branches --name mylib-0.3.0  # c2ca1ecd2243eff6
 rewind fork c2ca1ecd2243eff6 5005 --schedule 4  # d7613fabd9c4bb6d
 ```
 
@@ -637,6 +637,12 @@ replays on any machine with the same CPU vendor. Without `--replayable` it is
 the events alone, 18.0 KB: enough to read and to scrub in the app, whose
 Export button writes the replayable kind. Both kinds carry the run's
 bookmarks.
+
+The other machine also needs the features of the run's CPU model. A run
+without `--cpu` gets `v3`, whose features include ERMS, the fast `rep movsb`
+flag. On a host that lacks only ERMS it gets `v3-compat` instead, the same CPU
+with ERMS hidden, and rewind prints a line saying so. A `v3` run needs a host
+with ERMS, and a `v3-compat` run replays on hosts with or without it.
 
 ## Which clock
 

@@ -285,22 +285,30 @@ therefore takes different steps on another. By default the guest sees a fixed
 CPU instead of the host's:
 
 - x86-64-v3 features (AVX2, BMI, FMA, MOVBE), plus AES, PCLMULQDQ, ERMS,
-  FSGSBASE and INVPCID, which Haswell and Zen 2 onward all have;
+  FSGSBASE and INVPCID;
 - no AVX-512, SHA, protection keys or speculation control bits;
 - an XSAVE area of exactly x87, SSE and AVX state;
 - a fixed family, model and brand string per vendor, fixed cache sizes, and
   39 physical and 48 virtual address bits.
 
-A host that lacks any of it refuses the run and names the missing bits. The
-model is part of a run's inputs, and `--cpu host` shows the host's features
-instead, for hosts older than the baseline. The extras slot `rewind shell
---with` fills ends at 320 GiB, which needs the model's 39 address bits, and
-KVM refuses a memory slot past what the host's CPU reaches. On a CPU with 36
-bits, such as an Ivy Bridge, `--cpu host` records runs without the slot, so
-they cannot take `--with`. The guest boots with
-`mitigations=off`. Its processes need no protection from each other, and KVM
-still guards the host. With the fixed CPU, the mitigations the kernel had
-chosen more than doubled a build's time.
+That is `--cpu v3`. Not every x86-64-v3 host shows ERMS, the fast `rep movsb`
+flag: an EPYC 7763 (Zen 3) host was found with every other bit but not ERMS.
+`--cpu v3-compat` is the same CPU with ERMS hidden and a brand string of its
+own. glibc and the kernel copy memory differently without ERMS, so the same
+inputs make a different run under each model. A run that names neither picks
+`v3` where the host has the whole baseline, and `v3-compat`, with a line saying
+so, where the host lacks only ERMS. A `v3-compat` run replays on hosts with or
+without ERMS, and a `v3` run only on hosts with it. A host that lacks any other
+bit refuses both models and names the missing bits. The model is part of a
+run's inputs, so replays and forks use the recorded one, and `--cpu host` shows
+the host's features instead, for hosts older than the baseline. The extras slot
+`rewind shell --with` fills ends at 320 GiB, which needs the model's 39 address
+bits, and KVM refuses a memory slot past what the host's CPU reaches. On a CPU
+with 36 bits, such as an Ivy Bridge, `--cpu host` records runs without the
+slot, so they cannot take `--with`. The guest boots with `mitigations=off`. Its
+processes need no protection from each other, and KVM still guards the host.
+With the fixed CPU, the mitigations the kernel had chosen more than doubled a
+build's time.
 
 ### The monitor
 
@@ -839,7 +847,8 @@ Three earlier designs did not work, and why is worth keeping.
 - **The CPU vendor is part of the input.** The fixed CPU model keeps the
   host's vendor, since Intel and AMD differ in ways CPUID cannot hide, so a
   run made on AMD replays on any AMD host from Zen 2 on but not on Intel,
-  and the other way around.
+  and the other way around. A `v3` run also needs a host that shows ERMS;
+  a `v3-compat` run does not.
 - **User-space RDRAND and RDSEED** still work if a program executes them
   without checking CPUID. KVM does not let the monitor trap them. Hardly any
   program does this.

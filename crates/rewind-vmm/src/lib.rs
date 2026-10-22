@@ -58,15 +58,16 @@ pub fn extras_for(cpu: CpuModel) -> Result<Extras> {
 
 /// The extras slot for `cpu` on a host whose CPU reaches `bits` physical
 /// address bits. The host model goes without the slot where the host
-/// cannot reach the slot. The v3 model promises the guest the same machine
-/// on every host, slot included, so a narrower host refuses the v3 model.
+/// cannot reach the slot. The fixed models, v3 and v3-compat, promise the
+/// guest the same machine on every host, slot included, so a narrower host
+/// refuses them.
 fn extras_for_bits(cpu: CpuModel, bits: u32) -> Result<Extras> {
     if bits >= EXTRAS_ADDRESS_BITS {
         return Ok(Extras::Reserved);
     }
     match cpu {
         CpuModel::Host => Ok(Extras::Absent),
-        CpuModel::V3 => bail!(
+        CpuModel::V3 | CpuModel::V3Compat => bail!(
             "this CPU reaches {bits} physical address bits, where the x86-64-v3 model needs \
              {EXTRAS_ADDRESS_BITS}; run with --cpu host"
         ),
@@ -1027,9 +1028,14 @@ mod tests {
     fn the_extras_slot_is_reserved_only_where_the_host_reaches_it() {
         // Address widths on both sides of the slot's 39 bits: 36 is an Ivy
         // Bridge's. A narrow host records the host model without the slot
-        // and refuses the v3 model, which shows the guest 39 bits.
+        // and refuses both fixed models, which show the guest 39 bits.
         assert_eq!(EXTRAS_ADDRESS_BITS, 39);
         assert_eq!(extras_for_bits(CpuModel::V3, 39).unwrap(), Extras::Reserved);
+        assert_eq!(
+            extras_for_bits(CpuModel::V3Compat, 39).unwrap(),
+            Extras::Reserved
+        );
+        assert!(extras_for_bits(CpuModel::V3Compat, 36).is_err());
         assert_eq!(
             extras_for_bits(CpuModel::Host, 48).unwrap(),
             Extras::Reserved

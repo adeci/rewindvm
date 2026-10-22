@@ -181,18 +181,30 @@ const HYPERVISOR_LEAF: u32 = 0x4000_0000;
 /// The host's CPUID shaped for a deterministic guest of the given model.
 pub fn cpuid(kvm: &Kvm, model: CpuModel) -> Result<CpuId> {
     let host = host_cpuid(kvm)?;
-    match model {
-        CpuModel::Host => CpuId::from_entries(&host).context("building CPUID"),
-        CpuModel::V3 => {
-            let entries = baseline(&host)?;
-            CpuId::from_entries(&entries).context("building CPUID")
-        }
-    }
+    let entries = match model {
+        CpuModel::Host => host,
+        CpuModel::V3 | CpuModel::V3Compat => baseline(&host, model)?,
+    };
+    CpuId::from_entries(&entries).context("building CPUID")
+}
+
+/// The model a run shows the guest when none is asked for: v3 on a host
+/// with the whole x86-64-v3 baseline, or v3-compat on one that lacks only
+/// ERMS. Fails, naming the missing bits, on any other host.
+pub fn default_model(kvm: &Kvm) -> Result<CpuModel> {
+    choose(&host_cpuid(kvm)?)
+}
+
+/// Fails, naming the missing bits and the models that would run, when this
+/// host cannot show the guest `model`.
+pub fn check(kvm: &Kvm, model: CpuModel) -> Result<()> {
+    supports(&host_cpuid(kvm)?, model)
 }
 
 /// The feature bits the baseline keeps, by leaf, subleaf and register.
-/// x86-64-v3, plus AES, PCLMULQDQ, ERMS, FSGSBASE and INVPCID, which
-/// Haswell and Zen 2 onward all have.
+/// x86-64-v3, plus AES, PCLMULQDQ, ERMS, FSGSBASE and INVPCID. Not every
+/// host that has x86-64-v3 shows ERMS: an EPYC 7763 (Zen 3) host was seen
+/// without it, which is what the v3-compat model is for.
 mod v3 {
     // OSXSAVE (bit 27) is left out: KVM sets it itself from the guest's
     // CR4.
@@ -245,33 +257,209 @@ mod v3 {
     }
 }
 
-/// The baseline model from the host's shaped CPUID. Fails when the host
-/// lacks a feature the baseline promises.
-fn baseline(host: &[kvm_cpuid_entry2]) -> Result<Vec<kvm_cpuid_entry2>> {
+/// What the v3-compat model shows the guest that the v3 model's constants
+/// do not give: its brand string.
+mod v3_compat {
+    /// The brand string names the model, so that the guest, and anyone
+    /// reading its /proc/cpuinfo or a log it wrote, can tell a v3-compat
+    /// run from a v3 run. Sharing the v3 brand would buy no replayability:
+    /// a v3-compat run already differs from a v3 run by ERMS. "x86-64-v3"
+    /// stays in the name because the model is still x86-64-v3, a level
+    /// that does not include ERMS.
+    pub const BRAND: &[u8; 48] = b"Rewind VM x86-64-v3-compat virtual CPU\0\0\0\0\0\0\0\0\0\0";
+}
+
+/// ERMS, fast REP MOVSB and STOSB: leaf 7 EBX bit 9. glibc and the kernel
+/// choose how to copy and clear memory by it, so a guest shown ERMS takes
+/// different steps from one that is not.
+const ERMS: u32 = 1 << 9;
+
+/// The leaves that hold the brand string, 16 bytes each.
+const BRAND_FIRST: u32 = 0x8000_0002;
+const BRAND_LAST: u32 = 0x8000_0004;
+
+/// The leaf of AMD's extended features, which Intel also fills.
+const EXT1: u32 = 0x8000_0001;
+
+/// The registers a fixed model takes feature bits from, and the bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Features {
+    leaf1_ecx: u32,
+    leaf1_edx: u32,
+    leaf7_ebx: u32,
+    ext1_ecx: u32,
+    ext1_edx: u32,
+}
+
+impl Features {
+    /// No bits in any register.
+    const NONE: Features = Features {
+        leaf1_ecx: 0,
+        leaf1_edx: 0,
+        leaf7_ebx: 0,
+        ext1_ecx: 0,
+        ext1_edx: 0,
+    };
+
+    /// The v3 model's features.
+    const V3: Features = Features {
+        leaf1_ecx: v3::LEAF1_ECX,
+        leaf1_edx: v3::LEAF1_EDX,
+        leaf7_ebx: v3::LEAF7_EBX,
+        ext1_ecx: v3::EXT1_ECX,
+        ext1_edx: v3::EXT1_EDX,
+    };
+
+    /// The v3-compat model's features: the v3 model's, less ERMS.
+    const V3_COMPAT: Features = Features {
+        leaf7_ebx: v3::LEAF7_EBX & !ERMS,
+        ..Features::V3
+    };
+
+    /// ERMS alone: what a host the v3-compat model is for lacks.
+    const ERMS_ONLY: Features = Features {
+        leaf7_ebx: ERMS,
+        ..Features::NONE
+    };
+
+    /// The features a host's shaped CPUID shows.
+    fn of(host: &[kvm_cpuid_entry2]) -> Result<Features> {
+        let find = |function: u32| {
+            host.iter()
+                .find(|e| e.function == function && e.index == 0)
+                .copied()
+        };
+        let leaf1 = find(1).context("no CPUID leaf 1")?;
+        let leaf7 = find(7).unwrap_or_default();
+        let ext1 = find(EXT1).unwrap_or_default();
+        Ok(Features {
+            leaf1_ecx: leaf1.ecx,
+            leaf1_edx: leaf1.edx,
+            leaf7_ebx: leaf7.ebx,
+            ext1_ecx: ext1.ecx,
+            ext1_edx: ext1.edx,
+        })
+    }
+
+    /// The bits of `self` that `have` lacks.
+    fn lacking(self, have: Features) -> Features {
+        Features {
+            leaf1_ecx: self.leaf1_ecx & !have.leaf1_ecx,
+            leaf1_edx: self.leaf1_edx & !have.leaf1_edx,
+            leaf7_ebx: self.leaf7_ebx & !have.leaf7_ebx,
+            ext1_ecx: self.ext1_ecx & !have.ext1_ecx,
+            ext1_edx: self.ext1_edx & !have.ext1_edx,
+        }
+    }
+
+    /// The registers that hold any bits, with those bits, as a refusal
+    /// names them: "leaf 1 ECX bits 0x1000, leaf 7 EBX bits 0x200".
+    fn describe(self) -> String {
+        let registers = [
+            ("leaf 1 ECX", self.leaf1_ecx),
+            ("leaf 1 EDX", self.leaf1_edx),
+            ("leaf 7 EBX", self.leaf7_ebx),
+            ("leaf 0x80000001 ECX", self.ext1_ecx),
+            ("leaf 0x80000001 EDX", self.ext1_edx),
+        ];
+        registers
+            .iter()
+            .filter(|(_, bits)| *bits != 0)
+            .map(|(register, bits)| format!("{register} bits {bits:#x}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// A fixed model: the name a refusal gives it, the features it shows the
+/// guest, and its brand string. Everything else, from the signature to
+/// the cache sizes and the XSAVE layout, is the same for both fixed
+/// models.
+struct Fixed {
+    name: &'static str,
+    features: Features,
+    brand: &'static [u8; 48],
+}
+
+impl Fixed {
+    /// The fixed model `model` is, or None for the host model.
+    fn of(model: CpuModel) -> Option<Fixed> {
+        match model {
+            CpuModel::Host => None,
+            CpuModel::V3 => Some(Fixed {
+                name: "x86-64-v3",
+                features: Features::V3,
+                brand: v3::BRAND,
+            }),
+            CpuModel::V3Compat => Some(Fixed {
+                name: "v3-compat",
+                features: Features::V3_COMPAT,
+                brand: v3_compat::BRAND,
+            }),
+        }
+    }
+}
+
+/// The model for a run that asks for none: v3 where the host has every v3
+/// feature, and v3-compat where it lacks ERMS alone.
+fn choose(host: &[kvm_cpuid_entry2]) -> Result<CpuModel> {
+    let lacking = Features::V3.lacking(Features::of(host)?);
+    if lacking == Features::NONE {
+        return Ok(CpuModel::V3);
+    }
+    if lacking == Features::ERMS_ONLY {
+        return Ok(CpuModel::V3Compat);
+    }
+
+    // The host lacks more than ERMS, which neither fixed model hides.
+    anyhow::bail!(
+        "this CPU lacks the x86-64-v3 model's {}; run with --cpu host",
+        lacking.describe()
+    )
+}
+
+/// Whether a host can show the guest `model`: a fixed model's features
+/// must all be the host's, and the host model is always shown.
+fn supports(host: &[kvm_cpuid_entry2], model: CpuModel) -> Result<()> {
+    let Some(fixed) = Fixed::of(model) else {
+        return Ok(());
+    };
+    let lacking = fixed.features.lacking(Features::of(host)?);
+    if lacking == Features::NONE {
+        return Ok(());
+    }
+
+    // The v3 model on a host that lacks only ERMS: the same model with
+    // ERMS hidden runs there.
+    if model == CpuModel::V3 && lacking == Features::ERMS_ONLY {
+        anyhow::bail!(
+            "this CPU lacks ERMS (leaf 7 EBX bit 9), which the x86-64-v3 model shows the guest; \
+             run with --cpu v3-compat, the same model without ERMS, or --cpu host"
+        );
+    }
+    anyhow::bail!(
+        "this CPU lacks the {} model's {}; run with --cpu host",
+        fixed.name,
+        lacking.describe()
+    )
+}
+
+/// The fixed model `model` from the host's shaped CPUID. Fails when the
+/// host lacks a feature the model shows the guest, and for the host model,
+/// which is not fixed.
+fn baseline(host: &[kvm_cpuid_entry2], model: CpuModel) -> Result<Vec<kvm_cpuid_entry2>> {
+    let fixed = Fixed::of(model).context("the host CPU model has no baseline")?;
+    supports(host, model)?;
+
+    // The host's vendor, which the fixed models keep.
     let find = |f: u32, i: u32| {
         host.iter()
             .find(|e| e.function == f && e.index == i)
             .copied()
     };
-    let require = |have: u32, want: u32, what: &str| -> Result<()> {
-        let missing = want & !have;
-        if missing != 0 {
-            anyhow::bail!(
-                "this CPU lacks the x86-64-v3 baseline's {what} bits {missing:#x}; run with --cpu host"
-            );
-        }
-        Ok(())
-    };
     let leaf0 = find(0, 0).context("no CPUID leaf 0")?;
     let amd = leaf0.ebx == u32::from_le_bytes(*b"Auth");
-    let leaf1 = find(1, 0).context("no CPUID leaf 1")?;
-    let leaf7 = find(7, 0).unwrap_or_default();
-    let ext1 = find(0x8000_0001, 0).unwrap_or_default();
-    require(leaf1.ecx, v3::LEAF1_ECX, "leaf 1 ECX")?;
-    require(leaf1.edx, v3::LEAF1_EDX, "leaf 1 EDX")?;
-    require(leaf7.ebx, v3::LEAF7_EBX, "leaf 7 EBX")?;
-    require(ext1.ecx, v3::EXT1_ECX, "leaf 0x80000001 ECX")?;
-    require(ext1.edx, v3::EXT1_EDX, "leaf 0x80000001 EDX")?;
+    let features = fixed.features;
 
     let entry =
         |function: u32, index: u32, eax: u32, ebx: u32, ecx: u32, edx: u32| kvm_cpuid_entry2 {
@@ -289,7 +477,7 @@ fn baseline(host: &[kvm_cpuid_entry2]) -> Result<Vec<kvm_cpuid_entry2>> {
     } else {
         v3::SIGNATURE_INTEL
     };
-    let brand = |i: usize| u32::from_le_bytes(v3::BRAND[i * 4..i * 4 + 4].try_into().unwrap());
+    let brand = |i: usize| u32::from_le_bytes(fixed.brand[i * 4..i * 4 + 4].try_into().unwrap());
 
     let mut out = vec![
         entry(0, 0, v3::MAX_BASIC, leaf0.ebx, leaf0.ecx, leaf0.edx),
@@ -299,10 +487,10 @@ fn baseline(host: &[kvm_cpuid_entry2]) -> Result<Vec<kvm_cpuid_entry2>> {
             0,
             signature,
             (1 << 16) | (8 << 8),
-            v3::LEAF1_ECX | (1 << 31),
-            v3::LEAF1_EDX,
+            features.leaf1_ecx | (1 << 31),
+            features.leaf1_edx,
         ),
-        entry(7, 0, 0, v3::LEAF7_EBX, 0, 0),
+        entry(7, 0, 0, features.leaf7_ebx, 0, 0),
         entry(0xd, 0, v3::XCR0, v3::XSAVE_SIZE, v3::XSAVE_SIZE, 0),
         entry(0xd, 1, v3::XSAVE_LEAF1_EAX, 0, 0, 0),
         entry(
@@ -313,10 +501,10 @@ fn baseline(host: &[kvm_cpuid_entry2]) -> Result<Vec<kvm_cpuid_entry2>> {
             leaf0.ecx,
             leaf0.edx,
         ),
-        entry(0x8000_0001, 0, 0, 0, v3::EXT1_ECX, v3::EXT1_EDX),
-        entry(0x8000_0002, 0, brand(0), brand(1), brand(2), brand(3)),
-        entry(0x8000_0003, 0, brand(4), brand(5), brand(6), brand(7)),
-        entry(0x8000_0004, 0, brand(8), brand(9), brand(10), brand(11)),
+        entry(EXT1, 0, 0, 0, features.ext1_ecx, features.ext1_edx),
+        entry(BRAND_FIRST, 0, brand(0), brand(1), brand(2), brand(3)),
+        entry(BRAND_FIRST + 1, 0, brand(4), brand(5), brand(6), brand(7)),
+        entry(BRAND_LAST, 0, brand(8), brand(9), brand(10), brand(11)),
         entry(0x8000_0005, 0, 0, 0, v3::L1, v3::L1),
         entry(0x8000_0006, 0, 0, 0, v3::L2, v3::L3),
         entry(0x8000_0008, 0, v3::ADDRESS_BITS, 0, 0, 0),
@@ -437,4 +625,154 @@ fn host_cpuid(kvm: &Kvm) -> Result<Vec<kvm_cpuid_entry2>> {
         ..Default::default()
     });
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    // The fixed CPU models and which one a host gets, from synthetic
+    // hosts' shaped CPUID: no KVM is needed.
+    use super::*;
+
+    /// A host's shaped CPUID with every feature the x86-64-v3 model shows,
+    /// less the bits in `lacking`, on an AMD CPU.
+    fn host(lacking: Features) -> Vec<kvm_cpuid_entry2> {
+        let word = |s: &[u8; 4]| u32::from_le_bytes(*s);
+        let have = Features::V3.lacking(lacking);
+        let leaf = |function: u32, ebx: u32, ecx: u32, edx: u32| kvm_cpuid_entry2 {
+            function,
+            ebx,
+            ecx,
+            edx,
+            ..Default::default()
+        };
+        vec![
+            leaf(0, word(b"Auth"), word(b"cAMD"), word(b"enti")),
+            leaf(1, 0, have.leaf1_ecx, have.leaf1_edx),
+            leaf(7, have.leaf7_ebx, 0, 0),
+            leaf(0x8000_0001, 0, have.ext1_ecx, have.ext1_edx),
+        ]
+    }
+
+    /// What a host with the whole baseline lacks: no bits at all.
+    const NOTHING: Features = Features::NONE;
+
+    #[test]
+    fn the_v3_model_is_pinned() {
+        // Every recorded v3 run's id and steps rest on what the v3 model
+        // shows the guest, so its CPUID is written out here bit by bit,
+        // computed apart from the bit lists in `mod v3`, and then read
+        // back from the leaves the v3 model builds on a host with the
+        // whole baseline. A change to any of these values makes every v3
+        // run so far unreplayable.
+        assert_eq!(v3::LEAF1_ECX, 0x36d8_3203);
+        assert_eq!(v3::LEAF1_EDX, 0x078b_fbef);
+        assert_eq!(v3::LEAF7_EBX, 0x0000_07a9);
+        assert_eq!(v3::EXT1_ECX, 0x0000_0121);
+        assert_eq!(v3::EXT1_EDX, 0x2410_0800);
+        assert_eq!(v3::XCR0, 0b111);
+        assert_eq!(v3::XSAVE_SIZE, 832);
+        assert_eq!(v3::XSAVE_LEAF1_EAX, 1);
+        assert_eq!(v3::MAX_BASIC, 0xd);
+        assert_eq!(v3::MAX_EXTENDED, 0x8000_0008);
+        assert_eq!(v3::ADDRESS_BITS, 0x3027);
+        assert_eq!(v3::SIGNATURE_AMD, 0x0083_0f10);
+        assert_eq!(v3::SIGNATURE_INTEL, 0x0003_06c3);
+        assert_eq!(v3::L1, 0x2008_0140);
+        assert_eq!(v3::L2, 0x0200_6140);
+        assert_eq!(v3::L3, 0x0080_8140);
+        assert_eq!(&v3::BRAND[..31], b"Rewind VM x86-64-v3 virtual CPU");
+        assert!(v3::BRAND[31..].iter().all(|&b| b == 0));
+        assert_eq!(Features::V3.leaf7_ebx & ERMS, ERMS);
+
+        // The leaves the v3 model builds carry those values.
+        const HYPERVISOR_BIT: u32 = 1 << 31;
+        let entries = baseline(&host(NOTHING), CpuModel::V3).unwrap();
+        let leaf = |function: u32| {
+            *entries
+                .iter()
+                .find(|e| e.function == function && e.index == 0)
+                .unwrap()
+        };
+        assert_eq!(leaf(1).eax, 0x0083_0f10);
+        assert_eq!(leaf(1).ecx, 0x36d8_3203 | HYPERVISOR_BIT);
+        assert_eq!(leaf(1).edx, 0x078b_fbef);
+        assert_eq!(leaf(7).ebx, 0x0000_07a9);
+        assert_eq!((leaf(EXT1).ecx, leaf(EXT1).edx), (0x0000_0121, 0x2410_0800));
+        let brand: Vec<u8> = (BRAND_FIRST..=BRAND_LAST)
+            .flat_map(|function| {
+                let e = leaf(function);
+                [e.eax, e.ebx, e.ecx, e.edx]
+            })
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        assert_eq!(&brand[..], &v3::BRAND[..]);
+    }
+
+    #[test]
+    fn the_compat_model_is_v3_without_erms() {
+        // Both models' CPUID on one host with the whole baseline, compared
+        // leaf by leaf: leaf 7's EBX differs by ERMS alone, the brand
+        // string names the model, and every other entry is the same.
+        let host = host(NOTHING);
+        let v3 = baseline(&host, CpuModel::V3).unwrap();
+        let compat = baseline(&host, CpuModel::V3Compat).unwrap();
+        assert_eq!(v3.len(), compat.len());
+        for (a, b) in v3.iter().zip(&compat) {
+            assert_eq!((a.function, a.index), (b.function, b.index));
+            match (a.function, a.index) {
+                (7, 0) => {
+                    assert_eq!(a.ebx & !ERMS, b.ebx);
+                    assert_eq!(a.ebx & ERMS, ERMS);
+                    assert_eq!((a.eax, a.ecx, a.edx), (b.eax, b.ecx, b.edx));
+                }
+                (BRAND_FIRST..=BRAND_LAST, 0) => {}
+                _ => assert_eq!(a, b, "leaf {:#x}.{}", a.function, a.index),
+            }
+        }
+        assert_eq!(
+            &v3_compat::BRAND[..38],
+            b"Rewind VM x86-64-v3-compat virtual CPU"
+        );
+    }
+
+    #[test]
+    fn the_default_model_follows_what_the_host_lacks() {
+        // Three hosts: one with the whole baseline gets v3, one without
+        // ERMS gets v3-compat, and one without ERMS and AVX2 gets neither,
+        // and the refusal names both missing bits.
+        const AVX2: u32 = 1 << 5;
+        assert_eq!(choose(&host(NOTHING)).unwrap(), CpuModel::V3);
+        assert_eq!(
+            choose(&host(Features::ERMS_ONLY)).unwrap(),
+            CpuModel::V3Compat
+        );
+        let lacking = Features {
+            leaf7_ebx: ERMS | AVX2,
+            ..NOTHING
+        };
+        let refused = choose(&host(lacking)).unwrap_err().to_string();
+        assert!(refused.contains("leaf 7 EBX bits 0x220"), "{refused}");
+        assert!(refused.contains("--cpu host"), "{refused}");
+        assert!(!refused.contains("v3-compat"), "{refused}");
+    }
+
+    #[test]
+    fn v3_on_a_host_without_erms_names_v3_compat() {
+        // Asking for v3 by name where only ERMS is missing still refuses,
+        // and points at the two models that work there; v3-compat and the
+        // host model are both fine on that host, and every model is fine
+        // on a host with the whole baseline.
+        let without_erms = host(Features::ERMS_ONLY);
+        let refused = supports(&without_erms, CpuModel::V3)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("ERMS"), "{refused}");
+        assert!(refused.contains("--cpu v3-compat"), "{refused}");
+        assert!(refused.contains("--cpu host"), "{refused}");
+        supports(&without_erms, CpuModel::V3Compat).unwrap();
+        supports(&without_erms, CpuModel::Host).unwrap();
+        for model in [CpuModel::V3, CpuModel::V3Compat, CpuModel::Host] {
+            supports(&host(NOTHING), model).unwrap();
+        }
+    }
 }

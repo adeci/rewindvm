@@ -18,6 +18,13 @@ pub enum CpuModel {
     /// across machines.
     #[default]
     V3,
+    /// The V3 model with ERMS (fast REP MOVSB/STOSB) hidden, for hosts
+    /// that lack ERMS, such as an EPYC 7763 (Zen 3) host whose CPUID does
+    /// not show it. Everything else is the V3 model's, so a run made this
+    /// way replays on hosts with or without ERMS. A V3Compat run is not a
+    /// V3 run: the guest sees a different CPU, so the same inputs make a
+    /// different run.
+    V3Compat,
 }
 
 /// What virtual time follows.
@@ -75,4 +82,26 @@ pub enum Extras {
     #[default]
     Absent,
     Reserved,
+}
+
+#[cfg(test)]
+mod tests {
+    // How the CPU models are spelled in a manifest, by serializing each
+    // model to JSON and reading it back.
+    use super::*;
+
+    #[test]
+    fn every_cpu_model_round_trips_under_its_manifest_name() {
+        // The names are what existing manifests hold, so they must not
+        // change: "v3" and "host" are in every run made so far, and
+        // "v3_compat" is the v3 model without ERMS.
+        for (model, name) in [
+            (CpuModel::Host, "\"host\""),
+            (CpuModel::V3, "\"v3\""),
+            (CpuModel::V3Compat, "\"v3_compat\""),
+        ] {
+            assert_eq!(serde_json::to_string(&model).unwrap(), name);
+            assert_eq!(serde_json::from_str::<CpuModel>(name).unwrap(), model);
+        }
+    }
 }

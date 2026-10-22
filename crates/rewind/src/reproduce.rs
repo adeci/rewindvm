@@ -1,10 +1,10 @@
 //! `rewind show`: the commands that make a run again.
 //!
 //! A run's id is the hash of its inputs, so the same command on a machine
-//! with the same CPU vendor and the same guest makes the same run. Every
-//! input a command line sets is spelled out, the epoch above all: by
-//! default it is the start of the day the run was made, so the same
-//! command a day later makes another run.
+//! with the same CPU vendor and guest, and the features of the run's CPU
+//! model, makes the same run. Every input a command line sets is spelled
+//! out, the epoch above all: by default it is the start of the day the run
+//! was made, so the same command a day later makes another run.
 
 use rewind_core::run::{BASE_CMDLINE, DEFAULT_CORES, DEFAULT_QUANTUM};
 use rewind_core::{Manifest, Source};
@@ -39,9 +39,9 @@ pub fn command(m: &Manifest) -> Result<Vec<String>, Unset> {
             spec.quantum
         )));
     }
-    // A v3 run always reserves the extras slot. A host-model run leaves the
-    // slot out on a CPU that cannot reach the slot, and the same command
-    // leaves the slot out again on that CPU.
+    // A run of a fixed model, v3 or v3-compat, always reserves the extras
+    // slot. A host-model run leaves the slot out on a CPU that cannot reach
+    // the slot, and the same command leaves the slot out again on that CPU.
     if spec.extras != rewind_vmm::Extras::Reserved && spec.cpu != rewind_vmm::CpuModel::Host {
         return Err(Unset(
             "a machine without the slot `shell --with` uses".into(),
@@ -80,9 +80,9 @@ pub fn command(m: &Manifest) -> Result<Vec<String>, Unset> {
         }
     };
 
-    // The machine: the epoch and the clock always, since neither is the
-    // same everywhere by default, and every other option away from its
-    // default.
+    // The machine: the epoch, the CPU model and the clock always, since
+    // none of them is the same everywhere by default, and every other
+    // option away from its default.
     flag(&mut args, "epoch", spec.epoch.to_string());
     if spec.seed != 0 {
         flag(&mut args, "seed", spec.seed.to_string());
@@ -102,9 +102,12 @@ pub fn command(m: &Manifest) -> Result<Vec<String>, Unset> {
     if spec.mem_mib != crate::cmd::record::DEFAULT_MEM_MIB {
         flag(&mut args, "mem", spec.mem_mib.to_string());
     }
-    if spec.cpu == rewind_vmm::CpuModel::Host {
-        flag(&mut args, "cpu", "host".into());
-    }
+    let cpu = match spec.cpu {
+        rewind_vmm::CpuModel::V3 => "v3",
+        rewind_vmm::CpuModel::V3Compat => "v3-compat",
+        rewind_vmm::CpuModel::Host => "host",
+    };
+    flag(&mut args, "cpu", cpu.into());
     let clock = match spec.clock {
         rewind_vmm::ClockSource::Exits => "exits",
         rewind_vmm::ClockSource::Branches(rewind_vmm::CounterEvent::Instructions) => {
@@ -297,10 +300,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_nix_build_names_its_derivation_epoch_clock_and_name() {
+    fn a_nix_build_names_its_derivation_epoch_cpu_clock_and_name() {
         // A Nix build with every option at its default still names its
         // epoch, which is not the same from one day to the next, and its
-        // clock, which `auto` resolves per machine.
+        // CPU model and clock, which a command without them resolves per
+        // machine.
         let drv = "/nix/store/0000000000000000000000000000000a-mylib-0.3.0.drv";
         let m = manifest(
             "mylib-0.3.0",
@@ -311,8 +315,28 @@ pub(crate) mod tests {
             spec(job(&["bash"], &[], "/build")),
         );
         let mut want = vec!["nix".to_string(), drv.to_string()];
-        want.extend(words("--epoch 1791072000 --clock exits --name mylib-0.3.0"));
+        want.extend(words(
+            "--epoch 1791072000 --cpu v3 --clock exits --name mylib-0.3.0",
+        ));
         assert_eq!(command(&m).unwrap(), want);
+    }
+
+    #[test]
+    fn every_cpu_model_is_named() {
+        // A run of each model, made again: the command names the model,
+        // since a command without --cpu picks v3 or v3-compat by what the
+        // host has, and the two make different runs.
+        for (model, name) in [
+            (rewind_vmm::CpuModel::V3, "v3"),
+            (rewind_vmm::CpuModel::V3Compat, "v3-compat"),
+            (rewind_vmm::CpuModel::Host, "host"),
+        ] {
+            let mut s = spec(job(&["sh"], &[], "/"));
+            s.cpu = model;
+            let m = manifest("sh", Source::Image { root: "/r".into() }, s);
+            let args = command(&m).unwrap();
+            assert!(args.windows(2).any(|w| w == ["--cpu", name]), "{args:?}");
+        }
     }
 
     #[test]

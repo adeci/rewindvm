@@ -258,7 +258,7 @@ identical from the keyframe at step 256 to the end (1.38s)
 ```
 
 `--from` starts at the nearest keyframe before the step. A run replays on any
-machine with the same CPU vendor.
+machine with the same CPU vendor that has the features of the run's CPU model.
 
 ## Fork it
 
