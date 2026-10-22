@@ -274,10 +274,10 @@ mod tests {
             Some((Some(2), 3))
         );
         assert_eq!(
-            schedule_said("4 of 16 perturbed schedules ended differently"),
+            schedule_said("4 of 16 other schedules ended differently"),
             None
         );
         assert_eq!(schedule_said("rewind: schedules 1..8 executing"), None);
-        assert_eq!(schedule_said("seed 2 decides it: unperturbed"), None);
+        assert_eq!(schedule_said("seed 2 decides it: under schedule 0"), None);
     }
 }

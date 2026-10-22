@@ -374,13 +374,13 @@ pub fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
             match original.divergence(&again) {
                 None => {
                     println!(
-                        "identical from the keyframe at step {kf} to the end ({:.2}s)",
+                        "identical to the recording from the snapshot at step {kf} to the end ({:.2}s)",
                         started.elapsed().as_secs_f64()
                     );
                     Ok(ExitCode::SUCCESS)
                 }
                 Some(_) => {
-                    println!("DIFFERENT after the keyframe at step {kf}:");
+                    println!("DIFFERENT from the recording after the snapshot at step {kf}:");
                     print!("{}", show::divergence(&original, &again));
                     Ok(ExitCode::FAILURE)
                 }
@@ -418,7 +418,7 @@ pub fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
             match replayed {
                 None => {
                     println!(
-                        "identical: {} events over {} steps",
+                        "identical to the recording: {} events over {} steps",
                         run.trace()?.events.len(),
                         run.manifest.outcome.as_ref().map_or(0, |o| o.step)
                     );
@@ -426,7 +426,7 @@ pub fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
                 }
                 Some(d) => {
                     println!(
-                        "DIFFERENT at event {} (step {} vs {}): the run was not deterministic",
+                        "DIFFERENT from the recording at event {} (step {} recorded, step {} replayed): the run was not deterministic",
                         d.index, d.left_step, d.right_step
                     );
                     Ok(ExitCode::FAILURE)

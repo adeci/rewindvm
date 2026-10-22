@@ -540,7 +540,7 @@ in
         grep -qx "$far" kept
         rewind cat long "$far" /bin/busybox > /dev/null
         test "$(keyframes | wc -l)" = $((count + 1))
-        rewind replay long --from "$far" | grep "^identical from the keyframe at step $far "
+        rewind replay long --from "$far" | grep "^identical to the recording from the snapshot at step $far "
 
         rewind run -q --name b --seed 1 --root ${busyboxRoot} -- sh -c '${workload}'
         # rewind diff exits 1 for runs that differ, 0 for identical ones.
@@ -580,7 +580,7 @@ in
         test -z "$differs" || test "$differs" -ge "$step"
         rewind replay $fork2 | grep '^identical'
         rewind replay $fork2 --from 300 | grep '^identical'
-        rewind replay $fork2 --from $((step - 1)) | grep "^identical from the keyframe at step $((step - 1)) "
+        rewind replay $fork2 --from $((step - 1)) | grep "^identical to the recording from the snapshot at step $((step - 1)) "
         rewind replay $fork2 --from "$(end $fork2)" | grep '^identical'
 
         # A replayable export of the fork of a fork carries every keyframe
@@ -1336,7 +1336,7 @@ in
         # With them, a schedule loses an add.
         ! check -- /bin/point points > found
         cat found
-        grep -qE '^schedule +[0-9]+ violates exit-zero; narrowing' found
+        grep -qE '^schedule +[0-9]+ violates exit-zero; finding the step' found
         grep -q ' decides it: .* makes the run violate exit-zero$' found
 
         # Each point is an exit, and none is a mark.
@@ -1392,7 +1392,7 @@ in
         ! check --property script=./total.sh > found
         cat found
         grep -q '^schedule   0: .*  holds$' found
-        grep -qE '^schedule +[0-9]+ violates total; narrowing' found
+        grep -qE '^schedule +[0-9]+ violates total; finding the step' found
         grep -q ' decides it: .* makes the run violate total$' found
         grep -qE '^failing run violates total: total [0-9]+, expected 20$' found
         ! check --property script=./total.sh --json > found.json
@@ -1438,7 +1438,7 @@ in
         ! rewind check -j 4 --clock exits --seeds 6 --schedules 1 --root ${busyboxRoot} -- sh -c "$coin" > seeds
         cat seeds
         grep -qE '^seed  0 schedule   0: ' seeds
-        grep -qE '^seed [0-9]+ decides it: unperturbed, seed [0-9]+ passes and seed [0-9]+ fails$' seeds
+        grep -qE '^seed [0-9]+ decides it: under schedule 0, seed [0-9]+ passes and seed [0-9]+ fails$' seeds
         ! rewind check -j 4 --clock exits --seeds 6 --schedules 1 --all --no-narrow --json \
           --root ${busyboxRoot} -- sh -c "$coin" > seeds.json
         jq -e '.seeds == 6 and ([.schedules[].seed] | unique) == [0, 1, 2, 3, 4, 5]' seeds.json
@@ -1451,7 +1451,7 @@ in
         [ "$status" -le 1 ]
         ! rewind check --run coin --seeds 6 --schedules 0 > reseeded
         cat reseeded
-        grep -qE '^seed [0-9]+ decides it: unperturbed, seed [0-9]+ passes and seed [0-9]+ fails$' reseeded
+        grep -qE '^seed [0-9]+ decides it: under schedule 0, seed [0-9]+ passes and seed [0-9]+ fails$' reseeded
         grep -qE '^failing: run [0-9a-f]+, seed [0-9]+ from step [0-9]+, schedule 0$|^passing: run [0-9a-f]+, seed [0-9]+ from step [0-9]+, schedule 0$' reseeded
 
         # rewind fork --seed: the fork is its parent until the step, and

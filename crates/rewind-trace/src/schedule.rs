@@ -396,20 +396,20 @@ impl Schedule {
         Some((STALL_MIN_NS << doubling).min(max.ns()))
     }
 
-    /// What the seed does at `step`, in words: "a reschedule", "a 160 µs
-    /// stall", "a 50 ms stall", "a timer 23.4 µs late", or several joined
-    /// with "and". A
-    /// late timer changes the run only if the exit that made the step armed
+    /// What the seed does at `step`, in words: "a request to switch
+    /// threads" for a reschedule, "a 160 µs pause of the running thread"
+    /// for a stall, "a timer firing 23.4 µs late", or several joined with
+    /// "and". A late timer changes the run only if the exit that made the step armed
     /// one, which only the monitor sees: `timer` says whether it did. Not
     /// knowing, a late timer is named only for a step that carries nothing
     /// else.
     pub fn words_at(&self, step: u64, timer: Timer) -> String {
         let mut parts = Vec::new();
         if self.preempt_at(step) {
-            parts.push("a reschedule".to_string());
+            parts.push("a request to switch threads".to_string());
         }
         if let Some(ns) = self.stall_at(step) {
-            parts.push(format!("a {} stall", stall_words(ns)));
+            parts.push(format!("a {} pause of the running thread", stall_words(ns)));
         }
         let slack = self.slack_at(step);
         let late = match timer {
@@ -419,7 +419,7 @@ impl Schedule {
         };
         if late {
             let us = slack as f64 / NS_PER_US as f64;
-            parts.push(format!("a timer {us:.1} µs late"));
+            parts.push(format!("a timer firing {us:.1} µs late"));
         }
         if parts.is_empty() {
             return "nothing".into();
@@ -718,7 +718,10 @@ mod tests {
         let step = (0..1_000_000)
             .find(|&st| !s.preempt_at(st) && s.stall_at(st) == Some(50_000_000))
             .unwrap();
-        assert_eq!(s.words_at(step, Timer::NotArmed), "a 50 ms stall");
+        assert_eq!(
+            s.words_at(step, Timer::NotArmed),
+            "a 50 ms pause of the running thread"
+        );
     }
 
     fn preemptions(seed: u64, window: std::ops::Range<u64>) -> Vec<u64> {
@@ -855,26 +858,37 @@ mod tests {
             stall_max: StallMax::default(),
         };
         let find = |f: &dyn Fn(u64) -> bool| (0..100_000).find(|&step| f(step)).unwrap();
-        let late = |step: u64| format!("a timer {:.1} µs late", s.slack_at(step) as f64 / 1e3);
+        let late = |step: u64| {
+            format!(
+                "a timer firing {:.1} µs late",
+                s.slack_at(step) as f64 / 1e3
+            )
+        };
         let reschedule =
             find(&|st| s.preempt_at(st) && s.stall_at(st).is_none() && s.slack_at(st) > 0);
-        assert_eq!(s.words_at(reschedule, Timer::Unknown), "a reschedule");
-        assert_eq!(s.words_at(reschedule, Timer::NotArmed), "a reschedule");
+        assert_eq!(
+            s.words_at(reschedule, Timer::Unknown),
+            "a request to switch threads"
+        );
+        assert_eq!(
+            s.words_at(reschedule, Timer::NotArmed),
+            "a request to switch threads"
+        );
         assert_eq!(
             s.words_at(reschedule, Timer::Armed),
-            format!("a reschedule and {}", late(reschedule))
+            format!("a request to switch threads and {}", late(reschedule))
         );
         let stall = find(&|st| !s.preempt_at(st) && s.stall_at(st).is_some());
         let us = s.stall_at(stall).unwrap() / NS_PER_US;
         assert_eq!(
             s.words_at(stall, Timer::NotArmed),
-            format!("a {us} µs stall")
+            format!("a {us} µs pause of the running thread")
         );
         let both = find(&|st| s.preempt_at(st) && s.stall_at(st).is_some());
         let us = s.stall_at(both).unwrap() / NS_PER_US;
         assert_eq!(
             s.words_at(both, Timer::NotArmed),
-            format!("a reschedule and a {us} µs stall")
+            format!("a request to switch threads and a {us} µs pause of the running thread")
         );
         let timer = find(&|st| !s.preempt_at(st) && s.stall_at(st).is_none() && s.slack_at(st) > 0);
         assert_eq!(s.words_at(timer, Timer::Armed), late(timer));

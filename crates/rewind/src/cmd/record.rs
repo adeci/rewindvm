@@ -413,7 +413,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             }
             if seeds > 1 {
                 say(format!(
-                    "rewind: {seeds} seeds, the run's own and {} more reseeding it at the search's first step, each unperturbed and under {schedules} perturbed schedules",
+                    "rewind: {seeds} random seeds, the run's own and {} new ones from the search's first step, each run under schedule 0 and {schedules} other schedules",
                     seeds - 1
                 ));
             }
@@ -438,7 +438,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             if seeds > 1 {
                 let plural = if schedules == 1 { "" } else { "s" };
                 say(format!(
-                    "rewind: {seeds} seeds, each unperturbed and under {schedules} perturbed schedule{plural}: {} runs",
+                    "rewind: {seeds} random seeds, each run under schedule 0 and {schedules} other schedule{plural}: {} runs",
                     seeds * (schedules + 1)
                 ));
             }
@@ -684,7 +684,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     let tried_words = if seeds > 1 {
         "other runs"
     } else {
-        "perturbed schedules"
+        "other schedules"
     };
     if all && same_outcome_only && base_failed {
         say(format!(
@@ -820,7 +820,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                 }
             };
             say(format!(
-                "\nseed {} decides it: unperturbed, {words}\n",
+                "\nseed {} decides it: under schedule 0, {words}\n",
                 chosen.seed
             ));
             let seed = chosen.seed;
@@ -848,19 +848,19 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             };
             if same_outcome_only && base_failed {
                 say(format!(
-                    "\n{found_name} passes where {seed_words} fails; narrowing the steps it perturbs"
+                    "\n{found_name} passes where {seed_words} fails; finding the step that decides it"
                 ));
             } else if same_outcome_only {
                 say(format!(
-                    "\n{found_name} ends differently; narrowing the steps it perturbs"
+                    "\n{found_name} ends differently from {seed_words}; finding the step that decides it"
                 ));
             } else if base_holds {
                 say(format!(
-                    "\n{found_name} violates {violated}; narrowing the steps it perturbs"
+                    "\n{found_name} violates {violated}; finding the step that decides it"
                 ));
             } else {
                 say(format!(
-                    "\n{found_name} holds every property where {seed_words} violates {violated}; narrowing the steps it perturbs"
+                    "\n{found_name} holds every property where {seed_words} violates {violated}; finding the step that decides it"
                 ));
             }
             if !json {
@@ -905,11 +905,11 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             clear_status();
             if same_outcome_only {
                 say(format!(
-                    "perturbing only steps {lo}..{until} still ends differently"
+                    "{found_name} limited to steps {lo}..{until} still ends differently"
                 ));
             } else {
                 say(format!(
-                    "perturbing only steps {lo}..{until} still makes the run {}",
+                    "{found_name} limited to steps {lo}..{until} still makes the run {}",
                     makes(&violated)
                 ));
             }
@@ -1247,7 +1247,9 @@ pub fn fork(home: &Home, args: ForkArgs) -> Result<ExitCode> {
     let m = &parent.manifest;
     let schedule = schedule.unwrap_or(if seed.is_some() { 0 } else { 1 });
     if schedule == 0 && seed.is_none() {
-        bail!("schedule 0 is the unperturbed run; a fork needs another schedule or --seed");
+        bail!(
+            "schedule 0 leaves the threads alone, so a fork under it repeats its parent; give another --schedule, or a --seed"
+        );
     }
     refuse_unscheduled_stall_max(schedule, stall_max)?;
     let mut spec = m.spec.fork(step, schedule).with_stall_max(stall_max);
@@ -1316,7 +1318,7 @@ fn stall_max_words(max: StallMax) -> String {
 /// asks for no stalls, rather than recording a run that ignores it.
 fn refuse_unscheduled_stall_max(schedule: u64, stall_max: StallMax) -> Result<()> {
     if schedule == 0 && !stall_max.is_default() {
-        bail!("--stall-max needs a perturbed schedule: schedule 0 stalls nothing");
+        bail!("--stall-max needs a schedule other than 0: schedule 0 pauses no threads");
     }
     Ok(())
 }
