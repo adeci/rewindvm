@@ -818,11 +818,15 @@ Three earlier designs did not work, and why is worth keeping.
   `point()`, a write of nothing to `/dev/rewind` that makes one exit and
   records nothing. With exit time computation also takes no time; counter
   time ([pmu.md](pmu.md)) fixes that, not the preemption.
-- **Go programs at `--cores` above 1 can hang.** During garbage collection
-  Go's runtime waits for a goroutine on another thread by spinning in user
-  space, without system calls, and with spare CPUs reported it does not
-  yield. That thread never gets the one vCPU, so the run makes no more
-  steps. Set `GOMAXPROCS=1` for Go programs, or use `--cores 1`.
+- **Go programs can hang.** Go's runtime waits for other threads by
+  spinning in user space, without system calls. Runs at `--cores` above 1
+  have stalled in `runtime.unlock2`, and at `GOMAXPROCS` above 1 the
+  garbage collector's `bgsweep` spins while it sees an idle P. The thread
+  it waits for never gets the one vCPU, so the run makes no more steps.
+  Keep `--cores 1` and set `GOMAXPROCS=N` to give the runtime N threads to
+  interleave, with `GOGC=off` when the program fits in `--mem`. `GOMAXPROCS=1` avoids the hang too, but
+  runs every goroutine on one thread, and schedules then did not change
+  goroutine order in any Go test tried.
 - **One vCPU.** Threads interleave but never run at the same instant, even
   with `--cores` reporting more CPUs. Throughput comes from running many
   machines at once: `check` runs one per core.

@@ -551,8 +551,9 @@ rewind: a shell at step 2486 of 5e1803777866a78b; exit it to leave
 4
 4</code></pre>
         <p>
-          Run Go programs with <code>GOMAXPROCS=1</code> above one core: Go's garbage collector
-          spins waiting for a thread that never runs.
+          Go programs are the exception: keep them at <code>--cores 1</code> and set
+          <code>GOMAXPROCS</code> in their environment instead. With more than one CPU reported,
+          Go's runtime can spin waiting for a thread that never runs.
         </p>
       </section>
 

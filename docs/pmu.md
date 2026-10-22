@@ -55,9 +55,10 @@ code a clock close to the real one.
 With either clock, a thread gives up the CPU only at a step. A loop that
 spins waiting for another thread, without making a system call, keeps the
 CPU and the run hangs. Locks, sleeps and I/O all make system calls, so they
-are fine. Go's garbage collector is the common exception: with `--cores`
-above 1 it spins this way waiting for another thread, so run Go programs
-with `GOMAXPROCS=1`, or use `--cores 1`.
+are fine. Go's runtime is the common exception: it spins this way at
+`--cores` above 1, and its garbage collector does at `GOMAXPROCS` above 1. Run Go programs at the default `--cores 1` with `GOMAXPROCS`
+set to the threads you want, and `GOGC=off` if the program fits in the
+VM's memory.
 
 ## Why AMD needs a setting
 

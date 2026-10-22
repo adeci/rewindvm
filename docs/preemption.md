@@ -15,8 +15,10 @@ another hangs the run. The case that started this is Go: at `--cores` above
 and `isSweepDone`, waiting for a goroutine on another thread, and does not
 yield while it sees an idle P. That thread is runnable but
 never gets the one vCPU. A run stuck like this now ends with "timed out
-computing without exits for 14.1s, in user space at 0x41b33e"; the
-workaround is `GOMAXPROCS=1` or `--cores 1`.
+computing without exits for 14.1s, in user space at 0x41b33e". The
+workaround is `--cores 1`, with `GOMAXPROCS` above 1 for goroutines to
+interleave and `GOGC=off` so `bgsweep` does not run. `GOMAXPROCS=1` avoids the hang but leaves the
+goroutines on one thread, where schedules did not change their order.
 
 Preemption would also reach races that need a thread switched out in the
 middle of pure computation, which today are out of reach.
