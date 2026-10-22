@@ -247,9 +247,9 @@ $ printf 'nproc; echo $NIX_BUILD_CORES; exit\n' | rewind shell {{cores_run|short
 
 <!-- assert: test "$(tail -2 {{out:nproc}} | tr '\n' ' ')" = '4 4 ' -->
 
-Go programs are the exception: keep them at `--cores 1` and set
-`GOMAXPROCS` in their environment instead. With more than one CPU
-reported, Go's runtime can spin waiting for a thread that never runs.
+Go programs see the extra CPUs too, and Go's garbage collector can then
+spin waiting for a thread that never runs. Run them with `GOGC=off` if they
+fit in the VM's memory.
 
 ## Steer the perturbation
 

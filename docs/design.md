@@ -818,15 +818,18 @@ Three earlier designs did not work, and why is worth keeping.
   `point()`, a write of nothing to `/dev/rewind` that makes one exit and
   records nothing. With exit time computation also takes no time; counter
   time ([pmu.md](pmu.md)) fixes that, not the preemption.
-- **Go programs can hang.** Go's runtime waits for other threads by
-  spinning in user space, without system calls. Runs at `--cores` above 1
-  have stalled in `runtime.unlock2`, and at `GOMAXPROCS` above 1 the
-  garbage collector's `bgsweep` spins while it sees an idle P. The thread
-  it waits for never gets the one vCPU, so the run makes no more steps.
-  Keep `--cores 1` and set `GOMAXPROCS=N` to give the runtime N threads to
-  interleave, with `GOGC=off` when the program fits in `--mem`. `GOMAXPROCS=1` avoids the hang too, but
-  runs every goroutine on one thread, and schedules then did not change
-  goroutine order in any Go test tried.
+- **Go programs can hang in garbage collection.** At `GOMAXPROCS` above 1,
+  the collector's thread registers as a sweeper and restarts the world; the
+  restart makes an exit, and the vCPU goes to `bgsweep`, which loops on
+  `isSweepDone` in user space, without system calls, and does not yield
+  while it sees an idle P. The collector's thread never runs again to end
+  its registration, so the run makes no more steps. `--cores N` makes N the
+  default `GOMAXPROCS`, but `--cores` does not matter beyond that:
+  `--cores 1` with `GOMAXPROCS=4` hangs the same way. Set `GOGC=off` when
+  the program fits in `--mem`. `GOMAXPROCS=1` avoids the hang too, but runs every
+  goroutine on one thread, where only a system call inside a goroutine, such
+  as the SDK's `point()`, lets another one in; schedules alone did not
+  change goroutine order in any Go test tried.
 - **One vCPU.** Threads interleave but never run at the same instant, even
   with `--cores` reporting more CPUs. Throughput comes from running many
   machines at once: `check` runs one per core.
