@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 
+use rewind_trace::ending::ExitStatus;
 use rewind_trace::sdk::{SdkMark, TestResult};
 use rewind_trace::{Event, EventKind, JobExit, Trace, signal};
 
@@ -821,9 +822,10 @@ fn short_phase_name(name: &str) -> String {
 /// Where the run failed. A job whose init reports status 0 did not fail.
 /// Otherwise the first crash signal is the failure, and without one, the
 /// start of the chain of nonzero exits that ended the run: from the last
-/// process to exit nonzero, down through the child it exited after. A
-/// signal or exit before step `shared`, which a passing run made too, is
-/// not the failure.
+/// process to exit nonzero, down through the child it exited after. When
+/// a signal killed that child, such as SIGPIPE, the failure is the signal
+/// reaching it rather than its exit. A signal or exit before step
+/// `shared`, which a passing run made too, is not the failure.
 fn find_failure(
     trace: &Trace,
     job_exit: Option<JobExit>,
@@ -919,8 +921,42 @@ fn find_failure(
         }
     }
 
-    // The failure is that process's exit event.
-    let step = current.end?;
+    // A process a signal killed, such as a writer killed by SIGPIPE when
+    // the reader of its pipe exited, failed where the signal reached it:
+    // its exit only follows from that.
+    let status = ExitStatus::from_raw(current.status.unwrap_or_default());
+    let end = current.end?;
+    if let ExitStatus::Signal {
+        signo: killed_by, ..
+    } = status
+    {
+        let delivered = trace
+            .events
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, e)| {
+                if e.pid != current.pid || e.step > end {
+                    return None;
+                }
+                let EventKind::Signal { signo, addr, .. } = e.kind else {
+                    return None;
+                };
+                (signo == killed_by).then_some(Failure {
+                    step: e.step,
+                    pid: e.pid,
+                    tid: e.tid,
+                    index,
+                    kind: FailureKind::Signal { signo, addr },
+                })
+            });
+        if delivered.is_some() {
+            return delivered;
+        }
+    }
+
+    // Otherwise the failure is that process's exit event.
+    let step = end;
     let index = trace.events.iter().position(|e| {
         e.step == step
             && e.pid == current.pid
@@ -1605,6 +1641,64 @@ mod tests {
         // cc's exit, not the subshell's earlier one.
         let f = job(2 << 8).failure.unwrap();
         assert_eq!((f.step, f.pid), (25, 44));
+        assert_eq!(f.kind, FailureKind::Exit { status: 1 << 8 });
+    }
+
+    /// SIGPIPE's number on x86-64 Linux.
+    const SIGPIPE: u32 = 13;
+
+    /// A shell running `producer | head -1`: head (4) reads a line and
+    /// exits 0, the producer subshell (3) gets SIGPIPE on its next write
+    /// and dies of it, the shell (2) exits 141 as bash reports that, and
+    /// the job's shell (1) fails after it. As Nix's gc-closure test does.
+    fn pipeline() -> Vec<rewind_trace::Event> {
+        vec![
+            exec(1, 1, &["bash", "-e", "builder.sh"]),
+            fork(2, 1, 2, false),
+            exec(3, 2, &["bash", "-c", "producer | head -1"]),
+            fork(4, 2, 3, false),
+            fork(5, 2, 4, false),
+            exec(6, 4, &["head", "-1"]),
+            exit(7, 4, 4, 0, "head", false),
+            signal(8, 3, 3, SIGPIPE),
+            exit(9, 3, 3, SIGPIPE, "bash", false),
+            exit(10, 2, 2, (128 + SIGPIPE) << 8, "bash", false),
+            exit(11, 1, 1, 1 << 8, "bash", false),
+        ]
+    }
+
+    #[test]
+    fn a_failure_that_a_signal_killed_is_that_signal() {
+        // The exit chain from the job's shell ends at the producer, which
+        // SIGPIPE killed: the failure is the SIGPIPE at step 8, where the
+        // pipe broke, not the exit it caused a step later.
+        let t = Timeline::new(Trace { events: pipeline() }, None, None);
+        let f = t.failure.unwrap();
+        assert_eq!((f.step, f.pid, f.tid), (8, 3, 3));
+        assert_eq!(
+            f.kind,
+            FailureKind::Signal {
+                signo: SIGPIPE,
+                addr: 0x10
+            }
+        );
+    }
+
+    #[test]
+    fn a_pipe_that_broke_harmlessly_is_not_the_failure() {
+        // The same pipeline, with the shell shrugging off the broken pipe
+        // and exiting 0, and a compiler (5) failing later: SIGPIPE is not
+        // a crash, so the failure is the compiler's exit.
+        let mut events = pipeline();
+        events.retain(|e| e.step < 10);
+        events.push(exit(10, 2, 2, 0, "bash", false));
+        events.push(fork(11, 1, 5, false));
+        events.push(exec(12, 5, &["cc", "-c", "pool.c"]));
+        events.push(exit(13, 5, 5, 1 << 8, "cc", false));
+        events.push(exit(14, 1, 1, 1 << 8, "bash", false));
+        let t = Timeline::new(Trace { events }, None, None);
+        let f = t.failure.unwrap();
+        assert_eq!((f.step, f.pid), (13, 5));
         assert_eq!(f.kind, FailureKind::Exit { status: 1 << 8 });
     }
 
