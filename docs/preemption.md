@@ -21,6 +21,14 @@ workaround is `GOGC=off`, so `bgsweep` does not run. `GOMAXPROCS=1` avoids
 the hang too, but leaves the goroutines on one thread, where schedules did
 not change their order.
 
+gdb on a hung run shows the order: the collector's thread registers as a
+sweeper and restarts the world, the restart's futex wake is an exit that
+hands the vCPU to `bgsweep`, and the collector's thread never runs again
+to end its registration. In a study of 15 flaky Go tests, four needed
+preemption to get anywhere. On `TestServerKeepAlivesEnabled/h2` with the
+collector on, all 260 runs at `--cores 1` with `GOMAXPROCS=4` hung, and so
+did all 65 tried at `--cores 4`.
+
 Preemption would also reach races that need a thread switched out in the
 middle of pure computation, which today are out of reach.
 
@@ -69,6 +77,13 @@ measurements used a mode that tolerated overruns instead of aborting.
   failing.
 - **An impossible overrun of 71,780,684,711** was stepping lost while Go
   spun with no overflow armed, until the run's time limit fired.
+- **Go's own tests lose steps too.** `internal/trace`'s
+  `TestTraceFutileWakeup/Stress` at Go 05dbbf91, with `GOMAXPROCS=4` and
+  `GOGC=off`, passed in 1,029 steps; the same run with `-test.v` stopped at
+  step 7,532 with "the branch counter ran 62995 past a preemption point
+  ... its skid exceeds the margin of 256". 62,995 is over a hundred times
+  the largest skid measured, so it is a lost step, which the message calls
+  skid.
 
 Delivering late cuts the count of preemptions. Preempting only a guest
 still computing 10 ms (10M branches) after its timer was due, at margin
@@ -125,7 +140,7 @@ hybrid part the event counts nothing if the vCPU thread moves to an E-core.
    perf event's mmap page instead of a system call per step.
 5. **Fail clearly.** Arm a safety overflow while stepping, and check the
    time limit before the overrun check, so a lost step is an error that
-   says so instead of an impossible count.
+   says so instead of an impossible count or a skid it is not.
 
 ## Before it ships
 
