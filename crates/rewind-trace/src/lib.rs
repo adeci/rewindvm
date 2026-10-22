@@ -144,6 +144,12 @@ impl Trace {
         Trace::decode(&records(path)?)
     }
 
+    /// Reads a trace from the bytes of a trace file, held in memory: the
+    /// browser viewer has no files to open.
+    pub fn from_bytes(bytes: &[u8]) -> io::Result<Trace> {
+        Trace::decode(&records_from(bytes)?)
+    }
+
     /// The trace of a file's records, as [`records`] reads them.
     pub fn decode(records: &[(u64, Vec<u8>)]) -> io::Result<Trace> {
         let mut events = Vec::with_capacity(records.len());
@@ -541,7 +547,12 @@ const TRACE_HEADER_LEN: usize = TRACE_MAGIC.len() + 4;
 /// two runs share. A trace cut off mid-record, as one is when the process
 /// writing it is killed, ends at its last whole record.
 pub fn records(path: &Path) -> io::Result<Vec<(u64, Vec<u8>)>> {
-    let mut r = BufReader::new(std::fs::File::open(path)?);
+    records_from(BufReader::new(std::fs::File::open(path)?))
+}
+
+/// The records of a trace file's bytes as `r` reads them, as [`records`]
+/// returns them.
+pub fn records_from(mut r: impl Read) -> io::Result<Vec<(u64, Vec<u8>)>> {
     let mut records = Vec::new();
     let cut_off = |e: &io::Error| e.kind() == io::ErrorKind::UnexpectedEof;
 
@@ -1344,6 +1355,27 @@ mod tests {
         let trace = Trace { events };
         let sub = trace.processes().into_iter().find(|p| p.pid == 3).unwrap();
         assert_eq!(sub.argv, vec!["bash".to_string(), "test.sh".to_string()]);
+    }
+
+    #[test]
+    fn a_trace_reads_from_bytes_in_memory() {
+        // A trace written into a Vec and read back from the same bytes,
+        // with no file in between, as the browser viewer reads the trace
+        // out of an export it holds in memory.
+        let mut w = TraceWriter::new(Vec::new());
+        let mut record = Vec::new();
+        record.extend_from_slice(&((HEADER_LEN + 3) as u32).to_le_bytes());
+        record.extend_from_slice(&10u16.to_le_bytes());
+        record.extend_from_slice(&[0u8; 14]);
+        record.extend_from_slice(b"hi\n");
+        w.record(42, &record).unwrap();
+        let bytes = w.finish().unwrap();
+
+        let t = Trace::from_bytes(&bytes).unwrap();
+        assert_eq!(t.events.len(), 1);
+        assert_eq!(t.events[0].step, 42);
+        assert_eq!(t.events[0].kind, EventKind::Mark { text: "hi".into() });
+        assert!(Trace::from_bytes(b"not a trace!").is_err());
     }
 
     #[test]

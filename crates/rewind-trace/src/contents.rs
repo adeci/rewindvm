@@ -7,7 +7,6 @@
 //! cache of source files out of the VM, and the desktop app's file viewer.
 
 use std::collections::HashSet;
-use std::path::{Component, Path, PathBuf};
 
 use crate::{EventKind, Trace};
 
@@ -77,23 +76,23 @@ pub fn version(trace: &Trace, path: &str, step: u64) -> Version {
 /// kernel resolves them when no symbolic link is on the way, such as
 /// /build/mylib/src/pool.h for /build/mylib/tests/../src/pool.h. None for
 /// a relative path.
+///
+/// Guest paths are split on `/` here rather than read as a host
+/// `std::path::Path`: on wasm32-unknown-unknown, where the browser viewer
+/// runs this, `Path::is_absolute` is false for every path.
 pub fn normal(path: &str) -> Option<String> {
-    let path = Path::new(path);
-    if !path.is_absolute() {
-        return None;
-    }
-    let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(part) => parts.push(part),
-            Component::ParentDir => {
+    let rest = path.strip_prefix('/')?;
+    let mut parts: Vec<&str> = Vec::new();
+    for part in rest.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
                 parts.pop();
             }
-            Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
+            part => parts.push(part),
         }
     }
-    let joined: PathBuf = parts.iter().collect();
-    Some(format!("/{}", joined.to_str()?))
+    Some(format!("/{}", parts.join("/")))
 }
 
 /// Whether an event of `kind` changes the file at `path`: writes it,

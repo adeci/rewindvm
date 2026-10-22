@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 # The marks the guest's init writes into every trace.
-rewind-init = { path = "../rewind-init" }
+rewind-init = { path = "../rewind-init", default-features = false }
 serde = { version = "1", features = ["derive"] }
 # Manifests, read by their version first.
 serde_json = "1"

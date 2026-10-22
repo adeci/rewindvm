@@ -312,6 +312,7 @@ pub struct JobFile {
 /// publish as NarHash. It covers names, file contents, the executable bit
 /// and symlink targets, and nothing else, so it is equal wherever and
 /// whenever the same tree was built.
+#[cfg(feature = "nar")]
 pub fn nar_hash(path: &std::path::Path) -> std::io::Result<String> {
     let hash = nix_archive::nar::hash_path(path, nix_archive::nar::CaseHack::native())
         .map_err(std::io::Error::other)?;
@@ -367,6 +368,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "nar")]
     fn an_output_is_hashed_as_nix_hashes_a_store_path() {
         // A tree with a file, an executable and a symlink, and a file on its
         // own, hash to what `nix hash path --algo sha256 --base16` printed
