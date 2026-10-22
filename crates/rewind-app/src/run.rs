@@ -12,7 +12,7 @@ use anyhow::{Context as _, Result, bail};
 use rewind_trace::Trace;
 use rewind_trace::ending::{Ending, ExitStatus};
 use rewind_trace::manifest::{MANIFEST, Manifest, Parent, RunId, Source, Spec, TRACE, executing};
-use rewind_trace::schedule::Timer;
+use rewind_trace::schedule::{Schedule, stall_words};
 use rewind_trace::stop::Stop;
 
 use crate::archive;
@@ -580,8 +580,15 @@ impl Session {
             }
             None => format!("Both runs did the same things in the same order until step {step}."),
         };
+        // The card leads with how each run ended, then where the two
+        // stop being identical, then the first thing done differently.
         let other_run = self.other_run().unwrap_or_default();
-        let mut lines: Vec<String> = self.split.iter().map(|s| s.line(&other_run)).collect();
+        let mut lines = vec![outcome_line(
+            self.run.verdict(),
+            other.verdict(),
+            &other_run,
+        )];
+        lines.extend(self.split.iter().map(|s| s.line(&other_run)));
         lines.extend([
             before,
             format!("Then in this run, {}.", difference.here),
@@ -606,10 +613,9 @@ pub struct ScheduleSplit {
     /// The first step the two schedules treat differently. Until it the
     /// two runs are the same machine, exit for exit.
     pub step: u64,
-    /// What this run's schedule does there, in words, when it asks for a
-    /// reschedule or a stall. None when it does nothing there, or only
-    /// makes a timer late, which changes the run only if the guest armed
-    /// a timer at that exit, and only the monitor saw whether it did.
+    /// What Rewind does to this run there, as [`done_at`] says it, when
+    /// its schedule asks for a reschedule or a stall. None when it does
+    /// nothing there, or only makes a timer late.
     pub here: Option<String>,
     /// The same for the other run.
     pub there: Option<String>,
@@ -620,38 +626,82 @@ impl ScheduleSplit {
     /// when anything else differs between them, or nothing does.
     pub fn of(this: &Spec, other: &Spec) -> Option<ScheduleSplit> {
         let step = this.same_through(other)?.checked_add(1)?;
-        let words = |spec: &Spec| {
-            let schedule = spec.schedule();
-            (schedule.preempt_at(step) || schedule.stall_at(step).is_some())
-                .then(|| schedule.words_at(step, Timer::Unknown))
-        };
         Some(ScheduleSplit {
             step,
-            here: words(this),
-            there: words(other),
+            here: done_at(&this.schedule(), step),
+            there: done_at(&other.schedule(), step),
         })
     }
 
-    /// The split as the divergence card's first line, `other_run` naming
-    /// the run compared with.
+    /// What Rewind does at the split, and to which run, as the end of a
+    /// sentence whose subject is Rewind: "pauses the running thread for
+    /// 1280 µs in this run only". `other_run` names the run compared with.
+    fn what_differs(&self, other_run: &str) -> Option<String> {
+        match (&self.here, &self.there) {
+            (Some(what), None) => Some(format!("{what} in this run only")),
+            (None, Some(what)) => Some(format!("{what} in {other_run} only")),
+            _ => None,
+        }
+    }
+
+    /// The split as a line of the divergence card, `other_run` naming the
+    /// run compared with.
     pub fn line(&self, other_run: &str) -> String {
         let step = thousands(self.step);
-        let start = format!("The two runs are the same until step {step}, where");
-        match (&self.here, &self.there) {
-            (Some(what), None) => format!("{start} only this run has {what}."),
-            (None, Some(what)) => format!("{start} only {other_run} has {what}."),
-            _ => format!("{start} their schedules first differ."),
+        let identical = format!("The two runs are identical until step {step}.");
+        match self.what_differs(other_run) {
+            Some(what) => format!("{identical} There, Rewind {what}."),
+            None => format!("{identical} There, Rewind first schedules their threads differently."),
         }
     }
 
     /// The split for the mark on the timeline, when pointed at.
     pub fn tooltip(&self, other_run: &str) -> String {
         let step = thousands(self.step);
-        match (&self.here, &self.there) {
-            (Some(what), None) => format!("Step {step}: only this run has {what}"),
-            (None, Some(what)) => format!("Step {step}: only {other_run} has {what}"),
-            _ => format!("Step {step}: the schedules first differ"),
+        let before = "The two runs are identical before this step.";
+        match self.what_differs(other_run) {
+            Some(what) => format!("Step {step}: Rewind {what}. {before}"),
+            None => format!(
+                "Step {step}: Rewind first schedules the two runs' threads differently. {before}"
+            ),
         }
+    }
+}
+
+/// What Rewind does to a run at `step` under `schedule`, as a verb phrase
+/// with Rewind as its subject: "asks the kernel to switch threads",
+/// "pauses the running thread for 1280 µs", or both joined with "and".
+/// None when the schedule asks for neither there. A late timer is left
+/// out: it changes the run only if the guest armed a timer at that exit,
+/// and only the monitor saw whether it did.
+fn done_at(schedule: &Schedule, step: u64) -> Option<String> {
+    let mut parts = Vec::new();
+
+    // A reschedule asks the guest's kernel to run another thread, if one
+    // is ready.
+    if schedule.preempt_at(step) {
+        parts.push("asks the kernel to switch threads".to_string());
+    }
+
+    // A stall puts the task running then to sleep when it next returns
+    // to user space.
+    if let Some(ns) = schedule.stall_at(step) {
+        parts.push(format!("pauses the running thread for {}", stall_words(ns)));
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join(" and "))
+}
+
+/// The divergence card's first line: how the run on screen and
+/// `other_run`, the run it is compared with, ended.
+fn outcome_line(this: Verdict, other: Verdict, other_run: &str) -> String {
+    match (this, other) {
+        (Verdict::Failed, Verdict::Passed) => format!("This run failed and {other_run} did not."),
+        (Verdict::Passed, Verdict::Failed) => format!("This run passed and {other_run} failed."),
+        (both, _) => format!("Both runs {}.", both.label()),
     }
 }
 
@@ -665,7 +715,7 @@ pub fn parent_note(parent: &str, step: u64, schedule: u64, reseed: Option<u64>) 
         short_id(parent)
     );
     match reseed {
-        Some(seed) => format!("{start}, reseeded with seed {seed}"),
+        Some(seed) => format!("{start}, with the program's random seed changed to {seed}"),
         None => start,
     }
 }
@@ -934,12 +984,7 @@ mod tests {
         };
         let split = ScheduleSplit::of(&failing, &shorter).unwrap();
         assert_eq!(split.step, until - 1);
-        let schedule = failing.schedule();
-        let exact = schedule.preempt_at(until - 1) || schedule.stall_at(until - 1).is_some();
-        assert_eq!(
-            split.here,
-            exact.then(|| schedule.words_at(until - 1, Timer::Unknown))
-        );
+        assert_eq!(split.here, done_at(&failing.schedule(), until - 1));
         assert_eq!(split.there, None);
         let unperturbed = Spec {
             schedule: 0,
@@ -960,25 +1005,100 @@ mod tests {
     }
 
     #[test]
-    fn a_split_reads_as_what_only_one_run_has() {
-        // A reschedule or stall on one side is named; anything else is
-        // the schedules differing.
+    fn a_split_reads_as_what_rewind_did_to_one_run_only() {
+        // The card's line and the mark's tooltip for a split where Rewind
+        // switched or paused a thread in one run only, and for one where
+        // anything else differs: each says the runs are identical before
+        // the step, and what Rewind did differently there in plain words.
         let split = |here: Option<&str>, there: Option<&str>| ScheduleSplit {
             step: 5139,
             here: here.map(String::from),
             there: there.map(String::from),
         };
+        let here = split(Some("asks the kernel to switch threads"), None);
         assert_eq!(
-            split(Some("a reschedule"), None).line("the passing run"),
-            "The two runs are the same until step 5,139, where only this run has a reschedule."
+            here.line("the passing run"),
+            "The two runs are identical until step 5,139. There, Rewind asks the kernel to switch threads in this run only."
         );
         assert_eq!(
-            split(None, Some("a 160 µs stall")).line("run 1989f6d0"),
-            "The two runs are the same until step 5,139, where only run 1989f6d0 has a 160 µs stall."
+            here.tooltip("the passing run"),
+            "Step 5,139: Rewind asks the kernel to switch threads in this run only. The two runs are identical before this step."
+        );
+        let there = split(None, Some("pauses the running thread for 160 µs"));
+        assert_eq!(
+            there.line("run 1989f6d0"),
+            "The two runs are identical until step 5,139. There, Rewind pauses the running thread for 160 µs in run 1989f6d0 only."
+        );
+        assert_eq!(
+            there.tooltip("run 1989f6d0"),
+            "Step 5,139: Rewind pauses the running thread for 160 µs in run 1989f6d0 only. The two runs are identical before this step."
         );
         assert_eq!(
             split(None, None).line("run 1989f6d0"),
-            "The two runs are the same until step 5,139, where their schedules first differ."
+            "The two runs are identical until step 5,139. There, Rewind first schedules their threads differently."
+        );
+        assert_eq!(
+            split(None, None).tooltip("run 1989f6d0"),
+            "Step 5,139: Rewind first schedules the two runs' threads differently. The two runs are identical before this step."
+        );
+    }
+
+    #[test]
+    fn what_rewind_does_at_a_step_reads_as_a_verb() {
+        // A schedule's step that asks for a reschedule, one that stalls,
+        // one that does both, and one that does neither, each against its
+        // words.
+        let schedule = manifest_of(FAILING).spec.schedule();
+        let (from, until) = manifest_of(FAILING).spec.window().unwrap();
+        let find = |preempts: bool, stalls: bool| {
+            (from..until).find(|&s| {
+                schedule.preempt_at(s) == preempts && schedule.stall_at(s).is_some() == stalls
+            })
+        };
+        let preempt = find(true, false).unwrap();
+        assert_eq!(
+            done_at(&schedule, preempt).as_deref(),
+            Some("asks the kernel to switch threads")
+        );
+        let stall = find(false, true).unwrap();
+        let us = schedule.stall_at(stall).unwrap() / 1_000;
+        assert_eq!(
+            done_at(&schedule, stall),
+            Some(format!("pauses the running thread for {us} µs"))
+        );
+        if let Some(both) = find(true, true) {
+            let us = schedule.stall_at(both).unwrap() / 1_000;
+            assert_eq!(
+                done_at(&schedule, both),
+                Some(format!(
+                    "asks the kernel to switch threads and pauses the running thread for {us} µs"
+                ))
+            );
+        }
+        let neither = find(false, false).unwrap();
+        assert_eq!(done_at(&schedule, neither), None);
+    }
+
+    #[test]
+    fn the_divergence_card_leads_with_how_each_run_ended() {
+        // A failing run beside a passing one, a passing run beside a
+        // failing one, and two runs that ended alike: the card's first
+        // line says how each ended.
+        assert_eq!(
+            outcome_line(Verdict::Failed, Verdict::Passed, "the passing run"),
+            "This run failed and the passing run did not."
+        );
+        assert_eq!(
+            outcome_line(Verdict::Passed, Verdict::Failed, "run 1989f6d0"),
+            "This run passed and run 1989f6d0 failed."
+        );
+        assert_eq!(
+            outcome_line(Verdict::Failed, Verdict::Failed, "run 1989f6d0"),
+            "Both runs failed."
+        );
+        assert_eq!(
+            outcome_line(Verdict::Passed, Verdict::Passed, "run 1989f6d0"),
+            "Both runs passed."
         );
     }
 
@@ -1047,7 +1167,7 @@ mod tests {
         // the seed when the fork was reseeded at its step.
         assert_eq!(
             parent_note("95701620b9331847", 340, 0, Some(8)),
-            "Step 340: forked from run 95701620 under schedule 0, reseeded with seed 8"
+            "Step 340: forked from run 95701620 under schedule 0, with the program's random seed changed to 8"
         );
         assert_eq!(
             parent_note("95701620b9331847", 4200, 3, None),

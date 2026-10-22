@@ -326,11 +326,15 @@ impl Row {
             RowKind::Folded {
                 count,
                 folds: Folds::Windows,
-            } => return format!("{count} more windows of schedule {schedule} \u{b7} show"),
+            } => {
+                return format!(
+                    "{count} more runs of schedule {schedule} on fewer steps \u{b7} show"
+                );
+            }
             RowKind::Unfolded {
                 count,
                 folds: Folds::Windows,
-            } => return format!("hide the {count} windows of schedule {schedule}"),
+            } => return format!("hide the {count} runs of schedule {schedule} on fewer steps"),
         }
         let run = &self.run;
         let Some(parent) = &run.parent else {
@@ -1563,7 +1567,10 @@ mod tests {
                 row("w4", 2),
             ]
         );
-        assert_eq!(rows[3].detail(), "3 more windows of schedule 5 \u{b7} show");
+        assert_eq!(
+            rows[3].detail(),
+            "3 more runs of schedule 5 on fewer steps \u{b7} show"
+        );
         let w1 = f.runs.iter().find(|r| r.id == "w1").unwrap();
         assert_eq!(f.tree_parent(w1).map(|r| r.id.as_str()), Some("r"));
 
@@ -1571,7 +1578,10 @@ mod tests {
         let open = HashSet::from(["s5".to_string()]);
         let rows = f.rows_folded(&open, &[]);
         assert_eq!(rows.len(), 8);
-        assert_eq!(rows[3].detail(), "hide the 3 windows of schedule 5");
+        assert_eq!(
+            rows[3].detail(),
+            "hide the 3 runs of schedule 5 on fewer steps"
+        );
     }
 
     #[test]

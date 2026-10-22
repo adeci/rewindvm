@@ -21,7 +21,7 @@ use crate::ui::{CloseDialog, ConfirmStep, STEP_CONTEXT};
 const FIELD_CHARS: f32 = 14.0;
 
 /// What the readout says it does when pointed at.
-const READOUT_NOTE: &str = "Click, or press g, to type a step to go to: a number such as 3,495, or +100 and -100 to move from the playhead. Enter goes there and Escape cancels.";
+const READOUT_NOTE: &str = "The playhead's step. A step is one time the VM stopped and handed control to Rewind. Click, or press g, to type a step to go to: a number such as 3,495, or +100 and -100 to move from the playhead. Enter goes there and Escape cancels.";
 
 /// The field while it is open: what is typed, and why the last Enter did
 /// not go anywhere.

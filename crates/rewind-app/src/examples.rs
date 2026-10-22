@@ -179,17 +179,18 @@ mod tests {
         assert!(split.step < divergence);
         assert_eq!(divergence, failure.step);
 
-        // In words: where the schedules part, and the first thing
-        // test_pool_shutdown does differently.
+        // In words: how each run ended, where the schedules part, and the
+        // first thing test_pool_shutdown does differently.
         let Some(crate::run::Agreement::Parted { lines, .. }) = session.agreement() else {
             panic!("the examples do not part");
         };
         assert_eq!(
             lines,
             vec![
-                "The two runs are the same until step 5,080, where only this run has a 1280 µs stall.",
+                "This run failed and the passing run did not.",
+                "The two runs are identical until step 5,080. There, Rewind pauses the running thread for 1280 µs in this run only.",
                 "test_pool_shutdown did the same things in the same order in both runs until step 5,105.",
-                "Then in this run, thread 9 of test_pool_shutdown gets SIGSEGV at 0x108.",
+                "Then in this run, thread 9 of test_pool_shutdown gets SIGSEGV at address 0x108.",
                 "In the passing run, thread 9 of test_pool_shutdown writes \"worker picked job 30\" to stdout.",
             ]
         );

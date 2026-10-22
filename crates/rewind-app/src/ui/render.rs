@@ -2418,24 +2418,24 @@ const PROCESS_STEP_NOTE: &str = "The step this process or thread started at. Cli
 const BACK_NOTE: &str = "Back to where the playhead was before its last jump: to the failure, the divergence, a phase, an end, a clicked line or a step typed in. Key: Alt+Left, or the mouse's back button.";
 const PREVIOUS_NOTE: &str = "Previous stop, of the ones the chooser beside it picks. Key: Left.";
 const NEXT_NOTE: &str = "Next stop, of the ones the chooser beside it picks. Key: Right.";
-const DIVERGENCE_NOTE: &str = "Jump to divergence: the first step where this run and the run it is compared with differ. Key: D.";
+const DIVERGENCE_NOTE: &str = "Jump to divergence: the first event where this run does something different from the run it is compared with. Key: D.";
 const FAILURE_NOTE: &str = "Jump to failure. Key: F.";
-const FORK_NOTE: &str = "Fork from here: runs this run again from the playhead under another schedule. The menu beside it turns it into a check of many schedules.";
+const FORK_NOTE: &str = "Fork from here: runs this run again from the playhead under another thread schedule, so Rewind switches and pauses threads at other steps. The menu beside it turns it into a check of many schedules.";
 const FORWARD_NOTE: &str =
     "Forward again, after Back. Key: Alt+Right, or the mouse's forward button.";
-const EXPORT_NOTE: &str = "Writes this run to one .rwd file, with its keyframes and inputs, that another machine can open, replay and fork.";
+const EXPORT_NOTE: &str = "Writes this run to one .rwd file, with the machine snapshots and inputs another machine needs to open, replay and fork it.";
 const THREADS_NOTE: &str = "A lane per thread over a window of steps, a bar where the thread held the CPU, beside the compared run's. Rewind replays the window one step at a time in each run to find them. Key: t.";
 
 /// The amber button's note when it checks from here.
 fn check_note(schedules: u64, seeds: u64) -> String {
     if seeds > 1 {
         return format!(
-            "Runs {schedules} other schedules from this step under this run's seed, and {} more seeds, each unperturbed and under {schedules} schedules, each a fork of this run reseeded at the step, and counts how many end differently. The forks stay among this run's forks. The menu beside it turns it back to Fork from here.",
+            "Forks this run at the playhead many times and counts how many forks end differently from this run. With the program's own random seed, it tries {schedules} other thread schedules. It also gives the program {} new random seeds at this step, and runs each with its threads left alone and under {schedules} schedules. The forks stay among this run's forks. The menu beside it turns it back to Fork from here.",
             seeds - 1
         );
     }
     format!(
-        "Runs {schedules} other schedules from this step, each a fork of this run, and counts how many end differently. The forks stay among this run's forks. The menu beside it turns it back to Fork from here."
+        "Forks this run at the playhead {schedules} times, each under another thread schedule, and counts how many forks end differently from this run. The forks stay among this run's forks. The menu beside it turns it back to Fork from here."
     )
 }
 
@@ -2819,7 +2819,7 @@ impl Scrubber {
         let (title, body) = match &fork.state {
             ForkState::Pending => (
                 format!("Forking at step {step} with schedule {schedule}"),
-                "The engine is running the branch; it takes about as long as the run did."
+                "Rewind is running the fork. It takes about as long as the original run did."
                     .to_string(),
             ),
             ForkState::Created(forked) => (

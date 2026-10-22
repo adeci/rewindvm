@@ -395,7 +395,7 @@ fn subject(party: Party, program: Option<&str>, name_of: &dyn Fn(u32) -> Option<
 }
 
 /// What an event did, as a short sentence without its full stop:
-/// "thread 2 of pool gets SIGSEGV at 0x108".
+/// "thread 2 of pool gets SIGSEGV at address 0x108".
 pub fn plain(
     party: Party,
     program: Option<&str>,
@@ -459,7 +459,7 @@ fn plain_from(
         EventKind::Signal { signo, addr, .. } => {
             let name = signal_name(*signo);
             if signal::FATAL.contains(signo) {
-                return format!("{who} gets {name} at {addr:#x}");
+                return format!("{who} gets {name} at address {addr:#x}");
             }
             format!("{who} gets {name}")
         }
@@ -744,7 +744,10 @@ mod tests {
             Some("pool-test"),
             &nobody,
         );
-        assert_eq!(d.here, "thread 3 of pool-test gets SIGSEGV at 0x108");
+        assert_eq!(
+            d.here,
+            "thread 3 of pool-test gets SIGSEGV at address 0x108"
+        );
         assert_eq!(d.there, "thread 2 of pool-test exits");
         assert_eq!(d.detail, None);
 

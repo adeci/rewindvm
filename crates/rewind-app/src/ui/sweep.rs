@@ -569,7 +569,8 @@ impl Scrubber {
 }
 
 /// What a cell the check did not try says.
-const UNTRIED: &str = "Not tried: this seed already ended differently unperturbed";
+const UNTRIED: &str =
+    "Not tried: with this seed and its threads left alone, the fork already ended differently";
 
 /// What a check counts: schedules under one seed, runs under several.
 fn runs_noun(seeds: u64) -> &'static str {

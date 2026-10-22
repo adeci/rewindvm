@@ -823,11 +823,11 @@ impl Scrubber {
                     RowKind::Folded {
                         count,
                         folds: Folds::Windows,
-                    } => format!("Show {count} more windows"),
+                    } => format!("Show {count} more runs on fewer steps"),
                     RowKind::Unfolded {
                         count,
                         folds: Folds::Windows,
-                    } => format!("Fold {count} windows"),
+                    } => format!("Fold {count} runs on fewer steps"),
                     RowKind::Run => String::new(),
                 };
                 items = items.child(item("menu-run-fold", label.into()).on_click(cx.listener(

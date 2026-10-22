@@ -159,7 +159,7 @@ fn stop_group(_group: u32) {}
 /// What the app says of a run this build of rewind replays another way than
 /// the build that recorded it, in place of files, source, a shell, gdb or
 /// a fork, which all need the run brought to a step.
-pub const REPLAYS_ANOTHER_WAY: &str = "This build of rewind runs this run's inputs differently from the build that recorded it, so it cannot bring the run to a step: files, source, shells, gdb and forks are off for it. Record the run again with this build to look inside it.";
+pub const REPLAYS_ANOTHER_WAY: &str = "This build of rewind replays this run differently from the build that recorded it, so it cannot rebuild the machine at a step. Files, source, shells, gdb and forks are off for this run. Record the run again with this build to look inside it.";
 
 /// Whether the engine refused because replaying the run went another way
 /// than its recording, which a later request for the same run would only
