@@ -17,6 +17,7 @@ pub mod contents;
 pub mod ending;
 mod event;
 pub mod export;
+pub mod file_diff;
 pub mod located;
 pub mod machine;
 pub mod manifest;

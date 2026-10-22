@@ -610,7 +610,7 @@ fn ending(run: &Run, key: &OutcomeKey) -> Ending {
 
 /// The step a property script reads a run's files at: the job's exit,
 /// where the job's files are as it left them, else the run's last.
-fn end_step(run: &Run) -> Result<u64> {
+pub(crate) fn end_step(run: &Run) -> Result<u64> {
     match run.trace()?.job_exit() {
         Some(exit) => Ok(exit.step),
         None => run.last_step(),

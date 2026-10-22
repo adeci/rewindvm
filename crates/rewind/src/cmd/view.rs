@@ -447,12 +447,52 @@ pub struct DiffArgs {
     /// runs' ids and where they first differ, null when identical.
     #[arg(long)]
     pub(crate) json: bool,
+    /// Compare one file as each run had it when its job exited: how it
+    /// differs, then the first lines or bytes that differ.
+    ///
+    /// Rewind brings each run back to that step to read the file, which
+    /// takes a few seconds. Only the first 1,024 KiB of each copy are
+    /// compared. Exits 0 when the file is the same in both runs and 1
+    /// when it differs.
+    #[arg(long, value_name = "PATH", conflicts_with = "outputs")]
+    pub(crate) file: Option<String>,
+    /// List the files either run's job wrote and left behind whose bytes
+    /// differ, as each run had them when its job exited.
+    ///
+    /// For a Nix build these are its outputs and the files it left in its
+    /// build directory. Rewind brings each run back to that step once to
+    /// read them all. Exits 0 when none differ and 1 when some do.
+    #[arg(long)]
+    pub(crate) outputs: bool,
+}
+
+impl DiffArgs {
+    /// Whether the command reads files inside the runs' VMs, which holds
+    /// the home in use.
+    pub(crate) fn reads_files(&self) -> bool {
+        self.file.is_some() || self.outputs
+    }
 }
 
 pub fn diff(home: &Home, args: DiffArgs) -> Result<ExitCode> {
-    let DiffArgs { left, right, json } = args;
+    let DiffArgs {
+        left,
+        right,
+        json,
+        file,
+        outputs,
+    } = args;
     let left = Run::find(home, &left)?;
     let right = Run::find(home, &right)?;
+
+    // The files the runs left behind, rather than their events.
+    let format = if json { Format::Json } else { Format::Text };
+    if let Some(path) = file {
+        return crate::diff_files::diff_file(home, &left, &right, &path, format);
+    }
+    if outputs {
+        return crate::diff_files::diff_outputs(home, &left, &right, format);
+    }
     let (lt, rt) = (left.trace()?, right.trace()?);
     if json {
         println!(
@@ -470,6 +510,15 @@ pub fn diff(home: &Home, args: DiffArgs) -> Result<ExitCode> {
         None => Ok(ExitCode::SUCCESS),
         Some(_) => Ok(ExitCode::FAILURE),
     }
+}
+
+/// How `rewind diff` prints what it found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    /// Lines for a person.
+    Text,
+    /// One JSON object, for programs.
+    Json,
 }
 
 /// rewind-app's arguments for a run's directory, the step to start at and

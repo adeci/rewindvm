@@ -1,6 +1,7 @@
 //! The `rewind` command.
 
 mod cmd;
+mod diff_files;
 mod doctor;
 mod downloads;
 mod gdb;
@@ -193,7 +194,9 @@ enum Command {
     Generate(cmd::setup::GenerateArgs),
     /// Compare two runs and show where they first differ.
     ///
-    /// Exits 0 when the runs are identical and 1 when they differ.
+    /// Exits 0 when the runs are identical and 1 when they differ. With
+    /// --file or --outputs, compares the files the runs left behind
+    /// instead of their events.
     Diff(cmd::view::DiffArgs),
 }
 
@@ -260,6 +263,8 @@ impl Command {
             | Command::Replay(_)
             | Command::Export(_)
             | Command::Import(_) => HomeHold::InUse,
+            // Reading files boots each run's VM, as `cat` does.
+            Command::Diff(args) if args.reads_files() => HomeHold::InUse,
             Command::Prune(_)
             | Command::Remove(_)
             | Command::Gc(_)
