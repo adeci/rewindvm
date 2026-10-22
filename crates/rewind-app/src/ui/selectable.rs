@@ -352,12 +352,12 @@ pub fn viewer_line(line: &str) -> Mapped {
 }
 
 /// Colors for parts of `line`, given by byte ranges of its original text,
-/// as highlights of its shown text.
+/// as highlights of its shown text, in the order of the line.
 pub fn colored(
     line: &Mapped,
     parts: impl IntoIterator<Item = (Range<usize>, u32)>,
 ) -> Vec<(Range<usize>, HighlightStyle)> {
-    parts
+    let mut highlights: Vec<(Range<usize>, HighlightStyle)> = parts
         .into_iter()
         .map(|(range, color)| {
             let shown = line.shown_offset(range.start)..line.shown_offset(range.end);
@@ -368,7 +368,13 @@ pub fn colored(
             (shown, style)
         })
         .filter(|(range, _)| !range.is_empty())
-        .collect()
+        .collect();
+
+    // GPUI lays each highlight out after the one before it, so parts
+    // given out of order, as a hex dump's pair and character for each
+    // byte, are sorted along the line.
+    highlights.sort_by_key(|(range, _)| range.start);
+    highlights
 }
 
 /// The text of a process tree row: the id, padded to its column, then
@@ -932,4 +938,34 @@ pub fn selects<E: InteractiveElement>(
                 cx.stop_propagation();
             }),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    // The highlights colored() makes of a hex dump line's spans, which
+    // hex_spans lists byte by byte, each byte's pair then its character.
+    use super::*;
+    use crate::viewer::{hex_line, hex_spans};
+
+    /// Three bytes of different classes: the highlights come out in the
+    /// order of the line, the offset, then the three pairs, then the
+    /// three characters, none overlapping the next, since GPUI lays each
+    /// highlight out after the one before it.
+    #[test]
+    fn a_hex_line_s_colors_are_in_line_order() {
+        let chunk = [0x80, b'a', 0x00];
+        let spans = hex_spans(&chunk);
+        let line = expand_tabs(&hex_line(0, &chunk));
+        let ranges: Vec<Range<usize>> = colored(&line, spans.clone())
+            .into_iter()
+            .map(|(range, _)| range)
+            .collect();
+        assert_eq!(ranges.len(), spans.len());
+        assert!(
+            ranges.windows(2).all(|w| w[0].end <= w[1].start),
+            "{ranges:?}"
+        );
+        let pairs_then_characters = [0, 1, 3, 5, 2, 4, 6].map(|i| spans[i].0.clone());
+        assert_eq!(ranges, pairs_then_characters);
+    }
 }
