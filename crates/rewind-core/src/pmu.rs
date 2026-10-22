@@ -281,42 +281,7 @@ pub fn selftest(guest: &Guest) -> Result<SelfTest> {
     let event = Vendor::detect()?
         .event()
         .context("this CPU has no retired conditional branch counter rewind knows")?;
-    let spec = Spec {
-        kernel: guest.kernel.clone(),
-        initrd: guest.initrd.clone(),
-        kernel_debug: None,
-        image: None,
-        image_hash: None,
-        mem_mib: 256,
-        cores: DEFAULT_CORES,
-        seed: 0,
-        epoch: 1,
-        quantum: DEFAULT_QUANTUM,
-        schedule: 0,
-        schedule_from: 0,
-        schedule_until: u64::MAX,
-        inherited_schedules: Vec::new(),
-        reseeds: Vec::new(),
-        cpu: rewind_vmm::CpuModel::default(),
-        clock: rewind_vmm::ClockSource::Exits,
-        preemption: rewind_vmm::Preemption::AtExits,
-        extras: rewind_vmm::Extras::Absent,
-        cmdline: BASE_CMDLINE.to_string(),
-        job: Job {
-            program: None,
-            argv: vec!["/init".into(), "--selftest".into()],
-            env: Vec::new(),
-            cwd: "/".into(),
-            uid: 0,
-            gid: 0,
-            hostname: "localhost".into(),
-            root: Root::Initramfs,
-            files: Vec::new(),
-            outputs: Vec::new(),
-            output: rewind_init::Output::Plain,
-        },
-    };
-    let config = spec.config()?;
+    let config = selftest_spec(guest).config()?;
     let mut counts = [0u64; 2];
     let mut hashes = [0u64; 2];
     for i in 0..2 {
@@ -336,6 +301,48 @@ pub fn selftest(guest: &Guest) -> Result<SelfTest> {
     })
 }
 
+/// The machine the self-test boots: the self-test's workload on the bare
+/// guest, with exit time. The guest is shown the host's CPU, since the
+/// test is of the host's branch counter, and the fixed x86-64-v3 model
+/// would refuse a host that lacks part of its baseline.
+fn selftest_spec(guest: &Guest) -> Spec {
+    Spec {
+        kernel: guest.kernel.clone(),
+        initrd: guest.initrd.clone(),
+        kernel_debug: None,
+        image: None,
+        image_hash: None,
+        mem_mib: 256,
+        cores: DEFAULT_CORES,
+        seed: 0,
+        epoch: 1,
+        quantum: DEFAULT_QUANTUM,
+        schedule: 0,
+        schedule_from: 0,
+        schedule_until: u64::MAX,
+        inherited_schedules: Vec::new(),
+        reseeds: Vec::new(),
+        cpu: rewind_vmm::CpuModel::Host,
+        clock: rewind_vmm::ClockSource::Exits,
+        preemption: rewind_vmm::Preemption::AtExits,
+        extras: rewind_vmm::Extras::Absent,
+        cmdline: BASE_CMDLINE.to_string(),
+        job: Job {
+            program: None,
+            argv: vec!["/init".into(), "--selftest".into()],
+            env: Vec::new(),
+            cwd: "/".into(),
+            uid: 0,
+            gid: 0,
+            hostname: "localhost".into(),
+            root: Root::Initramfs,
+            files: Vec::new(),
+            outputs: Vec::new(),
+            output: rewind_init::Output::Plain,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // The decision to use counter time, from the three facts it rests on.
@@ -347,6 +354,19 @@ mod tests {
         assert!(!counter_usable(true, false, true));
         assert!(counter_usable(true, true, true));
         assert!(!counter_usable(true, true, false));
+    }
+
+    #[test]
+    fn the_self_test_boots_the_host_cpu() {
+        // The self-test measures the host's branch counter, so it shows the
+        // guest the host's CPU: a host without the x86-64-v3 baseline, such
+        // as a Zen 3 without ERMS, must still be able to run it.
+        let guest = Guest {
+            kernel: PathBuf::from("bzImage"),
+            initrd: PathBuf::from("initrd"),
+            kernel_debug: None,
+        };
+        assert_eq!(selftest_spec(&guest).cpu, rewind_vmm::CpuModel::Host);
     }
 
     #[test]
