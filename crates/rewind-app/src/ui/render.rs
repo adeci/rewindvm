@@ -208,6 +208,7 @@ impl Scrubber {
         let wide = splits.right * layout::LOG_FLEX / layout::SIDE_FLEX;
         let chosen = match self.right_tab {
             RightTab::File => self.render_viewer(cx),
+            RightTab::FileDiff => self.render_file_diff(cx),
             RightTab::Source => self.render_source(cx),
             RightTab::Threads => self.render_lanes(cx),
             RightTab::Runs => self.runs.family.as_ref().map(|f| self.render_runs(f, cx)),
@@ -1429,14 +1430,26 @@ impl Scrubber {
                         };
 
                         // A click on the step goes there; a click anywhere
-                        // else opens the file in the viewer. A drag or a
+                        // else opens the file in the viewer, or, while two
+                        // runs are open, compares it in both. A drag or a
                         // double click selects its path instead.
                         let (path, pid) = (file.path.clone(), file.pid);
+                        let comparing = this.session().other.is_some();
                         let open = cx.listener(move |this, e: &ClickEvent, _, cx| {
-                            if this.plain_click(e) {
-                                this.open_file(path.clone(), pid, cx)
+                            if !this.plain_click(e) {
+                                return;
+                            }
+                            if comparing {
+                                this.open_file_diff(path.clone(), cx);
+                            } else {
+                                this.open_file(path.clone(), pid, cx);
                             }
                         });
+                        let label = if comparing {
+                            format!("Compare {} in both runs", file.path)
+                        } else {
+                            format!("Show {} at this step", file.path)
+                        };
                         let seek = seek_on_click(file.step, cx);
                         let text = mapped(&file.path).shown;
                         let part = selected
@@ -1445,7 +1458,7 @@ impl Scrubber {
                         div()
                             .id(i)
                             .role(Role::Button)
-                            .aria_label(format!("Show {} at this step", file.path))
+                            .aria_label(label)
                             .cursor_pointer()
                             .hover(|s| s.bg(rgb(theme::ROW_HOVER)))
                             .on_click(open)

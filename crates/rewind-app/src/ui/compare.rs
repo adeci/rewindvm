@@ -156,15 +156,24 @@ impl Scrubber {
             }
         }
 
+        // The way to the files that differ at the runs' ends, and to the
+        // other run.
+        let files = link("compare-files", "Files that differ")
+            .on_click(cx.listener(|this, _, _, cx| this.open_outputs(cx)));
         let other_run = link("compare-other-run", "Show in the other run (x)")
             .on_click(cx.listener(|this, _, _, cx| this.show_other_run(None, cx)));
+        let links = div()
+            .flex()
+            .gap(px(size::LIST_COLUMN_GAP))
+            .child(files)
+            .child(other_run);
         div()
             .flex()
             .flex_col()
             .min_w_0()
             .min_h_0()
             .bg(rgb(theme::PANEL))
-            .child(panel_title("Compare", Some(other_run.into_any_element())))
+            .child(panel_title("Compare", Some(links.into_any_element())))
             .child(selects(
                 div()
                     .id("compare")

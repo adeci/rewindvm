@@ -21,7 +21,7 @@ use crate::engine::{
     Cancel, EngineError, EngineResult, FileAtStep, REPLAYS_ANOTHER_WAY, goes_another_way,
 };
 use crate::request::Request;
-use crate::run::{Origin, Replays, Session};
+use crate::run::{Origin, Replays, Run, Session};
 use crate::selection::{Mapped, Surface, part_of_line};
 use crate::sideways::{Sideways, line_width, text_column};
 use crate::syntax::{Highlighter, Language};
@@ -126,11 +126,17 @@ impl Drop for FileViewer {
 }
 
 /// Why a session's files cannot be read, if they cannot.
-fn unavailable(session: &Session) -> Option<&'static str> {
+pub(super) fn unavailable(session: &Session) -> Option<&'static str> {
     if session.replays == Replays::AnotherWay {
         return Some(REPLAYS_ANOTHER_WAY);
     }
-    match session.run.origin {
+    unavailable_run(&session.run)
+}
+
+/// Why a run's files cannot be read, by where it was opened from, if they
+/// cannot.
+pub(super) fn unavailable_run(run: &Run) -> Option<&'static str> {
+    match run.origin {
         Origin::Example => Some(EXAMPLE_REASON),
         Origin::Export(ref export) if export.replayable => Some(EXPORT_IMPORTING_REASON),
         Origin::Export(_) => Some(EXPORT_TRACE_REASON),
@@ -741,7 +747,7 @@ fn describe_view(view: &View) -> String {
 }
 
 /// An engine error in the viewer's words.
-fn explain(error: &EngineError) -> String {
+pub(super) fn explain(error: &EngineError) -> String {
     match error {
         EngineError::Missing { .. } => format!(
             "{error} Reading files at a step needs the rewind command, which replays the run to that step."

@@ -382,6 +382,8 @@ pub struct Scrubber {
     /// The source panel, while it is open; it shares the file viewer's
     /// place.
     pub(super) source: Option<SourcePanel>,
+    /// The two-run file view, while it is open.
+    pub(super) file_diff: Option<crate::ui::file_diff::FileDiffPanel>,
     /// The Threads tab, while it is open.
     pub(super) lanes: Option<crate::ui::lanes::LanesPanel>,
     /// The latest check from a step, running or done.
@@ -421,6 +423,7 @@ impl Scrubber {
         // dropping the viewer and the source panel stops them.
         let on_quit = cx.on_app_quit(|this: &mut Scrubber, _| {
             this.viewer = None;
+            this.file_diff = None;
             this.source = None;
             this.lanes = None;
             this.sweep = None;
@@ -489,6 +492,7 @@ impl Scrubber {
             terminal: None,
             exporting: None,
             viewer: None,
+            file_diff: None,
             source: None,
             lanes: None,
             sweep: None,
@@ -594,11 +598,12 @@ impl Scrubber {
         self.forks.clear();
         self.tour = None;
         self.viewer = None;
+        self.file_diff = None;
         self.source = None;
         let keeps = match self.right_tab {
             RightTab::Runs | RightTab::Bookmarks | RightTab::Threads => true,
             RightTab::Compare => session.other.is_some(),
-            RightTab::AtStep | RightTab::File | RightTab::Source => false,
+            RightTab::AtStep | RightTab::File | RightTab::FileDiff | RightTab::Source => false,
         };
         // A check from a step stays with the run it forked.
         if self
@@ -1123,6 +1128,7 @@ impl Scrubber {
         // catches up when it is chosen.
         match self.right_tab {
             RightTab::File => self.playhead_moved(cx),
+            RightTab::FileDiff => self.file_diff_playhead_moved(cx),
             RightTab::Source => self.source_playhead_moved(cx),
             RightTab::AtStep
             | RightTab::Compare

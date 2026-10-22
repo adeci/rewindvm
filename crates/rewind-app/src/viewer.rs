@@ -14,7 +14,7 @@ const SNIFF: usize = 8 << 10;
 
 /// Bytes per line of a hex dump, and per group within a line; eight
 /// bytes fit the viewer next to the other panels.
-const HEX_WIDTH: usize = 8;
+pub const HEX_WIDTH: usize = 8;
 const HEX_GROUP: usize = 4;
 
 /// The first byte of a file that `ascii` shows as itself, and the last.

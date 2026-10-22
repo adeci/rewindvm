@@ -35,6 +35,8 @@ pub enum RightTab {
     Runs,
     Bookmarks,
     File,
+    /// One file in both runs, while a run is compared.
+    FileDiff,
     Source,
     /// A lane per thread over a window of steps.
     Threads,
@@ -51,6 +53,7 @@ impl Scrubber {
         }
         match tab {
             RightTab::File => self.playhead_moved(cx),
+            RightTab::FileDiff => self.file_diff_playhead_moved(cx),
             RightTab::Source => self.source_playhead_moved(cx),
             RightTab::AtStep
             | RightTab::Compare
@@ -66,6 +69,7 @@ impl Scrubber {
     pub(super) fn close_tab(&mut self, tab: RightTab, cx: &mut Context<Self>) {
         match tab {
             RightTab::File => self.close_viewer(cx),
+            RightTab::FileDiff => self.close_file_diff(cx),
             RightTab::Source => self.close_source(cx),
             RightTab::Threads => self.close_lanes(cx),
             RightTab::Runs => {
@@ -102,6 +106,9 @@ impl Scrubber {
         if self.viewer.is_some() {
             tabs.push(RightTab::File);
         }
+        if self.file_diff.is_some() {
+            tabs.push(RightTab::FileDiff);
+        }
         if self.source.is_some() {
             tabs.push(RightTab::Source);
         }
@@ -127,6 +134,11 @@ impl Scrubber {
                     .unwrap_or_default();
                 format!("File \u{b7} {}", clip(&name, MAX_FILE_CHARS))
             }
+            RightTab::FileDiff => self
+                .file_diff
+                .as_ref()
+                .map(|panel| panel.label())
+                .unwrap_or_default(),
             RightTab::Source => "Source".to_string(),
             RightTab::Threads => "Threads".to_string(),
             RightTab::Bookmarks => format!("Bookmarks \u{b7} {}", self.bookmarks.len()),

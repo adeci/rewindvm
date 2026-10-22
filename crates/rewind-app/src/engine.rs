@@ -279,6 +279,18 @@ pub trait Engine: Send + Sync {
         cancel: &Cancel,
     ) -> EngineResult<FileAtStep>;
 
+    /// The files the jobs of runs `this` and `other` wrote and left
+    /// behind whose bytes differ, as each run had them when its job
+    /// exited, and how many are the same. The engine brings each run back
+    /// to that step once to read them all, which takes seconds. `cancel`
+    /// stops it early.
+    fn differing_outputs(
+        &self,
+        this: &Path,
+        other: &Path,
+        cancel: &Cancel,
+    ) -> EngineResult<Outputs>;
+
     /// Where in the program's own code `thread` was at `step` of `run`:
     /// the thread's frames, the innermost of them in the program's own
     /// code, and its source. The engine forks the run at the step and
@@ -356,6 +368,26 @@ pub enum FileAtStep {
     },
     /// The file did not exist at the step.
     Missing,
+}
+
+/// What `rewind diff --outputs --json` prints: the files two runs' jobs
+/// left behind whose bytes differ, and how many are the same.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct Outputs {
+    pub same: usize,
+    pub differ: Vec<DifferingOutput>,
+}
+
+/// One file the jobs left behind whose bytes differ: this run's is the
+/// left run's, the other's the right run's.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct DifferingOutput {
+    pub path: String,
+    /// The file's size in each run, or None where it was not there.
+    pub left_size: Option<usize>,
+    pub right_size: Option<usize>,
+    pub differing_bytes: usize,
+    pub first_byte: Option<usize>,
 }
 
 /// The engine as the `rewind` command line.
@@ -710,6 +742,29 @@ impl Engine for CliEngine {
                     .unwrap_or_else(|| status.to_string()),
             )),
         }
+    }
+
+    fn differing_outputs(
+        &self,
+        this: &Path,
+        other: &Path,
+        cancel: &Cancel,
+    ) -> EngineResult<Outputs> {
+        // rewind diff <this> <other> --outputs --json, which exits 1 when
+        // some differ: the JSON is what says it read them.
+        let args: Vec<OsString> = vec![
+            "diff".into(),
+            this.into(),
+            other.into(),
+            "--outputs".into(),
+            "--json".into(),
+        ];
+        let out = self.streamed(&args, cancel, &mut |_| {})?;
+        out.stdout
+            .lines()
+            .rev()
+            .find_map(|line| serde_json::from_str(line).ok())
+            .ok_or_else(|| out.refusal())
     }
 
     fn locate(
@@ -1531,6 +1586,38 @@ mod tests {
             panic!("{err:?}");
         };
         assert_eq!(message, "rewind: run abc has not finished");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn differing_outputs_are_read_from_the_engine_s_json() {
+        // The stand-in prints what `rewind diff --outputs --json` prints
+        // when a file differs, and exits 1 as it does then; the arguments
+        // name both runs. Then one that refuses, with its reason.
+        let dir = temp_dir("outputs");
+        let json = r#"{"differ":[{"differing_bytes":16,"first_byte":216,"left_size":407,"path":"/out/neatvnc.pc","right_size":407}],"left":"a","right":"b","same":4}\n"#;
+        let engine = fake_engine(&dir, json, "", 1);
+        let (this, other) = (dir.join("a"), dir.join("b"));
+        let outputs =
+            retrying(|| engine.differing_outputs(&this, &other, &Cancel::default())).unwrap();
+        assert_eq!(outputs.same, 4);
+        assert_eq!(
+            outputs.differ,
+            vec![DifferingOutput {
+                path: "/out/neatvnc.pc".into(),
+                left_size: Some(407),
+                right_size: Some(407),
+                differing_bytes: 16,
+                first_byte: Some(216),
+            }]
+        );
+        let args = std::fs::read_to_string(dir.join("args")).unwrap();
+        assert!(args.starts_with("diff ") && args.contains("--outputs --json"));
+
+        let engine = fake_engine(&dir, "", "rewind: no run a\n", 1);
+        let err =
+            retrying(|| engine.differing_outputs(&this, &other, &Cancel::default())).unwrap_err();
+        assert!(matches!(err, EngineError::Failed { .. }), "{err:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

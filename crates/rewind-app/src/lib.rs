@@ -16,6 +16,7 @@ pub mod bookmarks;
 pub mod clock;
 pub mod compare;
 pub mod describe;
+pub mod diff_view;
 pub mod engine;
 pub mod examples;
 pub mod family;

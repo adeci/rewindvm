@@ -7,6 +7,7 @@ mod assertions;
 mod bookmarks;
 mod chrome;
 mod compare;
+mod file_diff;
 mod icons;
 mod lanes;
 mod licensing;
