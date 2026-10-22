@@ -9,6 +9,7 @@ use rewind_init::Job;
 use serde::{Deserialize, Serialize};
 
 use crate::machine::{ClockSource, CpuModel, Extras, Preemption};
+use crate::schedule::StallMax;
 use crate::stop::Stop;
 
 /// The manifest inside a run directory.
@@ -40,8 +41,16 @@ pub fn executing(dir: &Path) -> bool {
 }
 
 /// The version of the manifest format. Every manifest before rewind 1.0
-/// said 1, whatever its fields, so 1.0's was 2; 3 adds a fork's reseeds.
-pub const MANIFEST_VERSION: u32 = 3;
+/// said 1, whatever its fields, so 1.0's was 2; 3 adds a fork's reseeds,
+/// and 4 a schedule's longest stall.
+pub const MANIFEST_VERSION: u32 = 4;
+
+/// The version a manifest names when its spec keeps every schedule's
+/// longest stall at the default: such a manifest is format 3 byte for
+/// byte, so runs made without `--stall-max` keep their manifests, and a
+/// build that reads only format 3 refuses a run it would replay with
+/// stalls too short.
+pub const MANIFEST_VERSION_BEFORE_STALL_MAX: u32 = 3;
 
 /// The version every manifest before rewind 1.0 named.
 const BEFORE_1_0: u32 = 1;
@@ -51,7 +60,9 @@ const BEFORE_1_0: u32 = 1;
 pub enum ManifestError {
     #[error("a manifest from before rewind 1.0, which this build does not read")]
     BeforeFormats,
-    #[error("a manifest of format {0}; this build of rewind reads format {MANIFEST_VERSION}")]
+    #[error(
+        "a manifest of format {0}; this build of rewind reads formats {MANIFEST_VERSION_BEFORE_STALL_MAX} and {MANIFEST_VERSION}"
+    )]
     Version(u32),
     #[error("{0}")]
     Json(#[from] serde_json::Error),
@@ -67,7 +78,9 @@ impl Manifest {
         }
         let Version { version } = serde_json::from_slice(bytes)?;
         match version {
-            MANIFEST_VERSION => Ok(serde_json::from_slice(bytes)?),
+            MANIFEST_VERSION_BEFORE_STALL_MAX | MANIFEST_VERSION => {
+                Ok(serde_json::from_slice(bytes)?)
+            }
             BEFORE_1_0 => Err(ManifestError::BeforeFormats),
             other => Err(ManifestError::Version(other)),
         }
@@ -184,6 +197,15 @@ pub struct Spec {
     /// The steps the schedule perturbation applies to, `from..until`.
     pub schedule_from: u64,
     pub schedule_until: u64,
+    /// The longest stall the schedule asks for, as `--stall-max` sets it,
+    /// in nanoseconds. Left out at the default, so a run made without the
+    /// flag keeps the id and the manifest it always had.
+    #[serde(
+        default,
+        skip_serializing_if = "StallMax::is_default",
+        rename = "stall_max_ns"
+    )]
+    pub stall_max: StallMax,
     /// For a fork of a fork, the perturbations of the runs it came from,
     /// each over its window and all ending by `schedule_from`, so the fork
     /// is its parent up to its own step.
@@ -205,12 +227,19 @@ pub struct Spec {
     pub job: Job,
 }
 
-/// One schedule seed over the steps `from..until`.
+/// One schedule seed over the steps `from..until`, and the longest stall
+/// it asks for there, left out at the default as [`Spec::stall_max`] is.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleSegment {
     pub seed: u64,
     pub from: u64,
     pub until: u64,
+    #[serde(
+        default,
+        skip_serializing_if = "StallMax::is_default",
+        rename = "stall_max_ns"
+    )]
+    pub stall_max: StallMax,
 }
 
 /// What kind of workload a run is, for display.
@@ -269,12 +298,15 @@ pub struct SharedKeyframes {
 
 impl Spec {
     /// The spec of a fork of this run at `step` under schedule `seed`:
-    /// this run's perturbations up to the step, the new one from it.
+    /// this run's perturbations up to the step, each with its own longest
+    /// stall, and the new one from it with the default, as a run's own
+    /// schedule has unless [`Spec::with_stall_max`] gives it another.
     pub fn fork(&self, step: u64, seed: u64) -> Spec {
         let own = ScheduleSegment {
             seed: self.schedule,
             from: self.schedule_from,
             until: self.schedule_until,
+            stall_max: self.stall_max,
         };
 
         // Each earlier perturbation is cut off at the fork step, and one
@@ -300,10 +332,38 @@ impl Spec {
             schedule: seed,
             schedule_from: step,
             schedule_until: u64::MAX,
+            stall_max: StallMax::default(),
             inherited_schedules: inherited,
             reseeds,
             ..self.clone()
         }
+    }
+
+    /// This spec with its own schedule's longest stall `max`. Schedule 0
+    /// stalls nothing, so an unperturbed spec keeps the default, and its
+    /// id, whatever `max` is.
+    pub fn with_stall_max(self, max: StallMax) -> Spec {
+        let stall_max = if self.schedule == 0 {
+            StallMax::default()
+        } else {
+            max
+        };
+        Spec { stall_max, ..self }
+    }
+
+    /// The manifest format a run of this spec is written in: the one from
+    /// before longest stalls when every schedule in it keeps the default,
+    /// so the manifest is the one such a run always had.
+    pub fn manifest_version(&self) -> u32 {
+        let defaults = self.stall_max.is_default()
+            && self
+                .inherited_schedules
+                .iter()
+                .all(|s| s.stall_max.is_default());
+        if defaults {
+            return MANIFEST_VERSION_BEFORE_STALL_MAX;
+        }
+        MANIFEST_VERSION
     }
 
     /// This spec with the guest's RNG reseeded with `seed` at `step`, as
@@ -324,12 +384,14 @@ impl Spec {
         crate::schedule::Schedule {
             seed: self.schedule,
             window: self.schedule_from..self.schedule_until,
+            stall_max: self.stall_max,
             earlier: self
                 .inherited_schedules
                 .iter()
                 .map(|s| crate::schedule::Segment {
                     seed: s.seed,
                     window: s.from..s.until,
+                    stall_max: s.stall_max,
                 })
                 .collect(),
             reseeds: self.reseeds.clone(),
@@ -366,6 +428,7 @@ impl Spec {
             schedule: 0,
             schedule_from: 0,
             schedule_until: u64::MAX,
+            stall_max: StallMax::default(),
             inherited_schedules: Vec::new(),
             reseeds: Vec::new(),
             image: None,

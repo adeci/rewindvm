@@ -443,6 +443,50 @@ with or open its run:
 
 ![The app after Check from here at step {{deciding}} of the passing run: a card counting how the 16 schedules ended, a cell per schedule, the first picked with its run and Compare and Open](../site/img/app-check.png)
 
+## Hold a task off the CPU for longer
+
+A stall holds the running task off the CPU for at most 1.28 ms. A race whose
+window includes a sleep, a timer or slow I/O in another task needs a longer
+hold. This program gives eight threads 20 ms to start, built static:
+
+```console run hide
+$ printf '#include <pthread.h>\n#include <stdio.h>\n#include <time.h>\n#include <unistd.h>\nvolatile int ready[8];\nvoid *work(void *i) { write(1, "started\\n", 8); ready[(long)i] = 1; return 0; }\nint main(void) {\n  pthread_t t[8];\n  for (long i = 0; i < 8; i++) pthread_create(&t[i], 0, work, (void *)i);\n  nanosleep(&(struct timespec){0, 20000000}, 0); /* 20 ms to start */\n  for (int i = 0; i < 8; i++) if (!ready[i]) { printf("worker %%d not ready\\n", i); return 1; }\n  puts("every worker ready");\n}\n' > ready.c
+$ mkdir -p ready/bin
+$ nix shell nixpkgs#pkgsStatic.stdenv.cc -c x86_64-unknown-linux-musl-cc -static -o ready/bin/ready ready.c
+```
+
+No schedule stalls a thread for 20 ms by default:
+
+```console run name=short_stalls show=-1:
+$ rewind check --root ready --schedules 64 --all --no-narrow -- /bin/ready
+```
+
+<!-- assert: grep -q '^same result under all 65 schedules$' {{out:short_stalls}} -->
+
+`--stall-max` on `run`, `nix`, `check` and `fork` raises the longest stall,
+up to 1 s:
+
+```console run name=long_stalls
+$ rewind check --root ready --stall-max 50ms -- /bin/ready | grep -E 'ends differently|perturbing only|decides it|passing:|failing:'
+```
+
+<!-- assert: grep -qE 'decides it: .*[0-9.]+ ms stall there makes the run fail$' {{out:long_stalls}} && grep -q 'stalls up to 50 ms$' {{out:long_stalls}} -->
+
+<!-- set mylib_default: rewind check --epoch {{epoch}} --schedules 32 --all --no-narrow {{flake}} 2>/dev/null | tail -1 | awk '{print $1}' -->
+<!-- set mylib_long: rewind check --epoch {{epoch}} --schedules 32 --all --no-narrow --stall-max 100ms {{flake}} 2>/dev/null | tail -1 | awk '{print $1}' -->
+<!-- set mylib_default_secs: TIMEFORMAT=%R; { time rewind check --epoch {{epoch}} --schedules 32 --all --no-narrow {{flake}} > /dev/null 2>&1; } 2>&1 | xargs printf '%.1f' -->
+<!-- set mylib_long_secs: TIMEFORMAT=%R; { time rewind check --epoch {{epoch}} --schedules 32 --all --no-narrow --stall-max 100ms {{flake}} > /dev/null 2>&1; } 2>&1 | xargs printf '%.1f' -->
+
+The same steps stall, one exit in 128, but each stall picks one of the
+doublings of 10 µs up to the maximum, 14 of them for 50 ms. Fewer stalls are
+short, so a race that needs only a short hold turns up less often: 32
+schedules of mylib crash {{mylib_default}} times by default and {{mylib_long}} times with `--stall-max
+100ms`, in {{mylib_default_secs}} s and {{mylib_long_secs}} s. A stall is virtual time, so the guest's clock
+moves further, and a program's own timeouts see the extra time. The maximum is
+part of each run's spec, so `rewind show`, a replay and a fork of the run keep
+the maximum, and a run made without the flag keeps its id. A fork's own
+schedule takes the default unless it is given `--stall-max` too.
+
 ## Try other seeds from a step
 
 A fork keeps its parent's randomness unless you reseed it. `rewind fork

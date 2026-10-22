@@ -17,7 +17,8 @@ pub fn command(m: &Manifest) -> Result<Vec<String>, Unset> {
     let spec = &m.spec;
     let mut args: Vec<String> = Vec::new();
 
-    // A fork is its parent's run up to its step, then its own schedule.
+    // A fork is its parent's run up to its step, then its own schedule,
+    // with its own longest stall; the ones it inherits are the parent's.
     if let Some(parent) = &m.parent {
         let mut args = vec![
             "fork".to_string(),
@@ -26,6 +27,9 @@ pub fn command(m: &Manifest) -> Result<Vec<String>, Unset> {
             "--schedule".to_string(),
             spec.schedule.to_string(),
         ];
+        if !spec.stall_max.is_default() {
+            args.extend(["--stall-max".to_string(), spec.stall_max.to_string()]);
+        }
         if let Some(seconds) = timed_out_after(m) {
             args.extend(["--timeout".to_string(), seconds.to_string()]);
         }
@@ -95,6 +99,9 @@ pub fn command(m: &Manifest) -> Result<Vec<String>, Unset> {
     }
     if spec.schedule_until != u64::MAX {
         flag(&mut args, "schedule-until", spec.schedule_until.to_string());
+    }
+    if !spec.stall_max.is_default() {
+        flag(&mut args, "stall-max", spec.stall_max.to_string());
     }
     if spec.cores != DEFAULT_CORES {
         flag(&mut args, "cores", spec.cores.to_string());
@@ -171,6 +178,7 @@ pub(crate) mod tests {
     use rewind_core::Spec;
     use rewind_core::run::{RunOutcome, ScheduleSegment};
     use rewind_init::{Job, Root};
+    use rewind_trace::schedule::StallMax;
 
     pub(crate) fn spec(job: Job) -> Spec {
         Spec {
@@ -187,6 +195,7 @@ pub(crate) mod tests {
             schedule: 0,
             schedule_from: 0,
             schedule_until: u64::MAX,
+            stall_max: StallMax::default(),
             inherited_schedules: Vec::new(),
             reseeds: Vec::new(),
             cpu: rewind_vmm::CpuModel::V3,
@@ -240,8 +249,8 @@ pub(crate) mod tests {
     fn a_command_in_a_root_spells_out_every_input() {
         // Every machine option away from its default, an environment
         // variable after the default PATH, a working directory, a
-        // terminal, extra kernel arguments, and a run that timed out after
-        // 2.5 s.
+        // terminal, a longest stall, extra kernel arguments, and a run
+        // that timed out after 2.5 s.
         let mut s = spec(job(
             &["make", "check"],
             &[
@@ -255,6 +264,7 @@ pub(crate) mod tests {
         s.schedule = 4;
         s.schedule_from = 100;
         s.schedule_until = 200;
+        s.stall_max = "50ms".parse().unwrap();
         s.cores = 4;
         s.mem_mib = 2048;
         s.cpu = rewind_vmm::CpuModel::Host;
@@ -281,8 +291,8 @@ pub(crate) mod tests {
         });
         let mut want = words(
             "run --root mylib.tar --cwd /src --env CC=gcc_-O1 --tty --epoch 1791072000 --seed 3 \
-             --schedule 4 --schedule-from 100 --schedule-until 200 --cores 4 --mem 2048 \
-             --cpu host --clock branches --kernel-args norandmaps --timeout 3 --name",
+             --schedule 4 --schedule-from 100 --schedule-until 200 --stall-max 50ms --cores 4 \
+             --mem 2048 --cpu host --clock branches --kernel-args norandmaps --timeout 3 --name",
         );
         want[6] = "CC=gcc -O1".into();
         want.extend([
@@ -336,7 +346,8 @@ pub(crate) mod tests {
 
     #[test]
     fn a_fork_is_its_parent_at_its_step_under_its_schedule() {
-        // A fork of a fork: its own step and seed, whatever it inherited.
+        // A fork of a fork: its own step, seed and longest stall, whatever
+        // it inherited.
         let mut s = spec(job(&["sh"], &[], "/"));
         s.schedule = 5;
         s.schedule_from = 400;
@@ -344,6 +355,7 @@ pub(crate) mod tests {
             seed: 3,
             from: 300,
             until: 400,
+            stall_max: "100ms".parse().unwrap(),
         }];
         let mut m = manifest("x (fork)", Source::Image { root: "/r".into() }, s);
         m.parent = Some(rewind_core::run::Parent {
@@ -353,6 +365,14 @@ pub(crate) mod tests {
         assert_eq!(
             command(&m).unwrap(),
             words("fork fedcba9876543210 400 --schedule 5")
+        );
+
+        // A longest stall of its own is spelled out; the inherited one is
+        // the parent's.
+        m.spec.stall_max = "50ms".parse().unwrap();
+        assert_eq!(
+            command(&m).unwrap(),
+            words("fork fedcba9876543210 400 --schedule 5 --stall-max 50ms")
         );
     }
 

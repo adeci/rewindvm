@@ -1,0 +1,71 @@
+{
+  "version": 4,
+  "id": "a049b37a9caa0fd4",
+  "name": "sample",
+  "created": 1792688419,
+  "source": {
+    "mode": "image",
+    "root": "/nix/store/md5ikacq7vzcr3xxx58i2miy4iz0dipj-busybox-static-x86_64-unknown-linux-musl-1.36.1"
+  },
+  "spec": {
+    "kernel": "/nix/store/62nkvdrsymhhmkaxr786kakj501ybgqb-rewind-guest-kernel-7.2.8/bzImage",
+    "initrd": "/nix/store/k3j66ygkn1vqjg6wqafhnmwg78ynbg6h-rewind-initrd/initrd",
+    "kernel_debug": "/nix/store/qnpsrcgyq9n8q1hlhizbh9wa52pipj05-rewind-guest-kernel-7.2.8-debug",
+    "image": "/tmp/claude-1000/-home-fmzakari-code-github-com-fzakaria-fzakaria-com/0c598647-cfe7-4d06-963b-cbeeebcd2959/scratchpad/stall-home/images/2/e7b1b3934e738f6863a8c0b2be7cc9a4.erofs",
+    "image_hash": "e7b1b3934e738f6863a8c0b2be7cc9a4b06c46980113d9fba48ec0b874b22c7c",
+    "mem_mib": 1024,
+    "cores": 1,
+    "seed": 0,
+    "epoch": 1792627200,
+    "quantum": 5000,
+    "schedule": 1,
+    "schedule_from": 0,
+    "schedule_until": 18446744073709551615,
+    "stall_max_ns": 50000000,
+    "inherited_schedules": [],
+    "reseeds": [],
+    "cpu": "v3",
+    "clock": {
+      "branches": "amd_retired_conditional_branches"
+    },
+    "preemption": "at_exits",
+    "extras": "reserved",
+    "cmdline": "nolapic_timer lpj=1000000 panic=-1 rdinit=/init loglevel=7 mitigations=off",
+    "job": {
+      "program": null,
+      "argv": [
+        "sh",
+        "-c",
+        "for i in 1 2 3; do echo tick $i; done"
+      ],
+      "env": [
+        [
+          "PATH",
+          "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        ]
+      ],
+      "cwd": "/",
+      "uid": 0,
+      "gid": 0,
+      "hostname": "localhost",
+      "root": "image",
+      "files": [],
+      "outputs": [],
+      "output": "plain"
+    }
+  },
+  "parent": null,
+  "shared_keyframes": null,
+  "outcome": {
+    "stop": {
+      "how": "powered_off"
+    },
+    "step": 321,
+    "virtual_ns": 1626851,
+    "status": 0,
+    "wall_ms": 792
+  },
+  "trace_hash": "84e902f09694886fa2d3618005f3c51992d6d9051e748ddc26fde87a48983ebc",
+  "first_difference": null,
+  "recorded_by": "0.8.1"
+}

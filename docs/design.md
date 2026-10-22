@@ -608,7 +608,8 @@ run repeats as exactly as any other.
   returns to user space, for 10 microseconds to 1.28 milliseconds, each
   doubling as likely as the next. A busy machine deschedules a process for
   stretches like these, and many races need one task held up for a while
-  rather than switched away from for an instant.
+  rather than switched away from for an instant. `--stall-max` allows
+  longer stalls (see [Longer stalls](#longer-stalls)).
 - **Timer slack.** A timer armed at a perturbed step fires up to 50
   microseconds late, which Linux's default timer slack for user tasks allows
   on real hardware. Sleepers wake in a different order.
@@ -731,6 +732,67 @@ schedule is a fork of the run at `--schedule-from`, made with the same
 perturbation of its own before that step stays. Counting and narrowing are
 the same as for a job. `--no-narrow` stops at the count, which is what the
 app's Check from here asks for.
+
+### Longer stalls
+
+Some races need a task held off the CPU for longer than 1.28 milliseconds,
+because the window they need includes a sleep, a timer or slow I/O in
+another task. Go's http2 `TestTransportDisableKeepAlives_Concurrency` hangs
+only when one request keeps its reservation of a connection until a
+handler's 25 ms sleep has passed, and under the default stalls it did not
+hang in 260 runs. `--stall-max DURATION` on `run`, `nix`, `check` and `fork`, such as
+`--stall-max 50ms`, raises the longest stall. It takes s, ms, us and ns, and
+values from the default up to 1 s.
+
+The steps that stall stay the same: one exit in 128. A stall picks from
+the fewest doublings of 10 microseconds that reach the maximum, each
+doubling as likely as the next, and the longest is cut to the maximum. The
+default's 8 doublings become 14 for 50 ms and 15 for 100 ms. The longer the
+maximum, the fewer short stalls:
+
+| Longest stall | Doublings | Mean stall | 25 ms or longer | At the maximum   |
+| ------------- | --------- | ---------- | --------------- | ---------------- |
+| 1.28 ms       | 8         | 0.32 ms    | never           | one exit in 1024 |
+| 50 ms         | 14        | 9.4 ms     | one exit in 896 | one exit in 1792 |
+| 100 ms        | 15        | 17.6 ms    | one exit in 640 | one exit in 1920 |
+| 1 s           | 18        | 128 ms     | one exit in 384 | one exit in 2304 |
+
+A stall is virtual time, so a longer maximum moves the guest's clock on
+further and costs little wall time, but a program's own timeouts see the
+extra time. At 100 ms a run spends about 137 microseconds stalled per exit,
+against 2.5 at the default. The cap of 1 s keeps a stall short of what
+programs take for a hang, so their watchdogs do not fire first. The cap is
+also well inside the 4.29 s that the shared page's 32-bit count of
+nanoseconds holds, which is how the monitor hands the guest a stall's
+length.
+
+The maximum is part of the schedule: the spec records it as `stall_max_ns`
+for the run's own window and for each inherited one, so a replay and a fork
+stall the same way. The field is left out at the default, so a run made
+without the flag has the spec, the id and the manifest it always had, and
+its manifest names format 3. A manifest with the field names format 4, which
+an older build refuses rather than replaying it with shorter stalls. A
+fork's own window takes the default unless `fork` or `check --run` is given
+`--stall-max`, as its seed takes its own value, while the windows it
+inherits keep their maxima. One seed under two maxima stalls at the same
+steps for other lengths, so the two runs are taken to part where the window
+starts. Schedule 0 stalls nothing, and `run` and `nix` refuse
+`--stall-max` without `--schedule`.
+
+On a 128-core AMD EPYC 7763 host with counter time, `check
+--schedules 64 --seeds 4 --all --no-narrow` on the test above with `-race`, as filed,
+had 0 of 260 runs hang with the default, 7 with `--stall-max 50ms` and 19
+with `--stall-max 100ms`. With the fix applied, 0 of 260 hung under each.
+net's `TestSendfilePipe`, whose failure needs one goroutine's 50 ms sleep to
+end before another notices a 1 microsecond deadline, did not fail in
+1028 runs under any maximum from the default to 1 s.
+
+The cost is in what a search finds rather than in wall time. A longer
+maximum makes short stalls rarer, so a race that needs only a short hold
+turns up less often. On the same host, `check --schedules 32 --all
+--no-narrow` of mylib took a median of 5.4 s over three searches with the
+default and 5.3 s with `--stall-max 100ms`, and found the crash in 6 of 32
+schedules against 3.
 
 ### Properties, seeds and the SDK
 

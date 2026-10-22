@@ -590,6 +590,48 @@ with or open its run:
 
 ![The app after Check from here at step 5080 of the passing run: a card counting how the 16 schedules ended, a cell per schedule, the first picked with its run and Compare and Open](../site/img/app-check.png)
 
+## Hold a task off the CPU for longer
+
+A stall holds the running task off the CPU for at most 1.28 ms. A race whose
+window includes a sleep, a timer or slow I/O in another task needs a longer
+hold. This program gives eight threads 20 ms to start, built static:
+
+```console
+$ printf '#include <pthread.h>\n#include <stdio.h>\n#include <time.h>\n#include <unistd.h>\nvolatile int ready[8];\nvoid *work(void *i) { write(1, "started\\n", 8); ready[(long)i] = 1; return 0; }\nint main(void) {\n  pthread_t t[8];\n  for (long i = 0; i < 8; i++) pthread_create(&t[i], 0, work, (void *)i);\n  nanosleep(&(struct timespec){0, 20000000}, 0); /* 20 ms to start */\n  for (int i = 0; i < 8; i++) if (!ready[i]) { printf("worker %%d not ready\\n", i); return 1; }\n  puts("every worker ready");\n}\n' > ready.c
+$ mkdir -p ready/bin
+$ nix shell nixpkgs#pkgsStatic.stdenv.cc -c x86_64-unknown-linux-musl-cc -static -o ready/bin/ready ready.c
+```
+
+No schedule stalls a thread for 20 ms by default:
+
+```console
+$ rewind check --root ready --schedules 64 --all --no-narrow -- /bin/ready
+...
+same result under all 65 schedules
+```
+
+`--stall-max` on `run`, `nix`, `check` and `fork` raises the longest stall,
+up to 1 s:
+
+```console
+$ rewind check --root ready --stall-max 50ms -- /bin/ready | grep -E 'ends differently|perturbing only|decides it|passing:|failing:'
+schedule 10 ends differently; narrowing the steps it perturbs
+perturbing only steps 303..343 still ends differently
+step 342 decides it: a reschedule and a 20.48 ms stall there makes the run fail
+passing: run 6a5ed09c603046e4, schedule 10 over steps 303..342, stalls up to 50 ms
+failing: run 8e3c6d0bdfcbd8b5, schedule 10 over steps 303..343, stalls up to 50 ms
+```
+
+The same steps stall, one exit in 128, but each stall picks one of the
+doublings of 10 µs up to the maximum, 14 of them for 50 ms. Fewer stalls are
+short, so a race that needs only a short hold turns up less often: 32
+schedules of mylib crash 8 times by default and 5 times with `--stall-max
+100ms`, in 3.4 s and 3.5 s. A stall is virtual time, so the guest's clock
+moves further, and a program's own timeouts see the extra time. The maximum is
+part of each run's spec, so `rewind show`, a replay and a fork of the run keep
+the maximum, and a run made without the flag keeps its id. A fork's own
+schedule takes the default unless it is given `--stall-max` too.
+
 ## Try other seeds from a step
 
 A fork keeps its parent's randomness unless you reseed it. `rewind fork

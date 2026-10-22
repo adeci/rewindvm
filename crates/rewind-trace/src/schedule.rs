@@ -16,15 +16,216 @@ pub const TIMER_SLACK_NS: u64 = 50_000;
 
 /// Under a schedule seed, one exit in this many stalls the task running
 /// then: it sleeps when it next returns to user space, for between
-/// STALL_MIN_NS and STALL_MIN_NS << (STALL_DOUBLINGS - 1), each doubling
-/// as likely as the next. A busy machine deschedules a process for
-/// stretches like these, and many races need one task held up for a
-/// while rather than switched away from for an instant.
+/// STALL_MIN_NS and the schedule's [`StallMax`], each doubling of
+/// STALL_MIN_NS as likely as the next. A busy machine deschedules a
+/// process for stretches like these, and many races need one task held up
+/// for a while rather than switched away from for an instant.
 const STALL_ONE_IN: u64 = 128;
 
 const NS_PER_US: u64 = 1_000;
+const NS_PER_MS: u64 = 1_000_000;
+const NS_PER_S: u64 = 1_000_000_000;
 pub const STALL_MIN_NS: u64 = 10_000;
+
+/// The doublings of STALL_MIN_NS a stall picks from by default, so the
+/// longest stall is STALL_MIN_NS << (STALL_DOUBLINGS - 1), 1.28 ms.
 pub const STALL_DOUBLINGS: u64 = 8;
+
+/// The longest stall a schedule asks for by default, and the shortest
+/// maximum `--stall-max` takes.
+pub const STALL_MAX_DEFAULT_NS: u64 = STALL_MIN_NS << (STALL_DOUBLINGS - 1);
+
+/// The longest maximum `--stall-max` takes: 1 s, 18 doublings. The
+/// monitor hands the guest a stall's length as a 32-bit count of
+/// nanoseconds, which holds 4.29 s, and a task held off the CPU for
+/// longer than a second looks to the program like a hang, not a busy
+/// machine: its own deadlines and watchdogs fire first.
+pub const STALL_MAX_CAP_NS: u64 = NS_PER_S;
+
+/// The units a stall's length is written in, as `--stall-max` reads it
+/// and prints it, largest first; a length prints in the first that
+/// divides it, so "us" comes before "µs".
+const UNITS: [(&str, u64); 5] = [
+    ("s", NS_PER_S),
+    ("ms", NS_PER_MS),
+    ("us", NS_PER_US),
+    ("µs", NS_PER_US),
+    ("ns", 1),
+];
+
+/// The longest stall a schedule asks for, in nanoseconds: STALL_MAX_DEFAULT_NS
+/// unless `--stall-max` asks for longer. A stall picks one of the fewest
+/// doublings of STALL_MIN_NS that reach the maximum, each as likely as
+/// the next, and the longest doubling is cut to the maximum. Which steps
+/// stall does not depend on the maximum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "u64", into = "u64")]
+pub struct StallMax(u64);
+
+/// Why a duration is no longest stall.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum StallMaxError {
+    #[error("{0:?} is not a duration such as 50ms, 1.28ms or 1s")]
+    Unreadable(String),
+    #[error("a longest stall of {} is shorter than the default, {}", written(*.0), written(STALL_MAX_DEFAULT_NS))]
+    BelowDefault(u64),
+    #[error("a longest stall of {} is longer than the most rewind allows, {}", written(*.0), written(STALL_MAX_CAP_NS))]
+    AboveCap(u64),
+}
+
+impl Default for StallMax {
+    fn default() -> StallMax {
+        StallMax(STALL_MAX_DEFAULT_NS)
+    }
+}
+
+impl StallMax {
+    /// A longest stall of `ns` nanoseconds, if it is between the default
+    /// and the cap.
+    pub fn new(ns: u64) -> Result<StallMax, StallMaxError> {
+        if ns < STALL_MAX_DEFAULT_NS {
+            return Err(StallMaxError::BelowDefault(ns));
+        }
+        if ns > STALL_MAX_CAP_NS {
+            return Err(StallMaxError::AboveCap(ns));
+        }
+        Ok(StallMax(ns))
+    }
+
+    pub fn ns(self) -> u64 {
+        self.0
+    }
+
+    /// Whether this is the maximum every schedule had before
+    /// `--stall-max`, which a spec leaves out.
+    pub fn is_default(&self) -> bool {
+        *self == StallMax::default()
+    }
+
+    /// How many doublings of STALL_MIN_NS a stall picks from: the fewest
+    /// whose longest, STALL_MIN_NS << (doublings - 1), reaches the
+    /// maximum. STALL_DOUBLINGS for the default.
+    pub fn doublings(self) -> u64 {
+        let mut doublings = 1;
+        while STALL_MIN_NS << (doublings - 1) < self.0 {
+            doublings += 1;
+        }
+        doublings
+    }
+}
+
+impl TryFrom<u64> for StallMax {
+    type Error = StallMaxError;
+
+    fn try_from(ns: u64) -> Result<StallMax, StallMaxError> {
+        StallMax::new(ns)
+    }
+}
+
+impl From<StallMax> for u64 {
+    fn from(max: StallMax) -> u64 {
+        max.0
+    }
+}
+
+impl std::str::FromStr for StallMax {
+    type Err = StallMaxError;
+
+    /// A duration with its unit, as `--stall-max` takes it: a decimal
+    /// number such as 50, 1.28 or 0.05, then s, ms, us, µs or ns, to a
+    /// whole number of nanoseconds.
+    fn from_str(text: &str) -> Result<StallMax, StallMaxError> {
+        let unreadable = || StallMaxError::Unreadable(text.to_string());
+
+        // The number runs up to the first character that is neither a
+        // digit nor a point, and the unit is the rest.
+        let split = text
+            .find(|c: char| !c.is_ascii_digit() && c != '.')
+            .ok_or_else(unreadable)?;
+        let (number, unit) = text.split_at(split);
+        let per_unit = UNITS
+            .iter()
+            .find(|(name, _)| *name == unit)
+            .map(|(_, ns)| *ns)
+            .ok_or_else(unreadable)?;
+
+        // The whole part and the fraction, each digits only, at least one
+        // of them given, and at most one point between them.
+        let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
+        let digits_only = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+        if whole.is_empty() && fraction.is_empty() {
+            return Err(unreadable());
+        }
+        if !digits_only(whole) || !digits_only(fraction) {
+            return Err(unreadable());
+        }
+
+        // Whole units, then the fraction's nanoseconds, which must come
+        // out whole: each digit is worth a tenth of the one before.
+        const DECIMAL: u64 = 10;
+        let whole_ns = if whole.is_empty() {
+            0
+        } else {
+            whole
+                .parse::<u64>()
+                .ok()
+                .and_then(|n| n.checked_mul(per_unit))
+                .ok_or_else(unreadable)?
+        };
+        let mut fraction_ns = 0u64;
+        let mut place = per_unit;
+        for digit in fraction.bytes() {
+            if !place.is_multiple_of(DECIMAL) {
+                return Err(unreadable());
+            }
+            place /= DECIMAL;
+            fraction_ns += u64::from(digit - b'0') * place;
+        }
+        let ns = whole_ns.checked_add(fraction_ns).ok_or_else(unreadable)?;
+        StallMax::new(ns)
+    }
+}
+
+impl std::fmt::Display for StallMax {
+    /// The maximum as `--stall-max` takes it, in the largest unit it is a
+    /// whole number of.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&written(self.0))
+    }
+}
+
+/// `ns` as a whole number of the largest unit that divides it, as
+/// `--stall-max` takes durations: "50ms", "1280us".
+fn written(ns: u64) -> String {
+    let (name, per_unit) = UNITS
+        .iter()
+        .find(|(_, per_unit)| ns.is_multiple_of(*per_unit))
+        .expect("every length is a whole number of nanoseconds");
+    format!("{}{name}", ns / per_unit)
+}
+
+/// A stall's length in words: in microseconds up to the default's
+/// longest, as stalls always read, and in milliseconds to two places
+/// beyond it, trailing zeros dropped: "160 µs", "2.56 ms", "50 ms".
+pub fn stall_words(ns: u64) -> String {
+    const HUNDREDTHS_PER_MS: u64 = 100;
+    const TENTHS_PER_HUNDREDTH: u64 = 10;
+    if ns <= STALL_MAX_DEFAULT_NS {
+        return format!("{} µs", ns / NS_PER_US);
+    }
+    let hundredths = ns / (NS_PER_MS / HUNDREDTHS_PER_MS);
+    let (ms, rest) = (
+        hundredths / HUNDREDTHS_PER_MS,
+        hundredths % HUNDREDTHS_PER_MS,
+    );
+    if rest == 0 {
+        return format!("{ms} ms");
+    }
+    if rest.is_multiple_of(TENTHS_PER_HUNDREDTH) {
+        return format!("{ms}.{} ms", rest / TENTHS_PER_HUNDREDTH);
+    }
+    format!("{ms}.{rest:02} ms")
+}
 
 /// Whether the exit that made a step armed the guest's timer, which only
 /// the monitor sees as it runs.
@@ -37,10 +238,11 @@ pub enum Timer {
 }
 
 /// A perturbed schedule. At some exits, chosen by the seed, the guest is
-/// asked to reschedule, so another runnable thread may run from there, and
-/// timers armed in the window fire a little late, so sleepers wake in a
-/// different order. Both are functions of the seed and the step, and
-/// before the window a perturbed run is the unperturbed one, exit for exit.
+/// asked to reschedule, so another runnable thread may run from there, or
+/// the running task is stalled, and timers armed in the window fire a
+/// little late, so sleepers wake in a different order. Each is a function
+/// of the seed and the step, and before the window a perturbed run is the
+/// unperturbed one, exit for exit.
 ///
 /// A fork of a fork keeps the perturbations of the runs it came from, each
 /// over its own window, in `earlier`, so it is its parent exit for exit up
@@ -51,6 +253,8 @@ pub struct Schedule {
     pub seed: u64,
     /// The steps preemptions may happen at.
     pub window: std::ops::Range<u64>,
+    /// The longest stall the seed asks for in the window.
+    pub stall_max: StallMax,
     /// Perturbations inherited from earlier forks, each ending by the
     /// time the next one starts.
     pub earlier: Vec<Segment>,
@@ -71,11 +275,13 @@ pub struct Reseed {
 /// The bytes a reseed mixes in: 32, as the guest's shared page holds them.
 pub const RESEED_BYTES: usize = 32;
 
-/// One seed over one window of steps.
+/// One seed over one window of steps, with the longest stall it asks for
+/// there.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Segment {
     pub seed: u64,
     pub window: std::ops::Range<u64>,
+    pub stall_max: StallMax,
 }
 
 /// splitmix64: a fixed, well-mixed function of its input.
@@ -98,20 +304,31 @@ impl Schedule {
     /// The seed that perturbs `step`, if any: the run's own window's, or
     /// else an inherited one's.
     pub fn seed_at(&self, step: u64) -> Option<u64> {
+        self.perturbing(step).map(|(seed, _)| seed)
+    }
+
+    /// The seed that perturbs `step` and the longest stall it asks for
+    /// there, if any seed does: the run's own window's, or else an
+    /// inherited one's.
+    fn perturbing(&self, step: u64) -> Option<(u64, StallMax)> {
         let own = Segment {
             seed: self.seed,
             window: self.window.clone(),
+            stall_max: self.stall_max,
         };
         std::iter::once(&own)
             .chain(&self.earlier)
             .find(|s| s.seed != 0 && s.window.contains(&step))
-            .map(|s| s.seed)
+            .map(|s| (s.seed, s.stall_max))
     }
 
     /// The last step through which this schedule and `other` perturb every
     /// step alike, or u64::MAX when they always do. Which seed perturbs a
-    /// step changes only where a window starts or ends, so comparing the
-    /// two there finds the first step they differ at.
+    /// step, and how long its stalls may be, changes only where a window
+    /// starts or ends, so comparing the two there finds the first step
+    /// they differ at. One seed under two maxima stalls at the same steps
+    /// for other lengths, so the two are taken to part where the window
+    /// starts.
     pub fn same_through(&self, other: &Schedule) -> u64 {
         let mut edges: Vec<u64> = [self, other]
             .iter()
@@ -125,7 +342,7 @@ impl Schedule {
         edges.sort_unstable();
         let perturbed = edges
             .into_iter()
-            .find(|step| self.seed_at(*step) != other.seed_at(*step));
+            .find(|step| self.perturbing(*step) != other.perturbing(*step));
 
         // The two runs part at a reseed only one of them makes, or that
         // they make with different seeds, as they do where a window
@@ -166,14 +383,22 @@ impl Schedule {
     /// How long to stall the task running after the exit that made
     /// `step`, if at all.
     pub fn stall_at(&self, step: u64) -> Option<u64> {
-        let seed = self.seed_at(step)?;
+        let (seed, max) = self.perturbing(step)?;
         let h = mix(mix(seed ^ 0x57a1) ^ step);
-        h.is_multiple_of(STALL_ONE_IN)
-            .then(|| STALL_MIN_NS << ((h / STALL_ONE_IN) % STALL_DOUBLINGS))
+        if !h.is_multiple_of(STALL_ONE_IN) {
+            return None;
+        }
+
+        // One of the maximum's doublings, each as likely as the next, the
+        // longest cut to the maximum. Under the default maximum the
+        // longest doubling is the maximum, so nothing is cut.
+        let doubling = (h / STALL_ONE_IN) % max.doublings();
+        Some((STALL_MIN_NS << doubling).min(max.ns()))
     }
 
     /// What the seed does at `step`, in words: "a reschedule", "a 160 µs
-    /// stall", "a timer 23.4 µs late", or several joined with "and". A
+    /// stall", "a 50 ms stall", "a timer 23.4 µs late", or several joined
+    /// with "and". A
     /// late timer changes the run only if the exit that made the step armed
     /// one, which only the monitor sees: `timer` says whether it did. Not
     /// knowing, a late timer is named only for a step that carries nothing
@@ -184,7 +409,7 @@ impl Schedule {
             parts.push("a reschedule".to_string());
         }
         if let Some(ns) = self.stall_at(step) {
-            parts.push(format!("a {} µs stall", ns / NS_PER_US));
+            parts.push(format!("a {} stall", stall_words(ns)));
         }
         let slack = self.slack_at(step);
         let late = match timer {
@@ -224,12 +449,14 @@ mod tests {
             window: 0..u64::MAX,
             earlier: Vec::new(),
             reseeds: Vec::new(),
+            stall_max: StallMax::default(),
         };
         let perturbed = Schedule {
             seed: 3,
             window: 100..200,
             earlier: Vec::new(),
             reseeds: Vec::new(),
+            stall_max: StallMax::default(),
         };
         assert_eq!(unperturbed.slack_at(150), 0);
         assert_eq!(perturbed.slack_at(50), 0);
@@ -246,12 +473,14 @@ mod tests {
             window: 0..u64::MAX,
             earlier: Vec::new(),
             reseeds: Vec::new(),
+            stall_max: StallMax::default(),
         };
         let perturbed = Schedule {
             seed: 3,
             window: 1000..100_000,
             earlier: Vec::new(),
             reseeds: Vec::new(),
+            stall_max: StallMax::default(),
         };
         assert!((0..10_000).all(|s| unperturbed.stall_at(s).is_none()));
         assert!((0..1000).all(|s| perturbed.stall_at(s).is_none()));
@@ -268,12 +497,237 @@ mod tests {
         assert!(stalls.contains(&STALL_MIN_NS) && stalls.contains(&longest));
     }
 
+    #[test]
+    fn default_stalls_are_pinned() {
+        // The stalls every run made without --stall-max gets, pinned by
+        // value: the first six stalls of four seeds, and the count and a
+        // running digest of every stall over a million steps. A change to
+        // how a stall is picked under the default maximum fails here,
+        // since recorded perturbed runs would replay another way.
+        const STEPS: u64 = 1_000_000;
+        const DIGEST_FACTOR: u64 = 31;
+        // A seed, its first stalls as (step, ns), how many it makes in
+        // all, and their digest.
+        type Pinned = (u64, [(u64, u64); 6], usize, u64);
+        let pinned: [Pinned; 4] = [
+            (
+                1,
+                [
+                    (175, 640_000),
+                    (205, 320_000),
+                    (435, 80_000),
+                    (895, 320_000),
+                    (1370, 10_000),
+                    (1634, 80_000),
+                ],
+                7882,
+                7_434_163_062_781_547_824,
+            ),
+            (
+                3,
+                [
+                    (72, 640_000),
+                    (109, 1_280_000),
+                    (118, 20_000),
+                    (284, 20_000),
+                    (542, 10_000),
+                    (615, 160_000),
+                ],
+                7723,
+                10_929_767_047_105_955_088,
+            ),
+            (
+                7,
+                [
+                    (78, 80_000),
+                    (104, 1_280_000),
+                    (132, 20_000),
+                    (194, 10_000),
+                    (217, 80_000),
+                    (221, 20_000),
+                ],
+                7826,
+                16_477_472_444_425_075_424,
+            ),
+            (
+                0xdead_beef,
+                [
+                    (273, 10_000),
+                    (454, 640_000),
+                    (482, 80_000),
+                    (553, 640_000),
+                    (573, 20_000),
+                    (744, 20_000),
+                ],
+                7790,
+                7_578_925_441_008_711_008,
+            ),
+        ];
+        for (seed, first, count, digest) in pinned {
+            let s = Schedule {
+                seed,
+                window: 0..u64::MAX,
+                ..Schedule::default()
+            };
+            let stalls: Vec<(u64, u64)> = (0..STEPS)
+                .filter_map(|step| s.stall_at(step).map(|ns| (step, ns)))
+                .collect();
+            assert_eq!(stalls[..first.len()], first, "seed {seed}");
+            assert_eq!(stalls.len(), count, "seed {seed}");
+            let folded = stalls.iter().fold(0u64, |acc, (_, ns)| {
+                acc.wrapping_mul(DIGEST_FACTOR).wrapping_add(*ns)
+            });
+            assert_eq!(folded, digest, "seed {seed}");
+        }
+    }
+
+    /// A schedule perturbing every step with `seed`, its stalls as long as
+    /// `stall_max` allows.
+    fn everywhere(seed: u64, stall_max: StallMax) -> Schedule {
+        Schedule {
+            seed,
+            window: 0..u64::MAX,
+            stall_max,
+            ..Schedule::default()
+        }
+    }
+
+    #[test]
+    fn a_stall_max_sets_the_doublings() {
+        // Durations parse with their units, and each maximum gets the
+        // fewest doublings of the shortest stall that reach it: the
+        // default 1.28 ms its 8, 50 ms 14 (81.92 ms), 100 ms 15
+        // (163.84 ms) and the cap of 1 s 18 (1.31 s). Below the default,
+        // above the cap, and anything without a unit is refused.
+        let parsed = |text: &str| text.parse::<StallMax>();
+        assert_eq!(parsed("1.28ms").unwrap(), StallMax::default());
+        assert_eq!(parsed("1280us").unwrap(), StallMax::default());
+        assert_eq!(parsed("1280µs").unwrap(), StallMax::default());
+        assert_eq!(StallMax::default().doublings(), STALL_DOUBLINGS);
+        let doublings = |text: &str| parsed(text).unwrap().doublings();
+        assert_eq!(doublings("1.3ms"), 9);
+        assert_eq!(doublings("2.56ms"), 9);
+        assert_eq!(doublings("50ms"), 14);
+        assert_eq!(doublings("81.92ms"), 14);
+        assert_eq!(doublings("100ms"), 15);
+        assert_eq!(doublings("1s"), 18);
+        assert_eq!(parsed("50ms").unwrap().ns(), 50_000_000);
+        assert_eq!(parsed("0.05s").unwrap().ns(), 50_000_000);
+        assert_eq!(parsed("50000000ns").unwrap().ns(), 50_000_000);
+        for refused in [
+            "1ms",
+            "1279us",
+            "1.5s",
+            "2s",
+            "50",
+            "ms",
+            "fast",
+            "-5ms",
+            "1.2.3ms",
+            "1.0000000001s",
+            "99999999999999999999s",
+            "",
+        ] {
+            assert!(parsed(refused).is_err(), "{refused:?} parsed");
+        }
+        assert!(StallMax::new(STALL_MAX_CAP_NS).is_ok());
+        assert!(StallMax::new(STALL_MAX_CAP_NS + 1).is_err());
+
+        // A maximum prints as the flag that gives it back.
+        for text in ["50ms", "1280us", "1s", "2500us", "12345678ns"] {
+            assert_eq!(parsed(text).unwrap().to_string(), text);
+        }
+    }
+
+    #[test]
+    fn long_stalls_stay_under_the_max_and_reach_it() {
+        // Under a 50 ms maximum the steps that stall are the default's,
+        // and only how long each lasts differs. Every stall is between the
+        // shortest and the maximum, the longest doubling is cut to the
+        // maximum, and over two million steps both ends turn up, with each
+        // of the 14 doublings about as often as the next.
+        const STEPS: u64 = 2_000_000;
+        let max = "50ms".parse::<StallMax>().unwrap();
+        let long = everywhere(3, max);
+        let short = everywhere(3, StallMax::default());
+        let stalls: Vec<u64> = (0..STEPS).filter_map(|step| long.stall_at(step)).collect();
+        assert!(
+            (0..STEPS).all(|step| long.stall_at(step).is_some() == short.stall_at(step).is_some())
+        );
+        assert!(
+            stalls
+                .iter()
+                .all(|ns| (STALL_MIN_NS..=max.ns()).contains(ns))
+        );
+        assert!(stalls.contains(&STALL_MIN_NS) && stalls.contains(&max.ns()));
+        let per_doubling = stalls.len() as u64 / max.doublings();
+        for doubling in 0..max.doublings() {
+            let ns = (STALL_MIN_NS << doubling).min(max.ns());
+            let seen = stalls.iter().filter(|s| **s == ns).count() as u64;
+            assert!(
+                seen > per_doubling * 3 / 4 && seen < per_doubling * 5 / 4,
+                "{ns}: {seen}"
+            );
+        }
+    }
+
+    #[test]
+    fn schedules_with_other_maxima_part_where_their_windows_start() {
+        // A seed under a longer maximum stalls at the same steps for other
+        // lengths, so two runs of one seed that differ only in the maximum
+        // are taken to part where the window starts, and a fork of a fork
+        // keeps each segment's own maximum.
+        let max = "50ms".parse::<StallMax>().unwrap();
+        let default = Schedule {
+            seed: 3,
+            window: 1000..u64::MAX,
+            ..Schedule::default()
+        };
+        let long = Schedule {
+            stall_max: max,
+            ..default.clone()
+        };
+        assert_eq!(default.same_through(&long), 999);
+        let forked = Schedule {
+            seed: 5,
+            window: 3000..u64::MAX,
+            earlier: vec![Segment {
+                seed: 3,
+                window: 1000..3000,
+                stall_max: max,
+            }],
+            ..Schedule::default()
+        };
+        assert_eq!(long.same_through(&forked), 2999);
+        assert!((1000..3000).all(|step| forked.stall_at(step) == long.stall_at(step)));
+    }
+
+    #[test]
+    fn a_long_stall_reads_in_milliseconds() {
+        // Stalls up to the default's longest read in microseconds, as
+        // they always have; longer ones in milliseconds, to two places
+        // with trailing zeros dropped.
+        assert_eq!(stall_words(10_000), "10 µs");
+        assert_eq!(stall_words(1_280_000), "1280 µs");
+        assert_eq!(stall_words(1_300_000), "1.3 ms");
+        assert_eq!(stall_words(2_560_000), "2.56 ms");
+        assert_eq!(stall_words(10_240_000), "10.24 ms");
+        assert_eq!(stall_words(50_000_000), "50 ms");
+        assert_eq!(stall_words(1_000_000_000), "1000 ms");
+        let s = everywhere(4, "50ms".parse().unwrap());
+        let step = (0..1_000_000)
+            .find(|&st| !s.preempt_at(st) && s.stall_at(st) == Some(50_000_000))
+            .unwrap();
+        assert_eq!(s.words_at(step, Timer::NotArmed), "a 50 ms stall");
+    }
+
     fn preemptions(seed: u64, window: std::ops::Range<u64>) -> Vec<u64> {
         let s = Schedule {
             seed,
             window,
             earlier: Vec::new(),
             reseeds: Vec::new(),
+            stall_max: StallMax::default(),
         };
         (0..10_000).filter(|step| s.preempt_at(*step)).collect()
     }
@@ -305,8 +759,10 @@ mod tests {
             earlier: vec![Segment {
                 seed: 7,
                 window: 1000..3000,
+                stall_max: StallMax::default(),
             }],
             reseeds: Vec::new(),
+            stall_max: StallMax::default(),
         }
     }
 
@@ -369,12 +825,14 @@ mod tests {
             window: 1000..u64::MAX,
             earlier: Vec::new(),
             reseeds: Vec::new(),
+            stall_max: StallMax::default(),
         };
         let none = Schedule {
             seed: 0,
             window: 0..u64::MAX,
             earlier: Vec::new(),
             reseeds: Vec::new(),
+            stall_max: StallMax::default(),
         };
         assert_eq!(parent.same_through(&fork_of_fork()), 2999);
         assert_eq!(fork_of_fork().same_through(&parent), 2999);
@@ -394,6 +852,7 @@ mod tests {
             window: 0..u64::MAX,
             earlier: Vec::new(),
             reseeds: Vec::new(),
+            stall_max: StallMax::default(),
         };
         let find = |f: &dyn Fn(u64) -> bool| (0..100_000).find(|&step| f(step)).unwrap();
         let late = |step: u64| format!("a timer {:.1} µs late", s.slack_at(step) as f64 / 1e3);

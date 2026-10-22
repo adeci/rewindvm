@@ -16,7 +16,7 @@ use rewind_core::{
 use rewind_init::{Job, Output, Root};
 use rewind_trace::compare::Comparison;
 use rewind_trace::located::Located;
-use rewind_trace::schedule::Reseed;
+use rewind_trace::schedule::{Reseed, StallMax};
 
 use crate::property::{self, Coverage, Judge, Property, Violation};
 use crate::{
@@ -326,12 +326,13 @@ fn fork_window(
 ) -> Result<Run> {
     let Window { seed, from, until } = window;
     let m = &run.manifest;
-    let mut spec = m.spec.fork(from, seed);
+    let mut spec = m.spec.fork(from, seed).with_stall_max(machine.stall_max);
     spec.schedule_until = until;
     let mut name = format!("{} (fork of {} at {from}, schedule {seed}", m.name, m.id);
     if until != u64::MAX {
         name.push_str(&format!(" until {until}"));
     }
+    name.push_str(&stall_max_words(spec.stall_max));
     if let Some(r) = reseed {
         spec = spec.reseeded(r.step, r.seed);
         name.push_str(&format!(", seed {} from {}", r.seed, r.step));
@@ -1212,6 +1213,11 @@ pub struct ForkArgs {
     /// which branch a select tries first, temporary names.
     #[arg(long)]
     pub(crate) seed: Option<u64>,
+    /// The longest stall the branch's schedule asks for, such as 50ms, as
+    /// a run's --stall-max sets it. Each window the fork inherits from its
+    /// parent keeps its own maximum.
+    #[arg(long, value_name = "DURATION", default_value_t = StallMax::default())]
+    pub(crate) stall_max: StallMax,
     /// Print nothing while the fork executes.
     #[arg(long, short)]
     pub(crate) quiet: bool,
@@ -1231,6 +1237,7 @@ pub fn fork(home: &Home, args: ForkArgs) -> Result<ExitCode> {
         step,
         schedule,
         seed,
+        stall_max,
         quiet,
         json,
         timeout,
@@ -1242,11 +1249,13 @@ pub fn fork(home: &Home, args: ForkArgs) -> Result<ExitCode> {
     if schedule == 0 && seed.is_none() {
         bail!("schedule 0 is the unperturbed run; a fork needs another schedule or --seed");
     }
-    let mut spec = m.spec.fork(step, schedule);
+    refuse_unscheduled_stall_max(schedule, stall_max)?;
+    let mut spec = m.spec.fork(step, schedule).with_stall_max(stall_max);
     let mut name = format!(
         "{} (fork of {} at {step}, schedule {schedule}",
         m.name, m.id
     );
+    name.push_str(&stall_max_words(spec.stall_max));
     if let Some(seed) = seed {
         spec = spec.reseeded(step, seed);
         name.push_str(&format!(", seed {seed}"));
@@ -1289,6 +1298,27 @@ pub fn fork(home: &Home, args: ForkArgs) -> Result<ExitCode> {
     let open = open_line(&child.manifest.id, first_difference, Some(&m.id));
     eprintln!("rewind: open it beside its parent in the desktop app: {open}");
     Ok(exit_status(&child))
+}
+
+/// A fork's longest stall as its name gives it: nothing at the default,
+/// so forks made without --stall-max keep their names.
+fn stall_max_words(max: StallMax) -> String {
+    if max.is_default() {
+        return String::new();
+    }
+    format!(
+        ", stalls up to {}",
+        rewind_trace::schedule::stall_words(max.ns())
+    )
+}
+
+/// Refuses a longest stall other than the default for schedule 0, which
+/// asks for no stalls, rather than recording a run that ignores it.
+fn refuse_unscheduled_stall_max(schedule: u64, stall_max: StallMax) -> Result<()> {
+    if schedule == 0 && !stall_max.is_default() {
+        bail!("--stall-max needs a perturbed schedule: schedule 0 stalls nothing");
+    }
+    Ok(())
 }
 
 /// The clock a run will use: an explicit choice, or for `auto` the branch
@@ -1395,6 +1425,16 @@ pub(crate) struct MachineArgs {
     /// unperturbed one.
     #[arg(long, default_value_t = 0)]
     schedule_from: u64,
+    /// The longest stall a perturbed schedule asks for, such as 50ms: a
+    /// race whose window holds a sleep, a timer or slow I/O may need one
+    /// task held off the CPU that long.
+    ///
+    /// One exit in 128 still stalls, for between 10us and this maximum,
+    /// each doubling of 10us as likely as the next, so the run spends more
+    /// virtual time stalled. From the default up to 1s; at the default a
+    /// run is the one made without the flag.
+    #[arg(long, value_name = "DURATION", default_value_t = StallMax::default())]
+    stall_max: StallMax,
     /// The CPU the VM sees: a fixed x86-64-v3 model that replays on any
     /// machine supporting it, the same model without ERMS, or this
     /// machine's own features.
@@ -1601,6 +1641,7 @@ fn run_workload(
     machine: &MachineArgs,
     report: Report,
 ) -> Result<Run> {
+    refuse_unscheduled_stall_max(machine.schedule, machine.stall_max)?;
     let mut machine = machine.clone();
     let prepared = prepare(home, guest, workload, &mut machine)?;
     let announce = match report {
@@ -1760,6 +1801,7 @@ fn execute(
         schedule: machine.schedule,
         schedule_from: machine.schedule_from,
         schedule_until: machine.schedule_until,
+        stall_max: StallMax::default(),
         inherited_schedules: Vec::new(),
         reseeds: Vec::new(),
         cpu,
@@ -1774,7 +1816,8 @@ fn execute(
             .trim()
             .to_string(),
         job: prepared.job.clone(),
-    };
+    }
+    .with_stall_max(machine.stall_max);
     let loudness = if machine.quiet {
         Loudness::Quiet
     } else {

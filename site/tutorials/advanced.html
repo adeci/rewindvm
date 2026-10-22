@@ -74,6 +74,9 @@
               >Count the schedules that fail from a step</a
             >
           </li>
+          <li>
+            <a href="#hold-a-task-off-the-cpu-for-longer">Hold a task off the CPU for longer</a>
+          </li>
           <li><a href="#try-other-seeds-from-a-step">Try other seeds from a step</a></li>
           <li><a href="#move-around-a-long-run">Move around a long run</a></li>
           <li><a href="#hand-a-failure-to-someone-else">Hand a failure to someone else</a></li>
@@ -884,6 +887,52 @@ schedule  16: exited:0       6651 steps  a9d703ba8977  run 199a9c41c4dc92c5
             Open
           </figcaption>
         </figure>
+      </section>
+
+      <section class="step">
+        <h2 id="hold-a-task-off-the-cpu-for-longer">
+          <a class="anchor" href="#hold-a-task-off-the-cpu-for-longer"
+            >Hold a task off the CPU for longer</a
+          >
+        </h2>
+        <p>
+          A stall holds the running task off the CPU for at most 1.28 ms. A race whose window
+          includes a sleep, a timer or slow I/O in another task needs a longer hold. This program
+          gives eight threads 20 ms to start, built static:
+        </p>
+        <pre
+          class="console"
+        ><code><span class="cmd"><span class="prompt">$</span> printf '#include &lt;pthread.h&gt;\n#include &lt;stdio.h&gt;\n#include &lt;time.h&gt;\n#include &lt;unistd.h&gt;\nvolatile int ready[8];\nvoid *work(void *i) { write(1, "started\\n", 8); ready[(long)i] = 1; return 0; }\nint main(void) {\n  pthread_t t[8];\n  for (long i = 0; i &lt; 8; i++) pthread_create(&amp;t[i], 0, work, (void *)i);\n  nanosleep(&amp;(struct timespec){0, 20000000}, 0); /* 20 ms to start */\n  for (int i = 0; i &lt; 8; i++) if (!ready[i]) { printf("worker %%d not ready\\n", i); return 1; }\n  puts("every worker ready");\n}\n' &gt; ready.c</span>
+<span class="cmd"><span class="prompt">$</span> mkdir -p ready/bin</span>
+<span class="cmd"><span class="prompt">$</span> nix shell nixpkgs#pkgsStatic.stdenv.cc -c x86_64-unknown-linux-musl-cc -static -o ready/bin/ready ready.c</span></code></pre>
+        <p>No schedule stalls a thread for 20 ms by default:</p>
+        <pre
+          class="console"
+        ><code><span class="cmd"><span class="prompt">$</span> rewind check --root ready --schedules 64 --all --no-narrow -- /bin/ready</span>
+...
+same result under all 65 schedules</code></pre>
+        <p>
+          <code>--stall-max</code> on <code>run</code>, <code>nix</code>, <code>check</code> and
+          <code>fork</code> raises the longest stall, up to 1 s:
+        </p>
+        <pre
+          class="console"
+        ><code><span class="cmd"><span class="prompt">$</span> rewind check --root ready --stall-max 50ms -- /bin/ready | grep -E 'ends differently|perturbing only|decides it|passing:|failing:'</span>
+schedule 10 ends differently; narrowing the steps it perturbs
+perturbing only steps 303..343 still ends differently
+step 342 decides it: a reschedule and a 20.48 ms stall there makes the run fail
+passing: run 6a5ed09c603046e4, schedule 10 over steps 303..342, stalls up to 50 ms
+failing: run 8e3c6d0bdfcbd8b5, schedule 10 over steps 303..343, stalls up to 50 ms</code></pre>
+        <p>
+          The same steps stall, one exit in 128, but each stall picks one of the doublings of 10 µs
+          up to the maximum, 14 of them for 50 ms. Fewer stalls are short, so a race that needs only
+          a short hold turns up less often: 32 schedules of mylib crash 8 times by default and 5
+          times with <code>--stall-max 100ms</code>, in 3.4 s and 3.5 s. A stall is virtual time, so
+          the guest's clock moves further, and a program's own timeouts see the extra time. The
+          maximum is part of each run's spec, so <code>rewind show</code>, a replay and a fork of
+          the run keep the maximum, and a run made without the flag keeps its id. A fork's own
+          schedule takes the default unless it is given <code>--stall-max</code> too.
+        </p>
       </section>
 
       <section class="step">

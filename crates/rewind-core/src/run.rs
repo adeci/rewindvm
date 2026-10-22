@@ -23,8 +23,9 @@ use crate::cpio;
 use crate::home::Home;
 
 pub use rewind_trace::manifest::{
-    BOOKMARKS, EXECUTING_LOCK, ID_LEN, MANIFEST, MANIFEST_VERSION, Manifest, Parent, RunId,
-    RunOutcome, ScheduleSegment, Source, Spec, TRACE, executing,
+    BOOKMARKS, EXECUTING_LOCK, ID_LEN, MANIFEST, MANIFEST_VERSION,
+    MANIFEST_VERSION_BEFORE_STALL_MAX, Manifest, Parent, RunId, RunOutcome, ScheduleSegment,
+    Source, Spec, TRACE, executing,
 };
 
 /// The kernel command line every guest boots with. The first two keep the
@@ -600,7 +601,7 @@ impl Run {
             Start::After(run) => (None, Some(run)),
         };
         let manifest = Manifest {
-            version: MANIFEST_VERSION,
+            version: spec.manifest_version(),
             id: spec.id(),
             name,
             created: now(),
@@ -1550,6 +1551,7 @@ pub(crate) mod tests {
     // agree, which decides what a fork may share with its parent, and the
     // manifest fields the desktop app reads by name.
     use super::*;
+    use rewind_trace::schedule::StallMax;
 
     #[test]
     fn a_lock_given_up_is_taken_again_while_processes_are_spawned() {
@@ -1806,6 +1808,7 @@ pub(crate) mod tests {
             schedule: 0,
             schedule_from: 0,
             schedule_until: u64::MAX,
+            stall_max: StallMax::default(),
             inherited_schedules: Vec::new(),
             reseeds: Vec::new(),
             cpu: rewind_vmm::CpuModel::V3,
@@ -1878,7 +1881,8 @@ pub(crate) mod tests {
             vec![ScheduleSegment {
                 seed: 3,
                 from: 2000,
-                until: 4000
+                until: 4000,
+                stall_max: StallMax::default(),
             }]
         );
         assert_eq!(parent.same_through(&child), Some(3999));
@@ -1903,7 +1907,8 @@ pub(crate) mod tests {
             vec![ScheduleSegment {
                 seed: 10,
                 from: 4855,
-                until: 4918
+                until: 4918,
+                stall_max: StallMax::default(),
             }]
         );
     }
@@ -1934,6 +1939,70 @@ pub(crate) mod tests {
         // Seed 0 and an empty window are both the unperturbed run.
         assert_eq!(spec().same_through(&spec()), Some(u64::MAX));
         assert_eq!(spec().same_through(&perturbed(3, 10, 10)), Some(u64::MAX));
+    }
+
+    #[test]
+    fn runs_without_a_stall_max_keep_their_ids() {
+        // The ids of an unperturbed run, a fork and a fork of a fork,
+        // pinned as they were before a spec could carry a longest stall:
+        // a spec that leaves the default serializes, and so hashes, to the
+        // same bytes it always did.
+        let fork = spec().fork(4855, 10);
+        let fork_of_fork = fork.fork(6000, 3);
+        assert_eq!(spec().id(), "9501ba2bef8ad19c");
+        assert_eq!(fork.id(), "bce6e984a58c78bc");
+        assert_eq!(fork_of_fork.id(), "687617f510a03fa4");
+    }
+
+    #[test]
+    fn a_spec_without_a_stall_max_writes_back_unchanged() {
+        // A spec at the default longest stall, a fork's included, writes
+        // no stall_max_ns, reads back as itself and writes back as the
+        // same bytes, and names the manifest format from before the field.
+        let fork = spec().fork(4855, 10).fork(6000, 3);
+        for s in [spec(), fork] {
+            let bytes = serde_json::to_vec_pretty(&s).unwrap();
+            assert!(!String::from_utf8_lossy(&bytes).contains("stall_max"));
+            let read: Spec = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(read, s);
+            assert_eq!(serde_json::to_vec_pretty(&read).unwrap(), bytes);
+            assert_eq!(read.manifest_version(), MANIFEST_VERSION_BEFORE_STALL_MAX);
+        }
+    }
+
+    #[test]
+    fn a_spec_with_a_stall_max_round_trips_and_forks_inherit_it() {
+        // A perturbed spec given a longest stall writes it in nanoseconds,
+        // reads back as itself, has another id and the newer manifest
+        // format. Schedule 0 never stalls, so an unperturbed spec stays at
+        // the default. A fork's own window takes the default unless given
+        // another, as its seed does, while the window it inherits keeps
+        // its maximum, and two forks at one step under different maxima
+        // part where their windows start.
+        let max: StallMax = "50ms".parse().unwrap();
+        let long = perturbed(3, 2000, u64::MAX).with_stall_max(max);
+        let json = serde_json::to_value(&long).unwrap();
+        assert_eq!(json["stall_max_ns"], 50_000_000);
+        let read: Spec = serde_json::from_value(json).unwrap();
+        assert_eq!(read, long);
+        assert_ne!(long.id(), perturbed(3, 2000, u64::MAX).id());
+        assert_eq!(long.manifest_version(), MANIFEST_VERSION);
+        assert!(spec().with_stall_max(max).stall_max.is_default());
+
+        // A fork inherits the parent's window with its maximum.
+        let short = long.fork(4000, 5);
+        assert!(short.stall_max.is_default());
+        assert_eq!(short.inherited_schedules[0].stall_max, max);
+        assert_eq!(short.manifest_version(), MANIFEST_VERSION);
+        assert_eq!(long.same_through(&short), Some(3999));
+        let json = serde_json::to_value(&short).unwrap();
+        assert_eq!(json["inherited_schedules"][0]["stall_max_ns"], 50_000_000);
+        assert_eq!(serde_json::from_value::<Spec>(json).unwrap(), short);
+
+        // Forks at one step under two maxima part there.
+        let also_long = long.fork(4000, 5).with_stall_max(max);
+        assert_eq!(also_long.stall_max, max);
+        assert_eq!(short.same_through(&also_long), Some(3999));
     }
 
     #[test]

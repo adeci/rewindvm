@@ -320,6 +320,7 @@ fn selftest_spec(guest: &Guest) -> Spec {
         schedule: 0,
         schedule_from: 0,
         schedule_until: u64::MAX,
+        stall_max: rewind_trace::schedule::StallMax::default(),
         inherited_schedules: Vec::new(),
         reseeds: Vec::new(),
         cpu: rewind_vmm::CpuModel::Host,

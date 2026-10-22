@@ -238,13 +238,18 @@ pub fn outcome_line(run: &Run) -> anyhow::Result<String> {
 }
 
 /// A run's schedule for `rewind check`'s report: schedule 0, or a seed
-/// and the steps it perturbs.
+/// and the steps it perturbs, and its longest stall when not the default.
 pub fn schedule_words(spec: &rewind_core::Spec) -> String {
-    match (spec.schedule, spec.window()) {
-        (0, _) => "schedule 0".into(),
+    let words = match (spec.schedule, spec.window()) {
+        (0, _) => return "schedule 0".into(),
         (seed, Some((from, until))) => format!("schedule {seed} over steps {from}..{until}"),
         (seed, None) => format!("schedule {seed} from step {}", spec.schedule_from),
+    };
+    if spec.stall_max.is_default() {
+        return words;
     }
+    let longest = rewind_trace::schedule::stall_words(spec.stall_max.ns());
+    format!("{words}, stalls up to {longest}")
 }
 
 /// The seed a run's randomness came from: its own from boot, or for a
@@ -408,7 +413,8 @@ mod tests {
     #[test]
     fn a_schedule_reads_as_its_seed_and_window() {
         // Schedule 0 is just that; a seed names the steps it perturbs, as
-        // a window or from a step on.
+        // a window or from a step on, and a longest stall if not the
+        // default.
         let mut s = spec(job(&["sh"], &[], "/"));
         assert_eq!(schedule_words(&s), "schedule 0");
         s.schedule = 6;
@@ -416,6 +422,13 @@ mod tests {
         assert_eq!(schedule_words(&s), "schedule 6 from step 3629");
         s.schedule_until = 5140;
         assert_eq!(schedule_words(&s), "schedule 6 over steps 3629..5140");
+
+        // A longest stall away from the default is named after the window.
+        s.stall_max = "50ms".parse().unwrap();
+        assert_eq!(
+            schedule_words(&s),
+            "schedule 6 over steps 3629..5140, stalls up to 50 ms"
+        );
     }
 
     const OUT: &str = "/nix/store/0000000000000000000000000000000b-x";
