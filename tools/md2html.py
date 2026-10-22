@@ -152,10 +152,24 @@ POINTS_FIGURE = """<figure class="race">
 </figure>
 """
 
+# The gc-closure case study's video on YouTube, shown after the page's
+# opening paragraph.
+GC_CLOSURE_VIDEO = """<figure class="shot video" id="video">
+  <iframe
+    src="https://www.youtube.com/embed/7v7x7O82nxY?rel=0"
+    title="Catching a flaky Nix test on its first run with Rewind VM"
+    loading="lazy"
+    allow="encrypted-media; picture-in-picture"
+    allowfullscreen
+  ></iframe>
+  <figcaption>This bug from first run to fix, in 2:24.</figcaption>
+</figure>
+"""
+
 # Each page: its source, where it goes, the line above its title, its meta
 # description, what its table of contents is called, an optional figure
-# with the section and the paragraph of that section it follows, and the
-# card that closes it.
+# with the section and the paragraph of that section it follows (None for
+# the paragraphs above the first section), and the card that closes it.
 PAGES = [
     dict(
         source="docs/tutorial-nix.md",
@@ -227,7 +241,7 @@ PAGES = [
         eyebrow="Case study",
         description="Rewind VM's first run of Nix's functional tests hit a SIGPIPE in gc-closure.sh: a pipe into head -n1 under pipefail, and bash writing a two-line printf in two writes. Reported and fixed upstream.",
         toc="Sections",
-        figure=None,
+        figure=(None, 1, GC_CLOSURE_VIDEO),
         next=(
             "case-studies/nix-schema-migration-hang.html",
             "Case study",

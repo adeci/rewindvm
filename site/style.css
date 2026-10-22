@@ -288,6 +288,17 @@ a:focus-visible {
   border-radius: 999px;
   padding: 4px 10px;
 }
+/* The hero's ghost button to the demo video, with an amber play mark. */
+.watch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.watch svg {
+  width: 16px;
+  height: 16px;
+  fill: var(--amber);
+}
 .fine {
   color: var(--muted);
   font-size: 0.95rem;
@@ -1071,6 +1082,16 @@ a:focus-visible {
   color: var(--muted);
   font-size: 0.9rem;
   margin-top: 10px;
+}
+
+/* A YouTube video, framed like a screenshot. */
+.video iframe {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
 }
 
 /* The two-thread drawing in the points tutorial: scaled to the column, and
