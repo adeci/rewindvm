@@ -12,6 +12,7 @@ use gpui::{
 };
 use rewind_text_input::{TextInput, TextInputStyle};
 
+use crate::bookmarks::Bookmarks;
 use crate::describe::thousands;
 use crate::run::{Origin, Run};
 use crate::theme::{self, layout, size};
@@ -50,6 +51,29 @@ pub fn bookmarks_dir(run: &Run) -> Option<PathBuf> {
     match run.origin {
         Origin::Local | Origin::Export(_) => Some(run.path.clone()),
         Origin::Example | Origin::TraceFile => None,
+    }
+}
+
+/// The setting a run's bookmarks are kept under in the browser, which
+/// has no run directory: the run's id.
+fn bookmarks_setting(run: &Run) -> Option<String> {
+    const PREFIX: &str = "bookmarks/";
+    Some(format!("{PREFIX}{}", run.id()?))
+}
+
+/// A run's bookmarks: on the desktop from its directory; in the browser
+/// from the page's storage, else those its export carried.
+pub fn load_bookmarks(run: &Run) -> Bookmarks {
+    if !cfg!(target_family = "wasm") {
+        return bookmarks_dir(run)
+            .map(|dir| Bookmarks::load(&dir))
+            .unwrap_or_default();
+    }
+    let kept = bookmarks_setting(run).and_then(|name| crate::settings::kept().read(&name));
+    match (kept, &run.carried_bookmarks) {
+        (Some(text), _) => Bookmarks::parse(text.as_bytes()),
+        (None, Some(carried)) => Bookmarks::parse(carried),
+        (None, None) => Bookmarks::default(),
     }
 }
 
@@ -128,6 +152,20 @@ impl Scrubber {
         let Some(session) = &self.session else {
             return;
         };
+
+        // The browser keeps them in the page's storage, as far as it lets
+        // it; they last until the page closes otherwise.
+        if cfg!(target_family = "wasm") {
+            let Some(name) = bookmarks_setting(&session.run) else {
+                return;
+            };
+            let settings = crate::settings::kept();
+            match self.bookmarks.to_json() {
+                Some(text) => settings.write(&name, &text),
+                None => settings.remove(&name),
+            }
+            return;
+        }
         let Some(dir) = bookmarks_dir(&session.run) else {
             self.notify_user(
                 NoticeTone::Info,

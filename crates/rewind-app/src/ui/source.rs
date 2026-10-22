@@ -108,6 +108,12 @@ impl Drop for SourcePanel {
 impl Scrubber {
     /// Opens the source panel at the playhead, in a tab of its own.
     pub(super) fn open_source(&mut self, cx: &mut Context<Self>) {
+        // The browser viewer has no machine to run the recording on.
+        if cfg!(target_family = "wasm") && self.session.is_some() {
+            self.replay_in_desktop_app(Replay::Where.doing(), cx);
+            return;
+        }
+
         let Some(session) = &self.session else {
             return;
         };

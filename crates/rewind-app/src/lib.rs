@@ -9,9 +9,11 @@
 //! told apart, and `jobs` runs the engine's calls, which wait on a child
 //! process, on threads of their own.
 
+pub mod address;
 pub mod answers;
 pub mod archive;
 pub mod bookmarks;
+pub mod clock;
 pub mod compare;
 pub mod describe;
 pub mod engine;
@@ -27,6 +29,7 @@ pub mod request;
 pub mod run;
 pub mod search;
 pub mod selection;
+pub mod settings;
 pub mod shown_line;
 pub mod sideways;
 pub mod source;
@@ -34,9 +37,12 @@ pub mod step_entry;
 pub mod stride;
 pub mod sweep;
 pub mod syntax;
+#[cfg(not(target_family = "wasm"))]
 pub mod terminal;
 pub mod theme;
 pub mod tour;
 pub mod ui;
 pub mod view;
 pub mod viewer;
+#[cfg(target_family = "wasm")]
+pub mod web;

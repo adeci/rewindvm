@@ -12,6 +12,8 @@ mod lanes;
 mod licensing;
 mod link;
 mod notices;
+#[cfg(target_family = "wasm")]
+mod page;
 mod render;
 mod runs;
 mod scrubber;
@@ -25,6 +27,7 @@ mod step_entry;
 mod stride;
 mod sweep;
 mod tabs;
+#[cfg_attr(target_family = "wasm", path = "terminal_web.rs")]
 mod terminal;
 mod tour;
 mod viewer;
@@ -158,7 +161,7 @@ pub enum RightColumn {
 
 /// Runs the app until its window closes.
 pub fn run(launch: Launch) {
-    gpui_platform::application()
+    application()
         .with_assets(icons::Assets)
         .run(move |cx: &mut App| {
             bind_keys(cx);
@@ -196,12 +199,44 @@ pub fn run(launch: Launch) {
         });
 }
 
+/// GPUI on the desktop's windowing system.
+#[cfg(not(target_family = "wasm"))]
+fn application() -> gpui::Application {
+    gpui_platform::application()
+}
+
+/// GPUI on the browser's canvas, single threaded: wasm threads need
+/// SharedArrayBuffer, which needs cross-origin isolation headers a static
+/// host like GitHub Pages cannot send.
+#[cfg(target_family = "wasm")]
+fn application() -> gpui::Application {
+    const MULTITHREADED: bool = false;
+    let platform = std::rc::Rc::new(gpui_web::WebPlatform::new(MULTITHREADED));
+    gpui::Application::with_platform(platform)
+}
+
+/// Loads the fonts the page fetched before the app started: the web
+/// platform starts with none, and the page cannot read the system's. A
+/// font that did not come only costs itself: the browser draws what is
+/// missing with its own fonts.
+#[cfg(target_family = "wasm")]
+fn load_bundled_fonts(cx: &App) {
+    let fonts = crate::web::take_fonts()
+        .into_iter()
+        .map(std::borrow::Cow::Owned)
+        .collect();
+    if let Err(e) = cx.text_system().add_fonts(fonts) {
+        log::warn!("the page's fonts: {e:#}");
+    }
+}
+
 /// A directory of .ttf and .otf files the app loads at start, for installs
 /// that ship their own fonts, like the portable tarball.
 pub const FONTS_ENV: &str = "REWIND_APP_FONTS";
 
 /// Loads the fonts in the directory REWIND_APP_FONTS names, if any. A font
 /// that does not load only costs itself: the system's fonts stand in.
+#[cfg(not(target_family = "wasm"))]
 fn load_bundled_fonts(cx: &App) {
     const FONT_EXTENSIONS: [&str; 2] = ["ttf", "otf"];
     let Some(dir) = std::env::var_os(FONTS_ENV) else {

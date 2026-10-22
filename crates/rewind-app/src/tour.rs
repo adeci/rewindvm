@@ -208,25 +208,15 @@ pub fn config_dir() -> Option<PathBuf> {
     Some(config.join(CONFIG_SUBDIR))
 }
 
-fn dismissed_path() -> Option<PathBuf> {
-    Some(config_dir()?.join(DISMISSED_FILE))
-}
-
 /// Whether the user has finished or skipped the tour before.
 pub fn was_dismissed() -> bool {
-    dismissed_path().is_some_and(|p| p.exists())
+    crate::settings::kept().read(DISMISSED_FILE).is_some()
 }
 
 /// Remembers that the user finished or skipped the tour. A failure to
 /// write only means the tour offers itself again next time.
 pub fn remember_dismissed() {
-    let Some(path) = dismissed_path() else {
-        return;
-    };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(path, b"");
+    crate::settings::kept().write(DISMISSED_FILE, "");
 }
 
 #[cfg(test)]

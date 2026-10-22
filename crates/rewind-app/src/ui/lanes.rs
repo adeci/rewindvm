@@ -204,6 +204,12 @@ impl Scrubber {
     /// Opens the Threads tab, centered where the two runs part, else on
     /// the playhead, and asks the engine for both runs' threads.
     pub(super) fn open_lanes(&mut self, cx: &mut Context<Self>) {
+        // The browser viewer has no machine to run the recording on.
+        if cfg!(target_family = "wasm") && self.session.is_some() {
+            self.replay_in_desktop_app(Replay::Threads.doing(), cx);
+            return;
+        }
+
         let Some(session) = &self.session else {
             return;
         };

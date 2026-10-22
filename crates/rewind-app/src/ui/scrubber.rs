@@ -6,11 +6,11 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gpui::{
-    AppContext, Context, Entity, FocusHandle, PathPromptOptions, SharedString, Subscription,
-    UniformListScrollHandle, Window, rgb, rgba,
+    AppContext, Context, Entity, FocusHandle, SharedString, Subscription, UniformListScrollHandle,
+    Window, rgb, rgba,
 };
 use rewind_text_input::{TextInput, TextInputStyle};
 
@@ -18,6 +18,7 @@ use super::notices::Notices;
 use super::runs::{Pick, RunsPanel};
 use crate::answers::{Answers, FileKey, PlaceKey};
 use crate::bookmarks::Bookmarks;
+use crate::clock::Instant;
 use crate::describe::thousands;
 use crate::engine::{
     Engine, EngineError, EngineResult, EngineVersion, FileAtStep, Forked, GdbAt, PROGRAM_ENV,
@@ -36,13 +37,13 @@ use crate::source::Located;
 use crate::stride::{Direction, Stride};
 use crate::theme;
 use crate::tour::Tour;
-use crate::ui::bookmarks::{BookmarkEditor, bookmarks_dir};
+use crate::ui::bookmarks::{BookmarkEditor, load_bookmarks};
 use crate::ui::licensing::Licensing;
 use crate::ui::link::LinkDialog;
 use crate::ui::search::SearchBox;
 use crate::ui::selectable::SelectionState;
 use crate::ui::source::SourcePanel;
-use crate::ui::splits::{Drag, Measured, Splits, layout_path};
+use crate::ui::splits::{Drag, Measured, Splits};
 use crate::ui::step_entry::StepEntry;
 use crate::ui::tabs::RightTab;
 use crate::ui::terminal::{PaneKind, TerminalPane};
@@ -131,6 +132,8 @@ pub enum NoticeAction {
     OpenRun { dir: PathBuf, compare: PathBuf },
     /// Open the store page in the browser.
     Buy,
+    /// Open the desktop app's page, from the browser viewer.
+    GetApp,
     /// Open the license dialog.
     EnterLicense,
     /// Export the run on screen to this path, when there is no file
@@ -151,6 +154,7 @@ impl NoticeAction {
         match self {
             NoticeAction::OpenRun { .. } => "Open fork",
             NoticeAction::Buy => "Buy",
+            NoticeAction::GetApp => "Get the desktop app",
             NoticeAction::EnterLicense => "Enter license",
             NoticeAction::ExportTo(_) => "Export there",
             NoticeAction::Reveal(_) => "Show in folder",
@@ -173,6 +177,23 @@ pub struct ExportJob {
     pub started: Instant,
 }
 
+/// Where the browser viewer sends someone for what needs the machine.
+pub const DESKTOP_APP_URL: &str = "https://rewindvm.dev/#pricing";
+
+/// What the browser viewer says of `doing`, which runs the recording
+/// again and so is the desktop app's.
+pub fn in_desktop_app(doing: &str) -> String {
+    format!(
+        "{doing} runs the recording again from the playhead in Rewind's virtual machine, which the desktop app does on your machine. This viewer reads the recording in your browser."
+    )
+}
+
+/// What the browser viewer says of exporting a run.
+pub const EXPORT_IN_DESKTOP_APP: &str = "Export writes a run recorded on your machine to a .rwd file another machine can replay, which the desktop app does. This viewer reads recordings that were exported already.";
+
+/// What reading a file at a step is doing, in the browser viewer's words.
+pub const READING_A_FILE: &str = "Reading a file at a step";
+
 /// What needs the engine to bring a run back to a step, for the message
 /// shown when a run cannot be brought back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,7 +207,7 @@ pub enum Replay {
 }
 
 impl Replay {
-    fn doing(self) -> &'static str {
+    pub(super) fn doing(self) -> &'static str {
         match self {
             Replay::Shell => "Opening a shell",
             Replay::Gdb => "Attaching gdb",
@@ -372,6 +393,9 @@ pub struct Scrubber {
     pub(super) exporting: Option<ExportJob>,
     /// The window title last set, to set it only when it changes.
     title: Option<String>,
+    /// The browser's address bar, kept on the exports on screen.
+    #[cfg(target_family = "wasm")]
+    pub(super) address_bar: crate::web::AddressBar,
 }
 
 impl Scrubber {
@@ -418,7 +442,7 @@ impl Scrubber {
             right_tab: RightTab::AtStep,
             runs_tab: false,
             bookmarks_tab: false,
-            splits: layout_path().map(|p| Splits::load(&p)).unwrap_or_default(),
+            splits: Splits::load_kept(),
             split_drag: None,
             measured: Rc::new(Measured::default()),
             step: 0,
@@ -457,7 +481,11 @@ impl Scrubber {
             here_action: crate::sweep::HereAction::Fork,
             here_menu: None,
             title: None,
+            #[cfg(target_family = "wasm")]
+            address_bar: crate::web::AddressBar::default(),
         };
+        #[cfg(target_family = "wasm")]
+        this.listen_to_page(cx);
         if let Some(session) = launch.session {
             this.show(session, launch.step, cx);
             if launch.right == RightColumn::Source {
@@ -475,6 +503,10 @@ impl Scrubber {
     /// older engine lacks commands the app runs, and its refusals would
     /// show where the answers go.
     fn check_engine(&mut self, cx: &mut Context<Self>) {
+        // The browser build has no engine to ask.
+        if cfg!(target_family = "wasm") {
+            return;
+        }
         let engine = self.engine.clone();
         let asked = crate::jobs::on_own_thread(move || engine.version());
         cx.spawn(async move |this, cx| {
@@ -541,9 +573,7 @@ impl Scrubber {
         self.step = start;
         self.search = None;
         self.bookmark_editor = None;
-        self.bookmarks = bookmarks_dir(&session.run)
-            .map(|dir| Bookmarks::load(&dir))
-            .unwrap_or_default();
+        self.bookmarks = load_bookmarks(&session.run);
         self.forks.clear();
         self.tour = None;
         self.viewer = None;
@@ -575,9 +605,10 @@ impl Scrubber {
             _ => None,
         };
         // The example's two runs are its family, for the tour; they are
-        // not among the engine's runs.
-        if session.run.origin == Origin::Example {
-            let now = std::time::SystemTime::now();
+        // not among the engine's runs. In the browser, where there are no
+        // engine's runs, every session's runs are its family.
+        if session.run.origin == Origin::Example || cfg!(target_family = "wasm") {
+            let now = crate::clock::now();
             let runs = std::iter::once(&session.run)
                 .chain(session.other.as_ref())
                 .filter_map(|run| {
@@ -595,7 +626,7 @@ impl Scrubber {
         // The engine's runs are read after the run is on screen, for its
         // family and the forks it has.
         self.session = Some(session);
-        if let Some(file) = replayable {
+        if let Some(file) = replayable.filter(|_| !cfg!(target_family = "wasm")) {
             self.bring_in(file, cx);
         }
         self.lanes_session_changed(cx);
@@ -606,6 +637,10 @@ impl Scrubber {
     /// Reads the engine's runs in the background, for the families the
     /// empty state lists and the family of the run on screen.
     pub(super) fn reload_runs(&mut self, cx: &mut Context<Self>) {
+        // The browser has no engine's runs to read.
+        if cfg!(target_family = "wasm") {
+            return;
+        }
         let read = cx.background_executor().spawn(async move {
             crate::engine::runs_dir()
                 .map(|dir| scan(&dir))
@@ -1211,6 +1246,33 @@ impl Scrubber {
         self.post(tone, title.into(), body.into(), actions, cx)
     }
 
+    /// Says that `title`'s action is the desktop app's, as the browser
+    /// viewer says of everything that needs the machine, with a link to
+    /// the app.
+    pub(super) fn in_desktop_app(
+        &mut self,
+        title: impl Into<SharedString>,
+        body: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.offer(
+            NoticeTone::Info,
+            title,
+            body,
+            vec![NoticeAction::GetApp, NoticeAction::Dismiss],
+            cx,
+        );
+    }
+
+    /// Says that `doing` is the desktop app's, in the browser viewer.
+    pub(super) fn replay_in_desktop_app(&mut self, doing: &str, cx: &mut Context<Self>) {
+        self.in_desktop_app(
+            format!("{doing} is in the desktop app"),
+            in_desktop_app(doing),
+            cx,
+        );
+    }
+
     /// Changes the body of a notice on screen.
     pub(super) fn update_notice(&mut self, id: u64, body: String, cx: &mut Context<Self>) {
         if self.notices.set_body(id, body.into()) {
@@ -1249,6 +1311,7 @@ impl Scrubber {
         match action {
             NoticeAction::OpenRun { dir, compare } => self.open(dir, Some(compare), cx),
             NoticeAction::Buy => cx.open_url(BUY_URL),
+            NoticeAction::GetApp => cx.open_url(DESKTOP_APP_URL),
             NoticeAction::EnterLicense => self.open_license_dialog(window, cx),
             NoticeAction::ExportTo(path) => self.start_export(path, cx),
             NoticeAction::Reveal(path) => cx.reveal_path(&path),
@@ -1289,6 +1352,12 @@ impl Scrubber {
     /// while the engine works. The schedule seed is one more than the
     /// forks already made from this run, on disk or in this session.
     pub(super) fn fork_here(&mut self, cx: &mut Context<Self>) {
+        // The browser viewer has no machine to run the recording on.
+        if cfg!(target_family = "wasm") && self.session.is_some() {
+            self.replay_in_desktop_app(Replay::Fork.doing(), cx);
+            return;
+        }
+
         let Some(session) = &self.session else {
             return;
         };
@@ -1393,6 +1462,12 @@ impl Scrubber {
     }
 
     fn open_replay(&mut self, replay: Replay, window: &mut Window, cx: &mut Context<Self>) {
+        // The browser viewer has no machine to run the recording on.
+        if cfg!(target_family = "wasm") && self.session.is_some() {
+            self.replay_in_desktop_app(replay.doing(), cx);
+            return;
+        }
+
         let Some(session) = &self.session else {
             return;
         };
@@ -1447,6 +1522,12 @@ impl Scrubber {
     /// engine write it there. Runs that are not a run directory on this
     /// machine say what can be done with them instead.
     pub(super) fn export(&mut self, cx: &mut Context<Self>) {
+        // The browser viewer has no run directory to export from.
+        if cfg!(target_family = "wasm") && self.session.is_some() {
+            self.in_desktop_app("Export is in the desktop app", EXPORT_IN_DESKTOP_APP, cx);
+            return;
+        }
+
         let Some(session) = &self.session else {
             return;
         };
@@ -1607,7 +1688,21 @@ impl Scrubber {
     /// desktop file chooser picks files or directories but not both, so
     /// one prompt for files reaches every kind.
     pub(super) fn prompt_open(&mut self, cx: &mut Context<Self>) {
-        let options = PathPromptOptions {
+        // The browser has no paths to prompt for; the page's own file
+        // chooser reads the file and hands it to the app.
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = cx;
+            crate::web::pick_file();
+        }
+        #[cfg(not(target_family = "wasm"))]
+        self.prompt_for_path(cx);
+    }
+
+    /// Asks the desktop's file chooser for a run to open.
+    #[cfg(not(target_family = "wasm"))]
+    fn prompt_for_path(&mut self, cx: &mut Context<Self>) {
+        let options = gpui::PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,

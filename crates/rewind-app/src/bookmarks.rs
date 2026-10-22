@@ -63,7 +63,17 @@ impl Bookmarks {
         let Ok(bytes) = fs::read(&path) else {
             return unread("does not read".into());
         };
-        match serde_json::from_slice::<Version>(&bytes) {
+        Bookmarks::parse(&bytes)
+    }
+
+    /// The bookmarks in the bytes of a bookmarks file; none, kept apart as
+    /// unread, when they are not bookmarks of this format.
+    pub fn parse(bytes: &[u8]) -> Bookmarks {
+        let unread = |why: String| Bookmarks {
+            unread: Some(why),
+            ..Bookmarks::default()
+        };
+        match serde_json::from_slice::<Version>(bytes) {
             Ok(Version { version }) if version != BOOKMARKS_VERSION => {
                 return unread(format!(
                     "is in format {version}, and this app reads format {BOOKMARKS_VERSION}"
@@ -72,7 +82,7 @@ impl Bookmarks {
             Ok(_) => {}
             Err(_) => return unread("names no format this app reads".into()),
         }
-        let Ok(file) = serde_json::from_slice::<File>(&bytes) else {
+        let Ok(file) = serde_json::from_slice::<File>(bytes) else {
             return unread("is not bookmarks".into());
         };
         let mut bookmarks = Bookmarks::default();
@@ -107,6 +117,19 @@ impl Bookmarks {
         let bytes = serde_json::to_vec_pretty(&file).map_err(io::Error::other)?;
         fs::write(&tmp, bytes)?;
         fs::rename(&tmp, &path)
+    }
+
+    /// The bookmarks as a bookmarks file holds them, or None when there
+    /// are none, or when what was read is kept apart as unread.
+    pub fn to_json(&self) -> Option<String> {
+        if self.unread.is_some() || self.marks.is_empty() {
+            return None;
+        }
+        let file = File {
+            version: BOOKMARKS_VERSION,
+            marks: self.marks.clone(),
+        };
+        serde_json::to_string_pretty(&file).ok()
     }
 
     /// Marks `step` with `note`, replacing the note of a bookmark already

@@ -5,7 +5,7 @@
 //! field adapted from GPUI's own example: typing, selecting with the mouse
 //! or the keyboard, and copy, cut and paste.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use gpui::{
     Context, Div, Entity, Focusable, FontWeight, SharedString, Window, div, prelude::*, px, rgb,
@@ -25,7 +25,10 @@ const DIALOG_WIDTH: f32 = 600.0;
 
 /// The dialog's words.
 const DIALOG_TITLE: &str = "Open link";
+#[cfg(not(target_family = "wasm"))]
 const DIALOG_HELP: &str = "The link to a .rwd file, such as one on a case study page. A replayable export can be shelled into, debugged and forked once it is in.";
+#[cfg(target_family = "wasm")]
+const DIALOG_HELP: &str = "The link to a .rwd file, such as one a CI job keeps. The link must be served with CORS headers. It is read in your browser and is not uploaded.";
 const PLACEHOLDER: &str = "https://\u{2026}/run.rwd";
 const NOT_A_LINK: &str = "That is not an http or https link.";
 
@@ -91,7 +94,13 @@ impl Scrubber {
             return;
         }
         self.close_link_dialog(window, cx);
-        self.open(PathBuf::from(link), None, cx);
+
+        // The browser fetches the link from the page; the desktop app
+        // downloads it.
+        #[cfg(target_family = "wasm")]
+        self.open_link(link, cx);
+        #[cfg(not(target_family = "wasm"))]
+        self.open(std::path::PathBuf::from(link), None, cx);
     }
 
     /// The dialog over a dimmed window, when it is open.
@@ -125,15 +134,18 @@ impl Scrubber {
         } else {
             Availability::Disabled
         };
+        // The browser lets the page read the clipboard only as it pastes,
+        // so there Ctrl+V in the field pastes and the button is left out.
+        let paste = (!cfg!(target_family = "wasm")).then(|| {
+            button("link-paste", ButtonStyle::Neutral, Availability::Enabled)
+                .child("Paste")
+                .on_click(cx.listener(|this, _, window, cx| this.paste_link(window, cx)))
+        });
         let buttons = div()
             .flex()
             .justify_end()
             .gap(px(size::CONTROL_GAP))
-            .child(
-                button("link-paste", ButtonStyle::Neutral, Availability::Enabled)
-                    .child("Paste")
-                    .on_click(cx.listener(|this, _, window, cx| this.paste_link(window, cx))),
-            )
+            .children(paste)
             .child(
                 button("link-cancel", ButtonStyle::Neutral, Availability::Enabled)
                     .child("Cancel")

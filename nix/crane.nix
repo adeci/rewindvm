@@ -26,7 +26,7 @@ let
     cargoCheckCommand = "true";
   };
 in
-{
+rec {
   # crane over this nixpkgs, and over its static musl package set for the
   # release binary.
   craneLib = crane.mkLib pkgs;
@@ -120,4 +120,22 @@ in
       pkgs.wayland
     ];
   };
+
+  # The desktop app built for the browser, the site's viewer: the app's
+  # workspace and source, its rewind-web binary built for wasm32 with the
+  # size profile. nixpkgs' rustc carries the wasm32 standard library and
+  # links wasm with lld. The desktop app's libraries are left out: nothing
+  # built for wasm32 links them.
+  web =
+    removeAttrs app [
+      "nativeBuildInputs"
+      "buildInputs"
+    ]
+    // {
+      CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
+      CARGO_PROFILE = "web";
+      cargoExtraArgs = "--locked --bin rewind-web";
+      doCheck = false;
+      nativeBuildInputs = [ pkgs.lld ];
+    };
 }

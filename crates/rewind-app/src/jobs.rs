@@ -12,6 +12,11 @@ pub fn on_own_thread<T: Send + 'static>(
     call: impl FnOnce() -> T + Send + 'static,
 ) -> impl Future<Output = T> {
     let (answer, answered) = futures::channel::oneshot::channel();
+
+    // The browser build has no threads; its engine answers at once.
+    #[cfg(target_family = "wasm")]
+    let _ = answer.send(call());
+    #[cfg(not(target_family = "wasm"))]
     std::thread::spawn(move || {
         let _ = answer.send(call());
     });

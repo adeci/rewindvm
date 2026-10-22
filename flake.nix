@@ -89,6 +89,8 @@
               releaseDate
               ;
           };
+          # The desktop app built for the browser, the site's viewer.
+          web = import ./nix/web.nix { inherit pkgs rust releaseDate; };
         in
         {
           inherit
@@ -99,6 +101,7 @@
             gdb
             rewind
             app
+            web
             ;
           release = import ./nix/release.nix {
             inherit
@@ -158,6 +161,10 @@
 
           # the marketing site the pages workflow deploys (nix/site.nix)
           site = p.site;
+
+          # the desktop app built for the browser, which the site serves
+          # as its viewer (nix/web.nix)
+          web = p.web;
 
           # the desktop app, the scrubber over recorded runs (nix/app.nix)
           app = p.app;

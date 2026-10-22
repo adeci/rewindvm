@@ -78,6 +78,12 @@ impl Scrubber {
     /// Tries schedules from the playhead, unless a check runs already or
     /// the run cannot be forked here.
     pub(super) fn check_here(&mut self, schedules: u64, seeds: u64, cx: &mut Context<Self>) {
+        // The browser viewer has no machine to run the recording on.
+        if cfg!(target_family = "wasm") && self.session.is_some() {
+            self.replay_in_desktop_app(Replay::Check.doing(), cx);
+            return;
+        }
+
         let Some(session) = &self.session else {
             return;
         };

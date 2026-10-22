@@ -97,7 +97,8 @@ impl Scrubber {
     /// evaluating copy past its quiet first week, unless a terminal pane is
     /// open, the tour runs or the example is on screen.
     pub(super) fn value_moment(&mut self, cx: &mut Context<Self>) {
-        if self.licensing.is_registered() {
+        // The browser viewer is free to use and reminds no one.
+        if self.licensing.is_registered() || cfg!(target_family = "wasm") {
             return;
         }
         let example = self

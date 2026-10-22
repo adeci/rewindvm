@@ -32,6 +32,23 @@
     REWIND_GDB = "${gdb}/bin/gdb";
   };
 
+  # `nix develop .#web`: the toolchain for the desktop app built for the
+  # browser, the site's viewer (nix/web.nix). nixpkgs' rustc carries the
+  # wasm32-unknown-unknown standard library, and the wasm-bindgen command
+  # must be the version crates/rewind-app pins.
+  web = pkgs.mkShell {
+    packages = [
+      pkgs.cargo
+      pkgs.rustc
+      pkgs.rustfmt
+      pkgs.clippy
+      pkgs.lld
+      pkgs.wasm-bindgen-cli_0_2_127
+      pkgs.binaryen
+      pkgs.python3
+    ];
+  };
+
   # `nix develop .#app`: the desktop app's toolchain and libraries, for
   # `cargo run` and `cargo test` in crates/rewind-app. A cargo build is not
   # patched like the packaged one, so the libraries wgpu and Wayland open

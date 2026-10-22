@@ -50,6 +50,7 @@ pub struct Unpacked {
 const NO_ID: &str = "unnamed";
 
 /// The name a download goes by when its URL ends in no usable file name.
+#[cfg(not(target_family = "wasm"))]
 const DOWNLOAD_NAME: &str = "download.rwd";
 
 /// Whether a file is a `.rwd` export: a zstd stream, whatever its name.
@@ -95,6 +96,7 @@ pub fn is_url(path: &Path) -> bool {
 /// returns the file. A file of the same length already downloaded from
 /// the same URL is taken as that download, so opening a URL twice
 /// fetches it once.
+#[cfg(not(target_family = "wasm"))]
 pub fn download(url: &str) -> Result<PathBuf> {
     // Each URL gets a directory of its own, so two URLs whose files share
     // a name never pass for each other.
@@ -129,6 +131,85 @@ pub fn download(url: &str) -> Result<PathBuf> {
         return Err(e).with_context(|| format!("downloading {url}"));
     }
     Ok(file)
+}
+
+/// The browser build has no disk to download to: the page fetches an
+/// export and hands its bytes to [`read_bytes`].
+#[cfg(target_family = "wasm")]
+pub fn download(url: &str) -> Result<PathBuf> {
+    bail!("{url}: the browser viewer opens exports the page fetched")
+}
+
+/// An export's manifest and trace, read into memory.
+pub struct InMemory {
+    pub manifest: Vec<u8>,
+    pub trace: Vec<u8>,
+    /// The bookmarks the desktop app made, when the export carries them.
+    pub bookmarks: Option<Vec<u8>>,
+    /// Whether it holds the keyframes, pages and inputs replay needs.
+    pub replayable: bool,
+}
+
+/// Reads the manifest and trace of an export held in memory, without a
+/// disk to unpack them to, as the browser build opens exports.
+pub fn read_bytes(bytes: &[u8]) -> Result<InMemory> {
+    let mut archive = tar::Archive::new(decompress(bytes)?);
+    let mut manifest = None;
+    let mut trace = None;
+    let mut bookmarks = None;
+    let mut replayable = false;
+    for entry in archive.entries().context("not a tar archive")? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+
+        // The members only replay needs mark the export replayable, and
+        // are not read.
+        if export::REPLAY_DIRS.iter().any(|d| path.starts_with(d)) {
+            replayable = true;
+            continue;
+        }
+
+        // The manifest, the trace and the bookmarks, as a regular file no
+        // larger than the engine writes, are kept; every other member is
+        // skipped.
+        let carried = path == Path::new(BOOKMARKS_FILE)
+            && entry.header().entry_type().is_file()
+            && entry.size() <= BOOKMARKS_MAX_BYTES;
+        let slot = if path == Path::new(MANIFEST) {
+            &mut manifest
+        } else if path == Path::new(TRACE) {
+            &mut trace
+        } else if carried {
+            &mut bookmarks
+        } else {
+            continue;
+        };
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes)?;
+        *slot = Some(bytes);
+    }
+    let manifest = manifest.with_context(|| format!("the archive has no {MANIFEST}"))?;
+    let trace = trace.with_context(|| format!("the archive has no {TRACE}"))?;
+    Ok(InMemory {
+        manifest,
+        trace,
+        bookmarks,
+        replayable,
+    })
+}
+
+/// The tar archive inside an export's zstd frame.
+#[cfg(not(target_family = "wasm"))]
+fn decompress<R: Read>(reader: R) -> Result<impl Read> {
+    zstd::Decoder::new(reader).context("not a zstd stream")
+}
+
+/// The tar archive inside an export's zstd frame, decoded in pure Rust:
+/// zstd's C library has no wasm32 build here.
+#[cfg(target_family = "wasm")]
+fn decompress<R: Read>(reader: R) -> Result<impl Read> {
+    ruzstd::decoding::StreamingDecoder::new(reader)
+        .map_err(|e| anyhow::anyhow!("not a zstd stream: {e}"))
 }
 
 /// Unpacks an export held in memory, like the examples compiled into the
@@ -169,8 +250,7 @@ fn unique() -> u64 {
 /// whether it holds what replay needs. Every other entry is skipped; a
 /// path that is not plain names inside the archive is refused.
 fn unpack(reader: impl Read, staging: &Path) -> Result<bool> {
-    let decoder = zstd::Decoder::new(reader).context("not a zstd stream")?;
-    let mut archive = tar::Archive::new(decoder);
+    let mut archive = tar::Archive::new(decompress(reader)?);
     let mut replayable = false;
     for entry in archive.entries().context("not a tar archive")? {
         let mut entry = entry?;
@@ -238,10 +318,12 @@ fn is_complete(dir: &Path) -> bool {
 }
 
 /// How many hex digits of a URL's SHA-256 name its downloads directory.
+#[cfg(not(target_family = "wasm"))]
 const URL_KEY_DIGITS: usize = 16;
 
 /// The name of the directory downloads of `url` are kept in: the start
 /// of the URL's SHA-256, in hex.
+#[cfg(not(target_family = "wasm"))]
 fn url_key(url: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(url.as_bytes());
@@ -251,6 +333,7 @@ fn url_key(url: &str) -> String {
 
 /// The file name a download of `url` is kept under: the URL's last path
 /// segment, without a query or fragment, when it is a plain file name.
+#[cfg(not(target_family = "wasm"))]
 fn download_name(url: &str) -> &str {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let last = path.rsplit('/').next().unwrap_or_default();
@@ -418,6 +501,39 @@ mod tests {
         let run = import(&bytes[..], &dir).unwrap().dir;
         assert!(!run.join(crate::bookmarks::BOOKMARKS_FILE).exists());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_export_reads_into_memory_without_a_disk() {
+        // As the browser viewer opens exports: the manifest, the trace and
+        // small bookmarks come back as bytes, the replay data only marks
+        // the export replayable, and an archive without a trace is refused.
+        let marks = br#"{"version": 1, "marks": []}"#;
+        let bytes = archive(&[
+            ("trace.bin", b"trace"),
+            ("keyframes/0000000000000100.kf", b"kf"),
+            (crate::bookmarks::BOOKMARKS_FILE, marks),
+            ("manifest.json", br#"{"id": "3e7358ddd62c45d3"}"#),
+        ]);
+        let read = read_bytes(&bytes).unwrap();
+        assert_eq!(read.trace, b"trace");
+        assert_eq!(read.manifest, br#"{"id": "3e7358ddd62c45d3"}"#);
+        assert_eq!(read.bookmarks.as_deref(), Some(&marks[..]));
+        assert!(read.replayable);
+
+        let huge = vec![b' '; crate::bookmarks::MAX_BYTES as usize + 1];
+        let bytes = archive(&[
+            ("manifest.json", b"{}"),
+            ("trace.bin", b"trace"),
+            (crate::bookmarks::BOOKMARKS_FILE, &huge),
+        ]);
+        let read = read_bytes(&bytes).unwrap();
+        assert_eq!(read.bookmarks, None);
+        assert!(!read.replayable);
+
+        let no_trace = archive(&[("manifest.json", b"{}")]);
+        assert!(read_bytes(&no_trace).is_err());
+        assert!(read_bytes(b"not zstd").is_err());
     }
 
     #[test]

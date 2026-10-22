@@ -27,7 +27,7 @@ use crate::sideways::{Sideways, line_width, text_column};
 use crate::syntax::{Highlighter, Language};
 use crate::theme::{self, layout, size};
 use crate::ui::icons::Icon;
-use crate::ui::scrubber::Scrubber;
+use crate::ui::scrubber::{READING_A_FILE, Scrubber};
 use crate::ui::selectable::{colored, selectable, selects, viewer_line};
 use crate::ui::sideways::{shifted, sideways_layer};
 use crate::ui::tabs::RightTab;
@@ -142,6 +142,12 @@ fn unavailable(session: &Session) -> Option<&'static str> {
 impl Scrubber {
     /// Opens `path` in the viewer at the playhead.
     pub(super) fn open_file(&mut self, path: String, pid: u32, cx: &mut Context<Self>) {
+        // The browser viewer has no machine to run the recording on.
+        if cfg!(target_family = "wasm") && self.session.is_some() {
+            self.replay_in_desktop_app(READING_A_FILE, cx);
+            return;
+        }
+
         let Some(session) = &self.session else {
             return;
         };

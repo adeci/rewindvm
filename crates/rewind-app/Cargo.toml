@@ -15,23 +15,14 @@ default-run = "rewind-app"
 [workspace]
 
 [dependencies]
-# The terminal pane's emulator and pty, as Zed uses with GPUI.
-alacritty_terminal = "0.26"
 anyhow = "1"
 base64 = "0.22"
 # License keys are Ed25519 signatures, checked offline (see LICENSING.md).
 ed25519-dalek = "2"
 # Channels from the terminal's reader thread to the UI.
 futures = "0.3"
-# Signals to stop an engine command's process group when its lookup is
-# cancelled.
-libc = "0.2"
 # .rwd exports: a tar archive compressed with zstd, as the engine writes them.
 tar = "0.4"
-zstd = "0.13"
-# .rwd exports from https URLs, with rustls and compiled-in root
-# certificates, as the engine fetches them.
-ureq = { version = "3", default-features = false, features = ["rustls"] }
 # Downloads are kept under a hash of their URL.
 sha2 = "0.10"
 # GPUI, Zed's UI framework, as published from zed@1a28cff under the gpui-pre
@@ -39,7 +30,6 @@ sha2 = "0.10"
 # blade on Linux; gpui-pre renders through wgpu on Wayland and X11.
 gpui = { package = "gpui-pre", version = "=0.3.7" }
 log = "0.4"
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", features = ["wayland", "x11"] }
 rewind-trace = { path = "../rewind-trace" }
 # The escape sequences in a build's output, read as alacritty_terminal reads
 # them, for the build log's colors.
@@ -53,6 +43,40 @@ serde = { version = "1", features = ["derive"] }
 # runs on fancy-regex, which is Rust, in place of the Oniguruma C library;
 # the grammars come from vendor/syntaxes, compiled by build.rs.
 syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
+
+# What the desktop app needs of the machine it runs on, which the browser
+# build (`--target wasm32-unknown-unknown`) has none of.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+# The terminal pane's emulator and pty, as Zed uses with GPUI.
+alacritty_terminal = "0.26"
+# Signals to stop an engine command's process group when its lookup is
+# cancelled.
+libc = "0.2"
+# .rwd exports: a tar archive compressed with zstd, as the engine writes them.
+zstd = "0.13"
+# .rwd exports from https URLs, with rustls and compiled-in root
+# certificates, as the engine fetches them.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", features = ["wayland", "x11"] }
+
+# The browser build, src/bin/rewind-web.rs: a read-only viewer of .rwd
+# exports on GPUI's web platform, for the site's viewer page.
+[target.'cfg(target_family = "wasm")'.dependencies]
+# Without its default multithreaded feature: wasm threads need
+# SharedArrayBuffer, which needs cross-origin isolation headers a static
+# host such as GitHub Pages cannot send.
+gpui_web = { package = "gpui-pre-web", version = "=0.3.7", default-features = false }
+console_error_panic_hook = "0.1"
+# zstd in pure Rust: zstd-sys needs a C compiler that targets wasm32.
+ruzstd = "0.8"
+# The browser's clocks: std has none on wasm32-unknown-unknown.
+js-sys = "0.3"
+web-time = "1.1"
+# The command that generates the JS glue must be this exact version; the
+# web dev shell and nix/web.nix provide it.
+wasm-bindgen = "=0.2.127"
+# The page's localStorage, for what the desktop app keeps in files.
+web-sys = { version = "0.3", features = ["console", "Storage", "Window"] }
 
 # build.rs reads the grammars' YAML and dumps the syntax set it compiles,
 # so the app loads the dump instead of parsing YAML at every start.
@@ -69,6 +93,16 @@ gpui-pre-linux = { path = "vendor/gpui-pre-linux" }
 opt-level = 3
 lto = "thin"
 debug = "line-tables-only"
+
+# The browser build, `--profile web`: every byte is downloaded before the
+# window opens, so it is built for size, and wasm-opt -Oz shrinks it
+# further (nix/web.nix).
+[profile.web]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+debug = false
 
 # The license issuer: built only with --features issuer, so it never ships
 # in the app's package. See LICENSING.md.

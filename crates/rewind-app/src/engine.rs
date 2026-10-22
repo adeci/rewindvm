@@ -13,6 +13,7 @@
 
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
+#[cfg(not(target_family = "wasm"))]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -122,8 +123,27 @@ impl Cancel {
     }
 }
 
+/// Puts an engine command in a process group of its own, so cancelling a
+/// lookup stops gdb with it. The browser build starts no processes.
+trait OwnGroup {
+    fn own_group(&mut self) -> &mut Self;
+}
+
+impl OwnGroup for Command {
+    #[cfg(not(target_family = "wasm"))]
+    fn own_group(&mut self) -> &mut Self {
+        self.process_group(0)
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn own_group(&mut self) -> &mut Self {
+        self
+    }
+}
+
 /// Asks every process in the engine command's group to end: the engine,
 /// and gdb when it runs one.
+#[cfg(not(target_family = "wasm"))]
 fn stop_group(group: u32) {
     let Ok(group) = i32::try_from(group) else {
         return;
@@ -131,6 +151,10 @@ fn stop_group(group: u32) {
     // SAFETY: sends a signal to a process group this app started.
     unsafe { libc::kill(-group, libc::SIGTERM) };
 }
+
+/// The browser build starts no processes, so it has none to stop.
+#[cfg(target_family = "wasm")]
+fn stop_group(_group: u32) {}
 
 /// What the app says of a run this build of rewind replays another way than
 /// the build that recorded it, in place of files, source, a shell, gdb or
@@ -633,7 +657,7 @@ impl Engine for CliEngine {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .process_group(0)
+            .own_group()
             .spawn()
             .map_err(|e| match e.kind() {
                 std::io::ErrorKind::NotFound => EngineError::Missing {
@@ -841,7 +865,7 @@ impl CliEngine {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .process_group(0)
+            .own_group()
             .spawn()
             .map_err(|e| self.spawn_error(e, &command))?;
         if !cancel.started(child.id()) {

@@ -50,6 +50,8 @@ const VCPUS: u32 = 1;
 impl Render for Scrubber {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_title(window);
+        #[cfg(target_family = "wasm")]
+        self.sync_address();
 
         // The selectable lines register where they land as this frame is
         // laid out.
@@ -417,9 +419,11 @@ impl Scrubber {
         if let Some(stats) = stats {
             right = right.child(stats);
         }
-        right = right
-            .child(self.render_license_pill(cx))
-            .child(self.help_button(cx));
+        // The browser viewer is free to use and has no license to show.
+        if !cfg!(target_family = "wasm") {
+            right = right.child(self.render_license_pill(cx));
+        }
+        right = right.child(self.help_button(cx));
         let controls = self.window_controls(window);
         let pad_right = if controls.is_some() {
             size::CONTROLS_PAD_RIGHT
@@ -1790,14 +1794,20 @@ impl Scrubber {
                     .child(open_file)
                     .child(open_link),
             )
-            .when(!self.recent.is_empty(), |d| d.child(self.render_recent(cx)))
-            .child(
-                div()
-                    .font_family(self.fonts.mono.clone())
-                    .text_size(px(size::TEXT_SMALL))
-                    .text_color(rgb(theme::MUTED))
-                    .child("rewind-app <run-dir | run.rwd | URL | trace> [--compare <run>]    F1 starts the tour"),
-            );
+            .when(!self.recent.is_empty(), |d| d.child(self.render_recent(cx)));
+
+        // The browser viewer lists the examples beside it; the desktop app
+        // says how to open a run from the command line.
+        #[cfg(target_family = "wasm")]
+        let middle = middle.child(self.render_examples(cx));
+        #[cfg(not(target_family = "wasm"))]
+        let middle = middle.child(
+            div()
+                .font_family(self.fonts.mono.clone())
+                .text_size(px(size::TEXT_SMALL))
+                .text_color(rgb(theme::MUTED))
+                .child("rewind-app <run-dir | run.rwd | URL | trace> [--compare <run>]    F1 starts the tour"),
+        );
 
         div()
             .size_full()
@@ -1808,6 +1818,64 @@ impl Scrubber {
     }
 }
 
+#[cfg(target_family = "wasm")]
+impl Scrubber {
+    /// What the browser viewer's start screen adds: where a file comes
+    /// from, and the examples served beside the viewer, one row each with
+    /// its title and the file it opens.
+    fn render_examples(&self, cx: &mut Context<Self>) -> Div {
+        use crate::ui::page::{CORS_NOTE, EXAMPLES, NOT_UPLOADED};
+
+        let mut rows = div().flex().flex_col();
+        for (i, example) in EXAMPLES.iter().enumerate() {
+            let file = match example.compare {
+                Some(compare) => format!("{} compared with {}", example.url, compare),
+                None => example.url.to_string(),
+            };
+            rows = rows.child(
+                div()
+                    .id(SharedString::from(format!("example-{i}")))
+                    .flex()
+                    .flex_col()
+                    .px(px(size::RECENT_ROW_PAD_X))
+                    .py(px(size::RECENT_ROW_PAD_Y))
+                    .rounded(px(size::RADIUS_CARD))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(theme::RAISED_HOVER)))
+                    .child(div().text_color(rgb(theme::SOFT)).child(example.title))
+                    .child(
+                        div()
+                            .font_family(self.fonts.mono.clone())
+                            .text_size(px(size::TEXT_SMALL))
+                            .text_color(rgb(theme::MUTED))
+                            .child(file),
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.open_example(&EXAMPLES[i], cx)),
+                    ),
+            );
+        }
+        let note = div()
+            .w(px(size::RECENT_WIDTH))
+            .text_size(px(size::TEXT_SMALL))
+            .text_color(rgb(theme::MUTED))
+            .child(format!(
+                "Open a .rwd file from rewind export, or drop one anywhere on the page. {NOT_UPLOADED} {CORS_NOTE}"
+            ));
+        let examples = card(theme::PANEL, theme::LINE)
+            .w(px(size::RECENT_WIDTH))
+            .child(card_title(theme::MUTED).child("Examples"))
+            .child(rows);
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(size::EMPTY_GAP))
+            .child(note)
+            .child(examples)
+    }
+}
+
 impl Scrubber {
     /// The families of runs, the one changed last first, one row each
     /// however many forks they hold: how many failed, or else the base
@@ -1815,7 +1883,7 @@ impl Scrubber {
     /// and when one last changed. A row opens a failing run against a
     /// passing one, and the field above filters the rows.
     fn render_recent(&self, cx: &mut Context<Self>) -> Div {
-        let now = std::time::SystemTime::now();
+        let now = crate::clock::now();
         let query = self.recent_filter.read(cx).text().to_string();
         let shown: Vec<&Family> = self.recent.iter().filter(|f| f.matches(&query)).collect();
         let filter = div()

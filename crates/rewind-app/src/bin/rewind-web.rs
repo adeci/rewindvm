@@ -1,0 +1,124 @@
+//! `rewind-web`: the desktop app's window in a browser, as a read-only
+//! viewer of `.rwd` exports, for the site's viewer page. Built for
+//! wasm32-unknown-unknown and loaded through wasm-bindgen's glue by
+//! site/viewer/index.html, which calls [`start`] with its address and
+//! hands the app the exports it fetches and the files it reads. On the
+//! desktop the binary only says so.
+
+#![cfg_attr(target_family = "wasm", no_main)]
+
+#[cfg(not(target_family = "wasm"))]
+fn main() {
+    eprintln!("rewind-web runs in a browser: build it with --target wasm32-unknown-unknown");
+}
+
+#[cfg(target_family = "wasm")]
+mod web {
+    use std::sync::Arc;
+
+    use anyhow::Result;
+    use rewind_app::address::Address;
+    use rewind_app::engine::CliEngine;
+    use rewind_app::run::{InMemoryOrigin, Run, Session};
+    use rewind_app::ui::{self, Launch, RightColumn};
+    use rewind_app::web::{self as page, Delivery};
+    use wasm_bindgen::prelude::*;
+
+    /// Keeps a font the page fetched, for the app to load when it starts.
+    /// The page hands every font over before it calls [`start`].
+    #[wasm_bindgen]
+    pub fn add_font(bytes: Vec<u8>) {
+        page::add_font(bytes);
+    }
+
+    /// Opens the window on the page's canvas, with the start screen, and
+    /// asks the page for the exports `query`, the page's address, names.
+    #[wasm_bindgen]
+    pub fn start(query: String) {
+        console_error_panic_hook::set_once();
+        gpui_web::init_logging();
+
+        // The engine is the desktop's command, which the browser cannot
+        // start; the app says so of everything that needs it.
+        ui::run(Launch {
+            session: None,
+            step: None,
+            right: RightColumn::AtStep,
+            engine: Arc::new(CliEngine::from_env()),
+        });
+        page::fetch(&Address::parse(&query));
+    }
+
+    /// Opens the exports the page fetched for an address: `run` from
+    /// `url`, compared with `compare` from `compare_url`, at `step`.
+    #[wasm_bindgen]
+    pub fn open_fetched(
+        run: Vec<u8>,
+        url: String,
+        compare: Option<Vec<u8>>,
+        compare_url: Option<String>,
+        step: Option<f64>,
+    ) {
+        let address = Address {
+            url: Some(url),
+            compare: compare_url,
+            step: step.map(|step| step as u64),
+        };
+        let opened = session_of(&address, &run, compare.as_deref());
+        page::deliver(match opened {
+            Ok(session) => Delivery::Open {
+                session: Box::new(session),
+                address,
+            },
+            Err(e) => Delivery::Unread {
+                name: name_of(address.url.as_deref().unwrap_or_default()).to_string(),
+                why: format!("{e:#}"),
+            },
+        });
+    }
+
+    /// Opens a file the page read, picked or dropped: it has no address to
+    /// share.
+    #[wasm_bindgen]
+    pub fn open_file(name: String, bytes: Vec<u8>) {
+        let opened = Run::open_bytes(&name, &bytes, InMemoryOrigin::Export);
+        page::deliver(match opened {
+            Ok(run) => Delivery::Open {
+                session: Box::new(Session::new(run, None)),
+                address: Address::default(),
+            },
+            Err(e) => Delivery::Unread {
+                name,
+                why: format!("{e:#}"),
+            },
+        });
+    }
+
+    /// Says the page could not fetch `url`: the server's answer, or None
+    /// when the browser got none.
+    #[wasm_bindgen]
+    pub fn unfetched(url: String, answer: Option<String>) {
+        page::deliver(Delivery::Unfetched { url, answer });
+    }
+
+    /// The session of the exports an address names.
+    fn session_of(address: &Address, run: &[u8], compare: Option<&[u8]>) -> Result<Session> {
+        let url = address.url.as_deref().unwrap_or_default();
+        let run = Run::open_bytes(name_of(url), run, InMemoryOrigin::Export)?;
+        let other = match (address.compare.as_deref(), compare) {
+            (Some(url), Some(bytes)) => Some(Run::open_bytes(
+                name_of(url),
+                bytes,
+                InMemoryOrigin::Export,
+            )?),
+            _ => None,
+        };
+        Ok(Session::new(run, other))
+    }
+
+    /// The file name a URL ends in, without its query or fragment.
+    fn name_of(url: &str) -> &str {
+        let path = url.split(['?', '#']).next().unwrap_or(url);
+        path.rsplit('/').next().unwrap_or(path)
+    }
+}

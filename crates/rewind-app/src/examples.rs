@@ -9,6 +9,8 @@
 
 use anyhow::Result;
 
+#[cfg(target_family = "wasm")]
+use crate::run::InMemoryOrigin;
 use crate::run::{Run, Session};
 
 /// The failing build: make check exits 2 after a SIGSEGV in a worker.
@@ -20,11 +22,27 @@ pub const PASSING: &[u8] = include_bytes!("../examples/runs/mylib-pass.rwd");
 
 /// Unpacks both examples into the cache and opens the failing one
 /// compared with the passing one.
+#[cfg(not(target_family = "wasm"))]
 pub fn open() -> Result<Session> {
     let failing = Run::open_example(FAILING)?;
     let passing = Run::open_example(PASSING)?;
     Ok(Session::new(failing, Some(passing)))
 }
+
+/// Opens both examples from memory, the failing one compared with the
+/// passing one: the browser build has no cache to unpack them into.
+#[cfg(target_family = "wasm")]
+pub fn open() -> Result<Session> {
+    let failing = Run::open_bytes(FAILING_NAME, FAILING, InMemoryOrigin::Example)?;
+    let passing = Run::open_bytes(PASSING_NAME, PASSING, InMemoryOrigin::Example)?;
+    Ok(Session::new(failing, Some(passing)))
+}
+
+/// The names the browser build gives the examples, in place of a path.
+#[cfg(target_family = "wasm")]
+const FAILING_NAME: &str = "mylib-fail.rwd";
+#[cfg(target_family = "wasm")]
+const PASSING_NAME: &str = "mylib-pass.rwd";
 
 /// The file `name` inside an example export.
 #[cfg(test)]

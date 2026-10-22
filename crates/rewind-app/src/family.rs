@@ -516,14 +516,14 @@ impl Family {
     /// name the oldest of them, which is the one `rewind prune
     /// --identical` keeps.
     pub fn rows(&self) -> Vec<Row> {
-        self.rows_at(SystemTime::now())
+        self.rows_at(crate::clock::now())
     }
 
     /// The rows as the Runs panel draws them: under each schedule 0 run
     /// whose id is not in `unfolded`, its runs from boot that ended as it
     /// did, have no forks and are not in `keep` are one row.
     pub fn rows_folded(&self, unfolded: &HashSet<String>, keep: &[&str]) -> Vec<Row> {
-        self.rows_with(SystemTime::now(), Some(Fold { unfolded, keep }))
+        self.rows_with(crate::clock::now(), Some(Fold { unfolded, keep }))
     }
 
     /// The rows as `rows` gives them, with how long ago each recorded run

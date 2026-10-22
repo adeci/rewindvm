@@ -58,6 +58,12 @@ impl Scrubber {
                 this.loading = None;
                 match result {
                     Ok(session) => {
+                        // The example compiled in has no link for the
+                        // browser's address bar.
+                        #[cfg(target_family = "wasm")]
+                        {
+                            this.address_bar.address = crate::address::Address::default();
+                        }
                         this.show(session, None, cx);
                         let wanted = start == TourStart::Always || !tour::was_dismissed();
                         if wanted {

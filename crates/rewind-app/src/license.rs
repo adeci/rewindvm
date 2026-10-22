@@ -9,9 +9,10 @@
 
 use std::fmt;
 use std::io::Write as _;
+#[cfg(not(target_family = "wasm"))]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -49,6 +50,7 @@ const XDG_CONFIG_ENV: &str = "XDG_CONFIG_HOME";
 
 /// The license file's permissions: its owner reads and writes it, nobody
 /// else reads it.
+#[cfg(not(target_family = "wasm"))]
 const LICENSE_MODE: u32 = 0o600;
 const HOME_CONFIG_DIR: &str = ".config";
 
@@ -130,7 +132,7 @@ impl Date {
 
     /// Today in UTC.
     pub fn today() -> Date {
-        let seconds = SystemTime::now()
+        let seconds = crate::clock::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_secs();
@@ -545,15 +547,15 @@ pub fn save_to(path: &Path, text: &str, public_key: &[u8; 32]) -> std::io::Resul
         .ok_or_else(|| std::io::Error::other("the license path has no directory"))?;
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".{LICENSE_FILE}.{}", std::process::id()));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(LICENSE_MODE)
-        .open(&tmp)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(not(target_family = "wasm"))]
+    options.mode(LICENSE_MODE);
+    let mut file = options.open(&tmp)?;
 
     // A file left by an earlier attempt keeps its own permissions, which
     // the mode above does not change.
+    #[cfg(not(target_family = "wasm"))]
     file.set_permissions(std::fs::Permissions::from_mode(LICENSE_MODE))?;
     file.write_all(block.as_bytes())?;
     file.sync_all()?;

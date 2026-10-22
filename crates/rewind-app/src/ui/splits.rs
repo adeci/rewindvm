@@ -9,6 +9,7 @@
 //! layout; the edges only change their shares.
 
 use std::cell::Cell;
+#[cfg(test)]
 use std::path::Path;
 use std::rc::Rc;
 
@@ -53,18 +54,31 @@ impl Default for Splits {
 /// The file the panels' shares are kept in, in the app's settings.
 const LAYOUT_FILE: &str = "layout.json";
 
-/// Where the panels' shares are kept between launches.
-pub fn layout_path() -> Option<std::path::PathBuf> {
-    Some(crate::tour::config_dir()?.join(LAYOUT_FILE))
-}
-
 impl Splits {
+    /// The shares kept between launches, in the app's settings.
+    pub fn load_kept() -> Splits {
+        Splits::parse(crate::settings::kept().read(LAYOUT_FILE).as_deref())
+    }
+
+    /// Keeps the shares in the app's settings for the next launch.
+    pub fn keep(&self) {
+        if let Ok(text) = serde_json::to_string_pretty(self) {
+            crate::settings::kept().write(LAYOUT_FILE, &text);
+        }
+    }
+
     /// The shares saved at `path`, each brought inside its bounds; the
     /// default ones when there is no file or it does not read.
+    #[cfg(test)]
     pub fn load(path: &Path) -> Splits {
-        let saved: Option<Splits> = std::fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        let text = std::fs::read_to_string(path).ok();
+        Splits::parse(text.as_deref())
+    }
+
+    /// The shares `text` holds, each brought inside its bounds; the default
+    /// ones when there is no text or it is not shares.
+    fn parse(text: Option<&str>) -> Splits {
+        let saved: Option<Splits> = text.and_then(|text| serde_json::from_str(text).ok());
         let Some(saved) = saved else {
             return Splits::default();
         };
@@ -92,6 +106,7 @@ impl Splits {
     }
 
     /// Saves the shares to `path`, making its directory.
+    #[cfg(test)]
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -110,7 +125,8 @@ pub enum Edge {
     MiddleRight,
     /// Between the process tree and the files.
     ProcsFiles,
-    /// The terminal pane's top edge.
+    /// The terminal pane's top edge, which the browser build never has.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     Terminal,
     /// The top edge of the source panel's frame list.
     Frames,
@@ -330,9 +346,7 @@ impl Scrubber {
     /// Saves the panels' shares. A failure to write only means the next
     /// launch starts from the default ones.
     fn keep_splits(&self) {
-        if let Some(path) = layout_path() {
-            let _ = self.splits.save(&path);
-        }
+        self.splits.keep();
     }
 
     /// Puts an edge back where it starts.

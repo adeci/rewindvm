@@ -49,6 +49,14 @@ pub struct Export {
     pub replayable: bool,
 }
 
+/// What a run opened from memory is: an example compiled in, or an export
+/// the browser viewer's page fetched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InMemoryOrigin {
+    Example,
+    Export,
+}
+
 pub struct Run {
     /// The path the run is read from: its directory, or its trace file. An
     /// export's is the directory it was unpacked into.
@@ -60,6 +68,9 @@ pub struct Run {
     /// Why the manifest was set aside, when it did not parse.
     pub manifest_warning: Option<String>,
     pub timeline: Timeline,
+    /// The bookmarks file an export opened from memory carried; a run on
+    /// disk keeps its bookmarks in its directory instead.
+    pub carried_bookmarks: Option<Vec<u8>>,
 }
 
 impl Run {
@@ -98,6 +109,56 @@ impl Run {
         Run::open_at(&dir, Origin::Example)
     }
 
+    /// Opens an export held in memory, without unpacking it to disk, as
+    /// the browser build opens the exports its page fetched. `name` stands
+    /// in for the path the run was read from.
+    pub fn open_bytes(name: &str, bytes: &[u8], origin: InMemoryOrigin) -> Result<Run> {
+        let export = archive::read_bytes(bytes).with_context(|| format!("reading {name}"))?;
+        let path = PathBuf::from(name);
+        let origin = match origin {
+            InMemoryOrigin::Example => Origin::Example,
+            InMemoryOrigin::Export => Origin::Export(Export {
+                source: path.clone(),
+                file: path.clone(),
+                replayable: export.replayable,
+            }),
+        };
+
+        // The manifest is optional here too: one that does not parse
+        // leaves the trace to open alone.
+        let (manifest, manifest_warning) = match Manifest::parse(&export.manifest) {
+            Ok(m) => (Some(m), None),
+            Err(e) => (None, Some(format!("{e:#}"))),
+        };
+        let trace = Trace::from_bytes(&export.trace)
+            .with_context(|| format!("reading the trace in {name}"))?;
+        let mut run = Run::with_trace(path, origin, manifest, manifest_warning, trace);
+        run.carried_bookmarks = export.bookmarks;
+        Ok(run)
+    }
+
+    /// A run of a trace already read, and its manifest.
+    fn with_trace(
+        path: PathBuf,
+        origin: Origin,
+        manifest: Option<Manifest>,
+        manifest_warning: Option<String>,
+        trace: Trace,
+    ) -> Run {
+        let outcome = manifest.as_ref().and_then(|m| m.outcome.as_ref());
+        let total_hint = outcome.map(|o| o.step);
+        let stop = outcome.map(|o| &o.stop);
+        let timeline = Timeline::new(trace, total_hint, stop);
+        Run {
+            path,
+            origin,
+            manifest,
+            manifest_warning,
+            timeline,
+            carried_bookmarks: None,
+        }
+    }
+
     fn open_at(path: &Path, origin: Origin) -> Result<Run> {
         let (trace_path, manifest_path) = if path.is_dir() {
             (path.join(TRACE), Some(path.join(MANIFEST)))
@@ -123,17 +184,13 @@ impl Run {
 
         let trace = Trace::read(&trace_path)
             .with_context(|| format!("reading {}", trace_path.display()))?;
-        let outcome = manifest.as_ref().and_then(|m| m.outcome.as_ref());
-        let total_hint = outcome.map(|o| o.step);
-        let stop = outcome.map(|o| &o.stop);
-        let timeline = Timeline::new(trace, total_hint, stop);
-        Ok(Run {
-            path: path.to_path_buf(),
+        Ok(Run::with_trace(
+            path.to_path_buf(),
             origin,
             manifest,
             manifest_warning,
-            timeline,
-        })
+            trace,
+        ))
     }
 
     /// A short name: the manifest's, else the directory or file name.
