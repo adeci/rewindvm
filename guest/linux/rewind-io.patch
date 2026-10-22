@@ -1,0 +1,276 @@
+--- a/arch/x86/kernel/cpu/rewind.c
++++ b/arch/x86/kernel/cpu/rewind.c
+@@ -21,6 +21,10 @@
+  *     writes and their closes, reads of files being written, and program
+  *     output, each written to the monitor with the guest physical address
+  *     of a record,
++ *   - read and write records: each write to a regular file, with where
++ *     in the file it went, and each open of one, appended to a buffer
++ *     the shared page names, which the monitor drains at its next step,
++ *     so they cost no exit,
+  *   - a terminal for the workload's output, as nix-daemon gives a
+  *     builder, whose writes join the event stream,
+  *   - the CPU count the affinity system calls report, which may exceed the
+@@ -97,9 +101,10 @@
+  * The version of the interface between this kernel and the monitor: the
+  * ports, the records and struct rewind_shared. The kernel writes it into
+  * rewind_shared.interface before setup, and a monitor that speaks another
+- * stops rather than run it.
++ * stops rather than run it. Interface 4 added the read and write records
++ * in rewind_shared.io_*.
+  */
+-#define REWIND_INTERFACE	3
++#define REWIND_INTERFACE	4
+ 
+ /* Values written to REWIND_PORT_EXIT. */
+ enum rewind_exit {
+@@ -122,6 +127,11 @@
+ 	REWIND_EV_MARK = 10,	/* payload: text written to /dev/rewind */
+ 	REWIND_EV_READ_OPEN = 11, /* aux: open flags; payload: path */
+ 	REWIND_EV_CLOSE = 12,	/* payload: path */
++	/*
++	 * Never sent by this kernel: the kind the monitor stores the read
++	 * and write records under in the trace, after it drains them.
++	 */
++	REWIND_EV_IO = 13,
+ };
+ 
+ #define REWIND_FLAG_THREAD	BIT(0)
+@@ -211,6 +221,17 @@
+ 	 * at the step a fork given another seed starts from.
+ 	 */
+ 	u8 reseed[32];
++	/*
++	 * Read and write records: the kernel appends them to rewind_io_buf
++	 * at io_head, and the monitor takes them at its next step and sets
++	 * io_head back to 0, so no record costs an exit. A record that does
++	 * not fit is counted in io_lost, which the monitor also sets back to
++	 * 0, and the trace says how many were lost where.
++	 */
++	u64 io_buf;		/* physical address of rewind_io_buf */
++	u32 io_size;
++	u32 io_head;
++	u32 io_lost;
+ };
+ 
+ /* Reasons for an interrupt, in rewind_shared.pending. */
+@@ -233,6 +254,68 @@
+ static u8 rewind_buf[REWIND_RECORD_MAX] __aligned(PAGE_SIZE);
+ 
+ /*
++ * Read and write records: a write record for each write to a regular
++ * file, and an open record for each successful open of a regular file,
++ * for reading or for writing, appended to rewind_io_buf without an exit.
++ * The buffer holds what the busiest stretch between two steps of a
++ * sagittarius-scheme build appends, about 19,000 write records, with room
++ * to spare.
++ */
++#define REWIND_IO_BUF_SIZE	(1024 * 1024)
++
++enum rewind_io_kind {
++	REWIND_IO_WRITE = 1,		/* data: u64 pos, u32 count */
++	REWIND_IO_READ_OPEN = 2,	/* data: path */
++	REWIND_IO_WRITE_OPEN = 3,	/* data: path */
++};
++
++struct rewind_io_record {
++	u16 len;		/* the whole record, header included */
++	u8 kind;
++	u8 pad;
++	u32 tid;
++	u64 ino;		/* with dev, the file */
++	u32 dev;
++	u8 data[];
++} __packed;
++
++static u8 rewind_io_buf[REWIND_IO_BUF_SIZE] __aligned(PAGE_SIZE);
++
++/*
++ * Appends one record. Interrupts are off, and io_head moves only once the
++ * record is whole, so the monitor never sees a record half written.
++ */
++static void rewind_io_append(u8 kind, struct file *file, const void *data,
++			     size_t len)
++{
++	struct inode *inode = file_inode(file);
++	struct rewind_io_record *rec;
++	unsigned long irqflags;
++	u32 head, size;
++
++	len = min_t(size_t, len, PATH_MAX);
++	size = sizeof(*rec) + len;
++	local_irq_save(irqflags);
++	head = READ_ONCE(rewind_shared.io_head);
++	if (head + size > REWIND_IO_BUF_SIZE) {
++		WRITE_ONCE(rewind_shared.io_lost,
++			   READ_ONCE(rewind_shared.io_lost) + 1);
++		local_irq_restore(irqflags);
++		return;
++	}
++	rec = (struct rewind_io_record *)(rewind_io_buf + head);
++	rec->len = size;
++	rec->kind = kind;
++	rec->pad = 0;
++	rec->tid = current->pid;
++	rec->ino = inode->i_ino;
++	rec->dev = inode->i_sb->s_dev;
++	memcpy(rec->data, data, len);
++	WRITE_ONCE(rewind_shared.io_head, head + size);
++	local_irq_restore(irqflags);
++}
++
++/*
+  * Write one record to the monitor. The record is assembled in a single
+  * static buffer with interrupts off: the vCPU is the only CPU, and nothing
+  * in this kernel raises an NMI, so nothing else can touch the buffer
+@@ -728,6 +811,8 @@
+ 	rewind_running = true;
+ 	rewind_publish_tasks();
+ 	rewind_shared.interface = REWIND_INTERFACE;
++	rewind_shared.io_buf = __pa_symbol(rewind_io_buf);
++	rewind_shared.io_size = REWIND_IO_BUF_SIZE;
+ 	outl(__pa_symbol(&rewind_shared), REWIND_PORT_SETUP);
+ 
+ 	sysvec_install(HYPERVISOR_CALLBACK_VECTOR, sysvec_rewind_callback);
+@@ -1109,11 +1194,99 @@
+ }
+ 
+ /*
++ * A write record for a call that wrote `ret` bytes to a regular file:
++ * write, writev, pwrite64, pwritev, pwritev2, copy_file_range or
++ * sendfile, with where in the file the bytes went.
++ */
++static void rewind_io_write(struct pt_regs *regs, long id, long ret)
++{
++	loff_t __user *off_out;
++	struct file *file;
++	unsigned int fd;
++	loff_t end;
++	struct {
++		u64 pos;
++		u32 count;
++	} __packed w;
++
++	/* The descriptor written to. */
++	switch (id) {
++	case __NR_write:
++	case __NR_writev:
++	case __NR_pwrite64:
++	case __NR_pwritev:
++	case __NR_pwritev2:
++	case __NR_sendfile:
++		fd = regs->di;
++		break;
++	case __NR_copy_file_range:
++		fd = regs->dx;
++		break;
++	default:
++		return;
++	}
++	file = fget(fd);
++	if (!file)
++		return;
++	if (!S_ISREG(file_inode(file)->i_mode)) {
++		fput(file);
++		return;
++	}
++
++	/*
++	 * Where the bytes went: an explicit offset, which copy_file_range
++	 * has already moved past them, or else the file position, which the
++	 * call has.
++	 */
++	off_out = (loff_t __user *)regs->r10;
++	if (id == __NR_pwrite64 || id == __NR_pwritev ||
++	    (id == __NR_pwritev2 && (long)regs->r10 != -1))
++		w.pos = regs->r10;
++	else if (id == __NR_copy_file_range && off_out &&
++		 !get_user(end, off_out))
++		w.pos = end - ret;
++	else
++		w.pos = file->f_pos - ret;
++	w.count = ret;
++	rewind_io_append(REWIND_IO_WRITE, file, &w, sizeof(w));
++	fput(file);
++}
++
++/*
++ * An open record for a successful open of a regular file, `fd`: the path
++ * it opened, as a read-open or, when it can write the file, a write-open.
++ * Called with rewind_path_lock held, in the same hold as the open's own
++ * event: taking the lock a second time after an event's exit would let a
++ * task woken at the first release take it in between, and run where it
++ * did not before.
++ */
++static void rewind_io_open(long fd)
++{
++	struct file *file = fget(fd);
++	char *path;
++	u8 kind;
++
++	if (!file)
++		return;
++	kind = (file->f_mode & FMODE_WRITE) ? REWIND_IO_WRITE_OPEN :
++					      REWIND_IO_READ_OPEN;
++	if (S_ISREG(file_inode(file)->i_mode)) {
++		path = d_path(&file->f_path, rewind_path_a, PATH_MAX);
++		if (!IS_ERR(path)) {
++			rewind_strip_deleted(path);
++			rewind_io_append(kind, file, path, strlen(path));
++		}
++	}
++	fput(file);
++}
++
++/*
+  * Opens for writing, unlinks and renames that succeeded, once they have:
+  * one that failed changed no file. The registers still hold the call's
+- * arguments, so the path is read as it was passed.
++ * arguments, so the path is read as it was passed. An open that
++ * succeeded also gets its open record, `ret` being its descriptor.
+  */
+-static void rewind_report_changes(struct pt_regs *regs, long id)
++static void rewind_report_changes(struct pt_regs *regs, long id, long ret)
+ {
+ 	mutex_lock(&rewind_path_lock);
+ 	switch (id) {
+@@ -1141,15 +1314,23 @@
+ 		rewind_report_rename(regs->di, regs->si, regs->dx, regs->r10);
+ 		break;
+ 	}
++	switch (id) {
++	case __NR_open:
++	case __NR_openat:
++	case __NR_openat2:
++	case __NR_creat:
++		rewind_io_open(ret);
++		break;
++	}
+ 	mutex_unlock(&rewind_path_lock);
+ }
+ 
+ /*
+- * A system call that succeeded: the file changes it made, and an open for
+- * reading of a regular file some process has open for writing, so the
+- * reader can see it half written. That open is seen from the file it
+- * opened: an open of a file nobody is writing, which is nearly every one,
+- * costs a descriptor lookup and no record.
++ * A system call that succeeded: the file changes it made, its write or
++ * open records, and an open for reading of a regular file some process
++ * has open for writing, so the reader can see it half written. That open
++ * is seen from the file it opened: an open of a file nobody is writing,
++ * which is nearly every one, costs a descriptor lookup and no event.
+  */
+ static void rewind_probe_sys_exit(void *data, struct pt_regs *regs, long ret)
+ {
+@@ -1160,7 +1341,9 @@
+ 
+ 	if (ret < 0 || in_ia32_syscall())
+ 		return;
+-	rewind_report_changes(regs, id);
++	rewind_report_changes(regs, id, ret);
++	if (ret > 0)
++		rewind_io_write(regs, id, ret);
+ 
+ 	if (id != __NR_open && id != __NR_openat && id != __NR_openat2)
+ 		return;

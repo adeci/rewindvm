@@ -93,6 +93,10 @@ platforms. The platform is detected by the CPUID signature `RewindRewind`.
   close that drops a written file's last reference, and an open for reading
   of a regular file whose inode counts a writer. Opens of files nobody is
   writing, nearly all of them, cost a descriptor lookup and no record.
+- It keeps read and write records: one for each write to a regular file,
+  with where in the file the bytes went, and one for each open of a regular
+  file, for reading or for writing. These cost no exit. See
+  [Read and write records](#read-and-write-records).
 - `sched_getaffinity` reports the CPU count given as `rewind.cpus=` on the
   command line, and `sched_setaffinity` takes any of those CPUs to mean the
   one there is (see [Exploring interleavings](#exploring-interleavings)).
@@ -213,9 +217,9 @@ the last event that wrote, renamed or unlinked each path, or as original when
 none did, and keeps the paths the VM did not have as absent. A later lookup
 whose step has the same last event for a path reads it from there, and makes
 no `files` fork when every path is there. An open for writing counts once
-every process that opened the file has closed it or exited, since the trace
-does not record the writes themselves; until then the file is read from the
-VM each time.
+every process that opened the file has closed it or exited, since the open
+marks only the start of its writes; until then the file is read from the VM
+each time.
 
 DWARF and sources for everything in the store come by build ID from
 nixseparatedebuginfod2, which Rewind starts for the session on a socket it
@@ -277,6 +281,41 @@ stamps it with the step.
 | Signal               | Signal, `si_code`, and the fault address                        |
 | Open, Unlink, Rename | Paths of files opened for writing, removed or renamed           |
 | Mark                 | A line written to `/dev/rewind`                                 |
+
+#### Read and write records
+
+The kernel also keeps a record of each write to a regular file and each
+open of one. Sending each of these as a record above would cost an exit,
+and an exit is a step, so it would change the run. Instead the kernel
+appends them to a 1 MiB buffer in its memory, and the shared page says
+where the buffer is and how full it is. At every step the monitor takes
+what the buffer holds and sets it back to empty. A guest with records and
+the same guest without them make the same steps, because no record adds an
+exit.
+
+| Record     | What it holds                                              |
+| ---------- | ---------------------------------------------------------- |
+| Write      | The thread, the file, where in the file, how many bytes    |
+| Read-open  | The thread and the path of a regular file opened to read   |
+| Write-open | The thread, the file and its path, opened to write         |
+| Lost       | How many records did not fit in the buffer since last step |
+
+`write`, `writev`, `pwrite64`, `pwritev`, `pwritev2`, `copy_file_range`
+and `sendfile` make write records. Writes through a memory mapping, `splice`
+and io_uring make none. The kernel adds the open records in the same hold of
+its path lock as the open's own event. Taking the lock a second time there
+let another thread run first in a sagittarius build, which changed the run.
+
+If the buffer fills before the next step, the records that do not fit are
+lost, and the monitor stores a Lost record with their count at that step.
+With the 64 KiB buffer of a first version, a sagittarius build lost 29,678
+records at 11 steps, in stretches of up to 19,000 writes with no exit
+between them. With 1 MiB it lost none.
+
+A guest kernel names the version of its interface with the monitor in the
+shared page. Kernels of version 4 keep these records. The monitor still
+runs kernels of version 3, which keep none, so runs recorded before records
+existed replay as they did.
 
 ### The CPU model
 
@@ -439,6 +478,24 @@ reads it and answers the scrubber's questions: which processes were alive at a
 step, what they had printed, which files they had written, which build phase
 it was, and where two runs first differ.
 
+The read and write records of a step are stored in the same file, as one or
+more records of kind 13 at that step, before the record the step itself
+makes, if any. The guest never sends kind 13. Their payload is a compact encoding, in
+`rewind_trace::io_records`. Each file gets a number the first time a
+record names it. Each path is stored once, as the bytes it shares with the
+path stored before it and the rest. A write's position is stored as the
+distance from where the file's last write ended, which is 0 for a file
+written front to back. A thread is stored only when it changes. Numbers are
+varints. Decoding a record needs the records before it, so a machine
+restored from a keyframe first reads the trace up to the keyframe to go on
+encoding the same way. The records are not events: the scrubber and the app
+never see them, and traces without them, from older runs, read as before.
+A trace's format version stays 1, since the framing did not change.
+
+The records cost 190 KB on a neatvnc build, whose trace was 424 KB before
+(+45%), and 2.0 MB on a sagittarius build, whose trace was 7.08 MB
+(+28%).
+
 ## Keyframes
 
 A keyframe captures everything that decides what the machine does next:
@@ -463,7 +520,9 @@ Runs take a keyframe every quarter second of wall time. Seeking to a step
 restores the latest keyframe at or before it and runs forward, so a seek costs
 at most about one interval. `rewind replay --from` restores a keyframe, runs
 to the end and compares the rest of the trace with the original. Every
-keyframe checked this way reproduces the rest of its run exactly.
+keyframe checked this way reproduces the rest of its run exactly. The record
+buffer is empty at every step, so a
+keyframe needs nothing of it beyond the shared page.
 
 A fork that looks inside a run, for `rewind where`, `gdb`, `cat` or `shell`,
 also keeps a keyframe at its step when the latest one before it is more than
@@ -958,6 +1017,10 @@ Three earlier designs did not work, and why is worth keeping.
 - **User-space RDRAND and RDSEED** still work if a program executes them
   without checking CPUID. KVM does not let the monitor trap them. Hardly any
   program does this.
+- **Read and write records miss some writes.** Writes through a memory
+  mapping, `splice` and io_uring are not recorded, and records that do not
+  fit in the guest's 1 MiB buffer between two steps are lost. The trace
+  says how many were lost at each step.
 - **No network**, other than loopback.
 - **x86_64 Linux hosts with KVM only.**
 

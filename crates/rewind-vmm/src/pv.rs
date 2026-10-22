@@ -142,8 +142,11 @@ pub const SHARED_TASKS: u64 = (SHARED_STALL_NS + 4).next_multiple_of(8);
 /// The version of the interface between the monitor and the guest kernel:
 /// the ports, the records and the shared page. The kernel writes it into
 /// the shared page, after the task layout, before it sends setup; a kernel
-/// from before rewind 1.0 wrote none, and the field reads 0.
-pub const INTERFACE_VERSION: u32 = 3;
+/// from before rewind 1.0 wrote none, and the field reads 0. Version 4
+/// added the read and write records; a kernel of version 3 runs as it
+/// did, without them.
+pub const INTERFACE_VERSION: u32 = 4;
+const INTERFACE_WITHOUT_IO: u32 = 3;
 pub const SHARED_INTERFACE: u64 = SHARED_TASKS + 8 * TASK_LAYOUT_FIELDS as u64;
 
 /// Where a task off the CPU saved its user FS and GS bases, as offsets in
@@ -158,11 +161,33 @@ pub const PENDING_RESEED: u32 = 1 << 5;
 pub const SHARED_RESEED: u64 = SHARED_TASK_BASES + 8 * TASK_BASES_FIELDS as u64;
 pub use rewind_trace::schedule::RESEED_BYTES;
 
+/// Read and write records (see rewind_trace::io_records): after the
+/// reseed bytes, the physical address of the guest's record buffer, its
+/// size, how far it is filled, and how many records it had no room for.
+/// The monitor takes the records at every step and sets the fill and the
+/// count back to 0.
+pub const SHARED_IO_BUF: u64 = SHARED_RESEED + RESEED_BYTES as u64;
+pub const SHARED_IO_SIZE: u64 = SHARED_IO_BUF + 8;
+pub const SHARED_IO_HEAD: u64 = SHARED_IO_SIZE + 4;
+pub const SHARED_IO_LOST: u64 = SHARED_IO_HEAD + 4;
+/// The most the monitor reads from the buffer at one step: the guest
+/// kernel's buffer size.
+pub const IO_BUF_MAX: usize = 1 << 20;
+
+/// Whether a guest kernel buffers read and write records for the monitor
+/// to take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuestIo {
+    Unbuffered,
+    Buffered,
+}
+
 /// Whether a guest kernel that names interface `version` is one this
-/// monitor runs.
-pub fn check_interface(version: u32) -> anyhow::Result<()> {
+/// monitor runs, and if so whether it buffers read and write records.
+pub fn check_interface(version: u32) -> anyhow::Result<GuestIo> {
     match version {
-        INTERFACE_VERSION => Ok(()),
+        INTERFACE_VERSION => Ok(GuestIo::Buffered),
+        INTERFACE_WITHOUT_IO => Ok(GuestIo::Unbuffered),
         0 => anyhow::bail!(
             "the run's guest kernel names no interface: it is from before rewind 1.0, \
              which this build does not run; record the run again"
@@ -301,11 +326,21 @@ mod interface_tests {
         assert_eq!(RESEED_BYTES, 32);
     }
 
-    /// The monitor runs only a kernel that names the interface it speaks;
-    /// a kernel from before rewind 1.0 names none, which reads as 0.
+    /// The monitor runs only a kernel that names an interface it speaks:
+    /// its own, whose kernel buffers read and write records, or the one
+    /// before, whose kernel does not. A kernel from before rewind 1.0
+    /// names none, which reads as 0.
     #[test]
     fn the_monitor_runs_only_its_own_interface() {
-        assert!(check_interface(INTERFACE_VERSION).is_ok());
+        assert_eq!(INTERFACE_VERSION, 4);
+        assert_eq!(
+            check_interface(INTERFACE_VERSION).unwrap(),
+            GuestIo::Buffered
+        );
+        assert_eq!(
+            check_interface(INTERFACE_VERSION - 1).unwrap(),
+            GuestIo::Unbuffered
+        );
         let none = format!("{:#}", check_interface(0).unwrap_err());
         assert!(none.contains("before rewind 1.0"), "{none}");
         let other = format!("{:#}", check_interface(INTERFACE_VERSION + 1).unwrap_err());
@@ -313,6 +348,17 @@ mod interface_tests {
             other.contains(&format!("interface {}", INTERFACE_VERSION + 1)),
             "{other}"
         );
+    }
+
+    /// The read and write records' fields follow the reseed bytes, as
+    /// struct rewind_shared lays them out: the buffer's address, its size,
+    /// how far it is filled and how many records it lost.
+    #[test]
+    fn the_record_buffer_follows_the_reseed_bytes() {
+        assert_eq!(SHARED_IO_BUF, SHARED_RESEED + 32);
+        assert_eq!(SHARED_IO_SIZE, SHARED_IO_BUF + 8);
+        assert_eq!(SHARED_IO_HEAD, SHARED_IO_SIZE + 4);
+        assert_eq!(SHARED_IO_LOST, SHARED_IO_HEAD + 4);
     }
 }
 

@@ -32,6 +32,9 @@ pkgs.stdenv.mkDerivation {
     # rewind.dirents=N: directories listed in the order of a SipHash of
     # each name keyed by N, as an ext4 made with another hash seed would
     ../guest/linux/rewind-dirents.patch
+    # Read and write records, appended to a buffer the monitor drains at
+    # steps it takes anyway
+    ../guest/linux/rewind-io.patch
   ];
 
   depsBuildBuild = [ pkgs.buildPackages.stdenv.cc ];

@@ -10,7 +10,8 @@
 //! had printed, which files they had written, and where two runs first
 //! went different ways. It also holds what the engine records beside a
 //! trace and the app reads: the manifest, and how a run stopped and
-//! ended.
+//! ended. A trace file also holds the run's read and write records,
+//! which [`io_records`] decodes; a [`Trace`] is the events without them.
 
 pub mod compare;
 pub mod contents;
@@ -18,6 +19,7 @@ pub mod ending;
 mod event;
 pub mod export;
 pub mod file_diff;
+pub mod io_records;
 pub mod located;
 pub mod machine;
 pub mod manifest;
@@ -151,10 +153,15 @@ impl Trace {
         Trace::decode(&records_from(bytes)?)
     }
 
-    /// The trace of a file's records, as [`records`] reads them.
+    /// The trace of a file's records, as [`records`] reads them. The read
+    /// and write records among them are not events, and are left to
+    /// [`crate::io_records::decode`].
     pub fn decode(records: &[(u64, Vec<u8>)]) -> io::Result<Trace> {
         let mut events = Vec::with_capacity(records.len());
         for (step, record) in records {
+            if crate::io_records::is_io(record) {
+                continue;
+            }
             let event = Event::decode(*step, record)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             events.push(event);
@@ -1377,6 +1384,35 @@ mod tests {
         assert_eq!(t.events[0].step, 42);
         assert_eq!(t.events[0].kind, EventKind::Mark { text: "hi".into() });
         assert!(Trace::from_bytes(b"not a trace!").is_err());
+    }
+
+    #[test]
+    fn read_and_write_records_are_not_events() {
+        // A trace file holding a mark and, at the same step, a write
+        // record: the trace has the mark alone, and the log the write.
+        let mut mark = Vec::new();
+        mark.extend_from_slice(&((HEADER_LEN + 3) as u32).to_le_bytes());
+        mark.extend_from_slice(&10u16.to_le_bytes());
+        mark.extend_from_slice(&[0u8; 14]);
+        mark.extend_from_slice(b"hi\n");
+        let mut guest = Vec::new();
+        guest.extend_from_slice(&((io_records::GUEST_HEADER_LEN + 12) as u16).to_le_bytes());
+        guest.extend_from_slice(&[1, 0]);
+        guest.extend_from_slice(&5u32.to_le_bytes());
+        guest.extend_from_slice(&[0u8; 12]);
+        guest.extend_from_slice(&0u64.to_le_bytes());
+        guest.extend_from_slice(&9u32.to_le_bytes());
+        let mut records = vec![(42, mark)];
+        for r in io_records::Encoder::new().encode(&guest, 0) {
+            records.push((42, r));
+        }
+
+        let t = Trace::decode(&records).unwrap();
+        assert_eq!(t.events.len(), 1);
+        assert_eq!(t.events[0].kind, EventKind::Mark { text: "hi".into() });
+        let log = io_records::decode(&records).unwrap();
+        assert_eq!(log.records.len(), 1);
+        assert_eq!(log.records[0].step, 42);
     }
 
     #[test]

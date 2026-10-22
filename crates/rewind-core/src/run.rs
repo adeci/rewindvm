@@ -646,13 +646,19 @@ impl Run {
 
         // A run that shares its start with its parent is restored at the
         // parent's keyframe, and replays the parent's events up to there
-        // into its trace further down. The store a restore opened stays
-        // open until this execution knows whether it takes keyframes.
+        // into its trace further down. The restored machine's read and
+        // write records go on from that same prefix of the parent's trace.
+        // The store a restore opened stays open until this execution knows
+        // whether it takes keyframes.
         let (mut machine, mut store, last_keyframe) = match &shortcut {
             Some(s) => {
                 let store = rewind_store::Store::open(&home.store())?;
-                let machine =
-                    Machine::restore(&config, &s.chain, &crate::keyframes::ReadPages(&store))?;
+                let machine = Machine::restore(
+                    &config,
+                    &s.chain,
+                    &crate::keyframes::ReadPages(&store),
+                    &s.prefix,
+                )?;
                 (machine, Some(store), Some(s.base))
             }
             None => (Machine::boot(&config)?, None, None),
@@ -1046,8 +1052,14 @@ impl Run {
             Some(kf) => {
                 let store = rewind_store::Store::open(&home.store())?;
                 let chain = keyframes.chain(kf)?;
-                let machine =
-                    Machine::restore(&config, &chain, &crate::keyframes::ReadPages(&store))?;
+                let records = self.records()?;
+                let through = records.partition_point(|(s, _)| *s <= kf);
+                let machine = Machine::restore(
+                    &config,
+                    &chain,
+                    &crate::keyframes::ReadPages(&store),
+                    &records[..through],
+                )?;
                 (machine, Some(Restored { kf, chain, store }))
             }
             None => (Machine::boot(&config)?, None),

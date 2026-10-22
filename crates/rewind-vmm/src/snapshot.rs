@@ -231,8 +231,15 @@ impl Machine {
     }
 
     /// A machine restored from a chain of keyframes, the full one first and
-    /// the one to restore last.
-    pub fn restore(config: &Config, chain: &[Keyframe], pages: &dyn Pages) -> Result<Machine> {
+    /// the one to restore last. `trace` is the run's trace up to the last
+    /// keyframe's step, record by record, which the machine's read and
+    /// write records go on from.
+    pub fn restore(
+        config: &Config,
+        chain: &[Keyframe],
+        pages: &dyn Pages,
+        trace: &[(u64, Vec<u8>)],
+    ) -> Result<Machine> {
         let last = chain.last().context("restoring from no keyframes")?;
         if chain[0].parent.is_some() {
             bail!("a keyframe chain must start with a full keyframe");
@@ -293,9 +300,16 @@ impl Machine {
         };
         m.dev.shared = d.shared;
         // A keyframe taken after setup restores the interface the guest
-        // kernel named then, which must be this monitor's too.
+        // kernel named then, which must be one this monitor speaks. A
+        // kernel that buffers read and write records has its records
+        // encoded against the ones the trace holds so far.
         if let Some(shared) = m.dev.shared {
-            crate::pv::check_interface(m.dev.guest_interface(shared)?)?;
+            let io = crate::pv::check_interface(m.dev.guest_interface(shared)?)?;
+            if io == crate::pv::GuestIo::Buffered {
+                let encoder = rewind_trace::io_records::Encoder::resume(trace)
+                    .context("reading the read and write records up to the keyframe")?;
+                m.dev.io = Some(encoder);
+            }
         }
         m.dev.epoch = d.epoch;
         m.dev.step = d.step;

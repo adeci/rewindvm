@@ -278,6 +278,9 @@ pub(crate) struct Devices {
     /// was booted or restored: a schedule's late timer at a step changes
     /// the run only if that step armed one.
     pub timer_armed_at: Option<u64>,
+    /// What turns the guest's read and write records into trace records,
+    /// once a guest kernel that buffers them has set up.
+    pub io: Option<rewind_trace::io_records::Encoder>,
 }
 
 pub struct Machine {
@@ -400,6 +403,7 @@ impl Machine {
                 typed: std::collections::VecDeque::new(),
                 input_sent: false,
                 timer_armed_at: None,
+                io: None,
             },
             pmem,
             extras,
@@ -561,6 +565,7 @@ impl Machine {
             {
                 let stop = Stop::TimedOut(self.stall()?);
                 self.dev.stop = Some(stop);
+                self.dev.drain_io(obs)?;
                 return Ok(Outcome::Stopped(stop));
             }
             if self.work.is_some() && self.config.preemption == Preemption::AtBranchCounts {
@@ -571,24 +576,31 @@ impl Machine {
             const MMIO_PORT: u16 = 0xffff;
             let mut debug_stop = None;
             let counted = match self.vcpu.run() {
+                // Each step takes the read and write records the guest
+                // buffered before it, ahead of what the step itself
+                // records.
                 Ok(exit) => match exit {
                     VcpuExit::IoOut(port, data) => {
                         self.dev.step += 1;
+                        self.dev.drain_io(obs)?;
                         self.dev.io_out(port, data, obs)?;
                         Some(port)
                     }
                     VcpuExit::IoIn(port, data) => {
                         self.dev.step += 1;
+                        self.dev.drain_io(obs)?;
                         self.dev.io_in(port, data)?;
                         Some(port)
                     }
                     VcpuExit::MmioRead(_, data) => {
                         self.dev.step += 1;
+                        self.dev.drain_io(obs)?;
                         data.fill(0xff);
                         Some(MMIO_PORT)
                     }
                     VcpuExit::MmioWrite(..) => {
                         self.dev.step += 1;
+                        self.dev.drain_io(obs)?;
                         Some(MMIO_PORT)
                     }
                     VcpuExit::Shutdown => {
@@ -611,6 +623,11 @@ impl Machine {
                 Err(e) => return Err(e).context("KVM_RUN"),
             };
 
+            // A machine that stopped without a step, as a triple fault
+            // stops it, takes what the guest buffered since the last one.
+            if counted.is_none() && self.dev.stop.is_some() {
+                self.dev.drain_io(obs)?;
+            }
             if let Some(stop) = self.dev.stop {
                 return Ok(Outcome::Stopped(stop));
             }
@@ -628,6 +645,7 @@ impl Machine {
                     && self.reached_preemption()?
                 {
                     self.dev.step += 1;
+                    self.dev.drain_io(obs)?;
                     self.after_step(Quantum::Skip)?;
                     preempted = true;
                 }
@@ -976,13 +994,53 @@ impl Devices {
             pv::PORT_EXIT => self.stop = Some(Stop::Guest(GuestExit::from_port(value))),
             pv::PORT_SETUP => {
                 let shared = value as u64;
-                pv::check_interface(self.guest_interface(shared)?)?;
+                let io = pv::check_interface(self.guest_interface(shared)?)?;
                 self.ram
                     .write(shared + pv::SHARED_EPOCH, &self.epoch.to_le_bytes())?;
                 self.shared = Some(shared);
+                self.io =
+                    (io == pv::GuestIo::Buffered).then(rewind_trace::io_records::Encoder::new);
             }
             pv::PORT_COM1 => obs.serial(self.step, data[0]),
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// Takes the read and write records the guest buffered since the step
+    /// before, with how many it had no room for, into the trace at this
+    /// step, and sets both back to 0 for the guest to go on from. Nothing
+    /// for a guest kernel that buffers none.
+    fn drain_io(&mut self, obs: &mut dyn Observer) -> Result<()> {
+        let (Some(shared), Some(encoder)) = (self.shared, self.io.as_mut()) else {
+            return Ok(());
+        };
+        let read_u32 = |ram: &Mapping, at: u64| -> Result<u32> {
+            let mut bytes = [0u8; 4];
+            ram.read(shared + at, &mut bytes)?;
+            Ok(u32::from_le_bytes(bytes))
+        };
+        let head = read_u32(&self.ram, pv::SHARED_IO_HEAD)?;
+        let lost = read_u32(&self.ram, pv::SHARED_IO_LOST)?;
+        if head == 0 && lost == 0 {
+            return Ok(());
+        }
+
+        // The buffer, up to its fill, which the guest never sets past its
+        // size.
+        let size = read_u32(&self.ram, pv::SHARED_IO_SIZE)?;
+        let mut at = [0u8; 8];
+        self.ram.read(shared + pv::SHARED_IO_BUF, &mut at)?;
+        let len = head.min(size) as usize;
+        let mut buffered = vec![0u8; len.min(pv::IO_BUF_MAX)];
+        self.ram.read(u64::from_le_bytes(at), &mut buffered)?;
+        self.ram
+            .write(shared + pv::SHARED_IO_HEAD, &0u32.to_le_bytes())?;
+        self.ram
+            .write(shared + pv::SHARED_IO_LOST, &0u32.to_le_bytes())?;
+
+        for record in encoder.encode(&buffered, lost) {
+            obs.record(self.step, &record);
         }
         Ok(())
     }
@@ -1073,12 +1131,13 @@ mod tests {
         );
     }
 
-    /// The devices of a machine that has set up its shared page at 0.
+    /// The devices of a machine that has set up its shared page at 0,
+    /// with a page after it for the guest's record buffer.
     fn devices(now: u64) -> Devices {
         let mut clock = Clock::new(QUANTUM);
         clock.now = now;
         Devices {
-            ram: Mapping::anonymous(PAGE).unwrap(),
+            ram: Mapping::anonymous(2 * PAGE).unwrap(),
             clock,
             schedule: Schedule::default(),
             shared: Some(0),
@@ -1090,7 +1149,104 @@ mod tests {
             typed: std::collections::VecDeque::new(),
             input_sent: false,
             timer_armed_at: None,
+            io: Some(rewind_trace::io_records::Encoder::new()),
         }
+    }
+
+    /// Where the tests' guest keeps its record buffer, and how big it is.
+    const IO_BUF: u64 = PAGE as u64;
+    const IO_SIZE: u32 = PAGE as u32;
+
+    /// Lays `buffered` into the record buffer as the guest would, with
+    /// `lost` records it had no room for.
+    fn buffer(dev: &mut Devices, buffered: &[u8], lost: u32) {
+        dev.ram.write(IO_BUF, buffered).unwrap();
+        dev.ram
+            .write(pv::SHARED_IO_BUF, &IO_BUF.to_le_bytes())
+            .unwrap();
+        dev.ram
+            .write(pv::SHARED_IO_SIZE, &IO_SIZE.to_le_bytes())
+            .unwrap();
+        dev.ram
+            .write(pv::SHARED_IO_HEAD, &(buffered.len() as u32).to_le_bytes())
+            .unwrap();
+        dev.ram
+            .write(pv::SHARED_IO_LOST, &lost.to_le_bytes())
+            .unwrap();
+    }
+
+    /// A u32 field of the shared page.
+    fn shared_u32(dev: &Devices, at: u64) -> u32 {
+        let mut bytes = [0u8; 4];
+        dev.ram.read(at, &mut bytes).unwrap();
+        u32::from_le_bytes(bytes)
+    }
+
+    /// One write record as the guest lays it out.
+    fn guest_write(tid: u32, pos: u64, count: u32) -> Vec<u8> {
+        let mut r = Vec::new();
+        let len = rewind_trace::io_records::GUEST_HEADER_LEN + 12;
+        r.extend_from_slice(&(len as u16).to_le_bytes());
+        r.extend_from_slice(&[1, 0]);
+        r.extend_from_slice(&tid.to_le_bytes());
+        r.extend_from_slice(&7u64.to_le_bytes());
+        r.extend_from_slice(&1u32.to_le_bytes());
+        r.extend_from_slice(&pos.to_le_bytes());
+        r.extend_from_slice(&count.to_le_bytes());
+        r
+    }
+
+    /// Keeps every record it is given, with its step.
+    #[derive(Default)]
+    struct Kept(Vec<(u64, Vec<u8>)>);
+    impl Observer for Kept {
+        fn record(&mut self, step: u64, record: &[u8]) {
+            self.0.push((step, record.to_vec()));
+        }
+    }
+
+    #[test]
+    fn buffered_records_go_into_the_trace_at_the_step() {
+        // Two writes and two lost records in the guest's buffer at step
+        // 12: the trace gets them at step 12, and the buffer and the lost
+        // count are back at 0 for the guest to go on from.
+        let mut dev = devices(0);
+        dev.step = 12;
+        let buffered = [guest_write(3, 0, 10), guest_write(3, 10, 5)].concat();
+        buffer(&mut dev, &buffered, 2);
+        let mut kept = Kept::default();
+        dev.drain_io(&mut kept).unwrap();
+
+        assert!(kept.0.iter().all(|(step, _)| *step == 12));
+        let log = rewind_trace::io_records::decode(&kept.0).unwrap();
+        assert_eq!(log.records.len(), 3);
+        assert_eq!(log.lost(), 2);
+        assert_eq!(shared_u32(&dev, pv::SHARED_IO_HEAD), 0);
+        assert_eq!(shared_u32(&dev, pv::SHARED_IO_LOST), 0);
+    }
+
+    #[test]
+    fn a_step_with_nothing_buffered_adds_nothing() {
+        // An empty buffer with nothing lost: no trace record.
+        let mut dev = devices(0);
+        buffer(&mut dev, &[], 0);
+        let mut kept = Kept::default();
+        dev.drain_io(&mut kept).unwrap();
+        assert!(kept.0.is_empty());
+    }
+
+    #[test]
+    fn a_kernel_without_records_is_not_drained() {
+        // A guest kernel of the interface before records: whatever its
+        // shared page holds past the reseed bytes is not a buffer, and the
+        // monitor neither reads it nor writes it.
+        let mut dev = devices(0);
+        dev.io = None;
+        buffer(&mut dev, &guest_write(3, 0, 10), 0);
+        let mut kept = Kept::default();
+        dev.drain_io(&mut kept).unwrap();
+        assert!(kept.0.is_empty());
+        assert_ne!(shared_u32(&dev, pv::SHARED_IO_HEAD), 0);
     }
 
     #[test]
