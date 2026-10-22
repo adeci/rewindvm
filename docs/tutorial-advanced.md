@@ -676,7 +676,10 @@ rewind: run 94bb51fd74eaa565 timed-out after 309 steps, 0.002s virtual, 5.009s w
 A run that timed out while still making exits was slow rather than stuck, and
 says so. `rewind check` gives each perturbed schedule ten times as long as
 schedule 0 took, at least a minute, and reports a stuck schedule the same
-way. `--status timed-out` lists such runs:
+way. Schedule 0 itself has no limit, since a long build is no reason to stop
+it, so a test suite that hangs there holds up the whole check. Give such a
+suite `rewind check --timeout`, which bounds every schedule, schedule 0
+included. `--status timed-out` lists the runs that timed out:
 
 ```console
 $ rewind ls --status timed-out

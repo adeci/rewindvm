@@ -8,6 +8,7 @@ mod json;
 mod junit;
 mod list;
 mod locate;
+mod open_files;
 mod property;
 mod reproduce;
 mod show;
@@ -281,6 +282,10 @@ fn main() -> ExitCode {
     // the program quietly the way it ends any other Unix tool.
     // SAFETY: restoring a default signal disposition.
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+
+    // A check running many VMs at once opens more files than the usual
+    // soft limit of 1024 allows.
+    open_files::raise_limit();
     match run(Cli::parse()) {
         Ok(code) => code,
         Err(e) => {

@@ -1426,7 +1426,8 @@ pub(crate) struct MachineArgs {
     /// got.
     ///
     /// It then ends as timed-out, which depends on how fast this machine is.
-    /// Unless this is set, rewind check gives each perturbed schedule ten
+    /// In rewind check, --timeout bounds every run, schedule 0 included.
+    /// Without it schedule 0 has no limit, and every other run gets ten
     /// times as long as schedule 0 took, and at least a minute.
     #[arg(long, value_name = "SECONDS")]
     timeout: Option<u64>,

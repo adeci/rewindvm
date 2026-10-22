@@ -636,6 +636,9 @@ nothing.
    times as long as schedule 0 took, and at least a minute, unless
    `--timeout` says otherwise. A run still going then is stopped, and ends
    as timed-out. Whether a run times out depends on how fast the host is.
+   Schedule 0 has no limit unless `--timeout` is given, which then bounds
+   every run, schedule 0 included: a long build is legitimate, but a test
+   suite that might hang on schedule 0 should be checked with `--timeout`.
    A run that timed out says whether the guest was still making exits,
    which is a slow run, or had gone a second or more without one, which is
    a guest stuck computing; then it says for how long and at which
