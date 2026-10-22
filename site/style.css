@@ -334,6 +334,43 @@ a:focus-visible {
   stroke-linejoin: round;
   animation: nudge 1.8s ease-in-out infinite;
 }
+/* Under the header's Viewer link, in the same hand as Try me: the note
+   hangs to the link's left, its arrow ending under the link. */
+.nav-viewer {
+  position: relative;
+  display: flex;
+}
+/* a.try-real, to outrank the header's rule for its links. */
+.nav-links a.try-real {
+  position: absolute;
+  top: 100%;
+  right: 50%;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  color: var(--amber);
+  font: 600 1.3rem/1 var(--hand);
+  white-space: nowrap;
+}
+.try-real span {
+  padding-bottom: 2px;
+}
+.try-real svg {
+  width: 40px;
+  height: 34px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: var(--amber);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.nav-links a.try-real:hover {
+  color: var(--amber-hi);
+}
+.try-real:hover svg {
+  stroke: var(--amber-hi);
+}
 .try-me.gone {
   opacity: 0;
   visibility: hidden;

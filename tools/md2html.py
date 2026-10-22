@@ -315,6 +315,7 @@ HEAD = """<!doctype html>
         <a href="{up}#tutorials">Tutorials</a>
         <a href="{up}#case-studies">Case studies</a>
         <a href="{up}counter-time.html">Counter time</a>
+        <a href="{up}viewer/">Viewer</a>
       </nav>
     </header>
 

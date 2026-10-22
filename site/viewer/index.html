@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>Rewind VM viewer</title>
+    <meta
+      name="description"
+      content="Scrub through a Rewind VM recording in the browser, in the desktop app's own window: the build log, the processes, the files the run wrote and where a failing run parts from a passing one. Open a .rwd export from a link or from your disk."
+    />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="canonical" href="https://rewindvm.dev/viewer/" />
+    <link rel="icon" href="../img/mark.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+    <style>
+      /* The app's window sits in the site's column, framed like the front
+         page's demo, as tall as the viewport below the header allows up to
+         a cap. Below the desktop app's narrowest layout it keeps that width
+         and scrolls sideways inside its frame, so the page never does. */
+      .viewer-page {
+        max-width: var(--viewer-max-width);
+        padding-block: 12px 48px;
+      }
+      .viewer-app {
+        height: min(
+          var(--viewer-max-height),
+          calc(100dvh - var(--viewer-top, 80px) - var(--viewer-margin))
+        );
+        min-height: 600px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+      }
+      /* Wider than the site's column: the app's toolbar needs about
+         1,280 pixels before its last button is cut off. */
+      :root {
+        --viewer-max-width: 1600px;
+        --viewer-max-height: 900px;
+        --viewer-margin: 60px;
+      }
+      .viewer-frame {
+        position: relative;
+        height: 100%;
+      }
+      .viewer-frame.running {
+        min-width: 960px;
+      }
+      /* In place of the app when the window is too narrow for it. */
+      .viewer-narrow {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-content: center;
+        gap: 12px;
+        padding: 24px;
+        text-align: center;
+        color: var(--soft);
+      }
+      .viewer-narrow[hidden] {
+        display: none;
+      }
+      .viewer-narrow p {
+        margin: 0;
+        max-width: 28em;
+      }
+      .viewer-status {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        margin: 0;
+        color: var(--muted);
+      }
+      .viewer-status[hidden] {
+        display: none;
+      }
+      /* Shown over the page while a file is dragged onto it. */
+      .drop-veil {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        display: grid;
+        place-items: center;
+        background: rgb(14 16 19 / 85%);
+        color: var(--text);
+        font: 600 1.4rem var(--body);
+        border: 2px dashed var(--amber);
+      }
+      .drop-veil[hidden] {
+        display: none;
+      }
+    </style>
+    <!-- No Google Analytics on this page: a page view carries the address,
+         and the address carries the link to the recording, which can be a
+         private or signed URL. -->
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <header class="wrap nav" id="site-header">
+      <a class="brand" href="../">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M11 19l-7-7 7-7" />
+          <path d="M20 19l-7-7 7-7" />
+        </svg>
+        <span>Rewind VM</span>
+      </a>
+      <nav class="nav-links">
+        <a href="../#how">How it works</a>
+        <a href="../#workloads">Nix and containers</a>
+        <a href="../#tutorials">Tutorials</a>
+        <a href="../#case-studies">Case studies</a>
+        <a href="./" aria-current="page">Viewer</a>
+        <a href="../#pricing">Pricing</a>
+        <a href="https://github.com/fzakaria/rewindvm">GitHub</a>
+        <a class="btn small" href="../#download">Download</a>
+      </nav>
+      <!-- The same links on a phone, behind a button, as on the front page. -->
+      <details class="nav-menu">
+        <summary>
+          Menu
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+        </summary>
+        <nav class="nav-menu-links" aria-label="Sections">
+          <a href="../#how">How it works</a>
+          <a href="../#workloads">Nix and containers</a>
+          <a href="../#tutorials">Tutorials</a>
+          <a href="../#case-studies">Case studies</a>
+          <a href="./" aria-current="page">Viewer</a>
+          <a href="../#pricing">Pricing</a>
+          <a href="https://github.com/fzakaria/rewindvm">GitHub</a>
+          <a class="btn" href="../#download">Download</a>
+        </nav>
+      </details>
+    </header>
+
+    <!-- The desktop app's window, read-only, drawn on a canvas that app.js
+         moves into the frame once the app makes it. -->
+    <main class="wrap viewer-page">
+      <div class="viewer-app" id="viewer-app">
+        <div class="viewer-frame" id="viewer-frame">
+          <p class="viewer-status" id="viewer-status" aria-live="polite">
+            Loading the viewer&hellip;
+          </p>
+          <div class="viewer-narrow" id="viewer-narrow" hidden>
+            <p>
+              The viewer is the desktop app's window and needs a screen at least 960 pixels wide.
+            </p>
+            <p>
+              Open this link on a computer, or
+              <a href="../case-studies/nix-gc-closure-sigpipe.html#video">watch the 2:24 demo</a>.
+            </p>
+          </div>
+          <noscript
+            ><p class="viewer-status">The viewer needs JavaScript and WebAssembly.</p></noscript
+          >
+        </div>
+      </div>
+    </main>
+
+    <footer class="wrap footer">
+      <p>
+        &copy; 2026 <a href="https://lunchtimesurf.com/">Lunch Time Surf LLC</a> &middot; Santa
+        Cruz, California &middot;
+        <a href="mailto:tacos@lunchtimesurf.com">tacos@lunchtimesurf.com</a> &middot;
+        <a href="../privacy.html">Privacy</a> &middot;
+        <a href="../refunds.html">Refunds</a> &middot;
+        <a href="../bugs.html">Bugs found</a> &middot;
+        <a href="https://github.com/fzakaria/rewindvm">GitHub</a>
+      </p>
+    </footer>
+
+    <!-- The app's Open file chooser; app.js clicks it when the app asks. -->
+    <input id="pick" type="file" accept=".rwd" hidden />
+    <div class="drop-veil" id="drop-veil" hidden>Drop the .rwd file to open it</div>
+  </body>
+</html>

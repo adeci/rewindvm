@@ -115,7 +115,7 @@
           };
           releaseDebug = import ./nix/release-debug.nix { inherit pkgs kernel; };
           appRelease = import ./nix/app-release.nix { inherit pkgs rust releaseDate; };
-          site = import ./nix/site.nix { inherit pkgs; };
+          site = import ./nix/site.nix { inherit pkgs web; };
           examples = import ./nix/examples.nix { inherit pkgs; };
           license = import ./nix/license.nix {
             inherit
