@@ -631,6 +631,33 @@ impl Run {
             limit,
         } = how;
         let dir = home.runs().join(&manifest.id);
+
+        // The machine is built before anything of the run is written: a
+        // run whose config does not read, or whose machine this host
+        // cannot boot or restore, as when it lacks the recorded CPU model
+        // or a keyframe's pages, never started, and leaves no directory to
+        // be listed as interrupted. Building reads only the spec, the run
+        // it starts from and the page store, none of which the run's
+        // executing lock guards, so a second execution of the same run is
+        // still refused below, only after building its machine.
+        let start = Instant::now();
+        let config = manifest.spec.config()?;
+        let shortcut = Shortcut::find(home, &manifest, start_from);
+
+        // A run that shares its start with its parent is restored at the
+        // parent's keyframe, and replays the parent's events up to there
+        // into its trace further down. The store a restore opened stays
+        // open until this execution knows whether it takes keyframes.
+        let (mut machine, mut store, last_keyframe) = match &shortcut {
+            Some(s) => {
+                let store = rewind_store::Store::open(&home.store())?;
+                let machine =
+                    Machine::restore(&config, &s.chain, &crate::keyframes::ReadPages(&store))?;
+                (machine, Some(store), Some(s.base))
+            }
+            None => (Machine::boot(&config)?, None, None),
+        };
+
         fs::create_dir_all(&dir)?;
         let _executing = lock_executing(&dir)?;
         let write_manifest = |m: &Manifest| -> Result<()> {
@@ -654,7 +681,6 @@ impl Run {
         if own == crate::keyframes::Own::Unreadable {
             fs::remove_dir_all(dir.join(crate::keyframes::DIR))?;
         }
-        let shortcut = Shortcut::find(home, &manifest, start_from);
 
         // A finished earlier execution's recording, trace and manifest,
         // stays in place until this execution finishes and replaces it. When
@@ -682,6 +708,12 @@ impl Run {
             keyframes
         };
 
+        // A run that takes no keyframes needed the store only to restore,
+        // so the store closes now.
+        if keyframes != Keyframes::Take {
+            store = None;
+        }
+
         // A run executing for the first time, or again after an execution
         // that never finished, is listed while it executes, with no outcome
         // yet. A run with a recording goes on showing that recording.
@@ -692,7 +724,6 @@ impl Run {
         }
 
         let (new_trace, trace_file) = NewTrace::create(&dir)?;
-        let start = Instant::now();
         let mut recorder = Recorder {
             trace: TraceWriter::new(trace_file),
             echo,
@@ -701,26 +732,14 @@ impl Run {
             error: None,
             pause_at_exit: false,
         };
-        let config = manifest.spec.config()?;
-        let store = || rewind_store::Store::open(&home.store());
 
-        // A run that shares its start with its parent replays the parent's
-        // events up to the parent's keyframe and goes on from there. A run
-        // that takes no keyframes needs the store only to restore, so it
-        // closes it then.
-        let (mut machine, mut store, last_keyframe) = match &shortcut {
-            Some(s) => {
-                for (step, record) in &s.prefix {
-                    recorder.record(*step, record);
-                }
-                let store = store()?;
-                let machine =
-                    Machine::restore(&config, &s.chain, &crate::keyframes::ReadPages(&store))?;
-                let store = (keyframes == Keyframes::Take).then_some(store);
-                (machine, store, Some(s.base))
+        // A run restored at its parent's keyframe begins its trace with
+        // the parent's events up to the keyframe.
+        if let Some(s) = &shortcut {
+            for (step, record) in &s.prefix {
+                recorder.record(*step, record);
             }
-            None => (Machine::boot(&config)?, None, None),
-        };
+        }
         if let TimeLimit::Wall(limit) = limit {
             machine.set_deadline(Some(start + limit));
         }
@@ -2306,6 +2325,65 @@ pub(crate) mod tests {
         let run = Run::open(&dir).unwrap();
         assert_eq!(run.last_step().unwrap(), 9);
         assert!(run.check_step(10).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_fork_whose_machine_does_not_build_leaves_no_run_behind() {
+        // A fork that fails before its machine runs never started, so it
+        // must not be listed as an interrupted run. Forks a finished parent
+        // twice with specs no machine is built from: one whose initramfs is
+        // not there, so its config does not read, and one whose initramfs
+        // reads but whose kernel is not there, so the boot fails, whether
+        // or not this host has KVM. Each execution must fail and leave the
+        // runs directory holding the parent alone.
+        const FORK_STEP: u64 = 5;
+        let root = runs_dir("unbuilt-fork");
+        let home = Home::at(root.clone()).unwrap();
+        let mut parent = manifest("aaaa000000000000", "parent", 1);
+        parent.outcome = Some(RunOutcome {
+            stop: rewind_trace::stop::Stop::PoweredOff,
+            step: 12,
+            virtual_ns: 0,
+            status: Some(0),
+            wall_ms: 0,
+        });
+        write_run(&home.runs(), &parent, &[3, 5, 9], b"a");
+        let initrd = root.join("initrd");
+        fs::write(&initrd, b"").unwrap();
+        let unbootable = [
+            perturbed(3, FORK_STEP, u64::MAX),
+            Spec {
+                initrd,
+                ..perturbed(4, FORK_STEP, u64::MAX)
+            },
+        ];
+
+        // Each fork is refused, and the runs directory still lists only
+        // the parent.
+        for spec in unbootable {
+            let fork = Run::execute(
+                &home,
+                "fork".into(),
+                parent.source.clone(),
+                spec,
+                Start::Fork {
+                    parent: parent.id.clone(),
+                    step: FORK_STEP,
+                },
+                Execution {
+                    echo: Echo::Quiet,
+                    keyframes: Keyframes::Take,
+                    limit: TimeLimit::None,
+                },
+            );
+            assert!(fork.is_err());
+            let runs: Vec<_> = fs::read_dir(home.runs())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(runs, vec![std::ffi::OsString::from(parent.id.as_str())]);
+        }
         fs::remove_dir_all(&root).unwrap();
     }
 
