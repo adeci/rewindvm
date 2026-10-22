@@ -41,9 +41,9 @@ schedule   2: exited:0       7233 steps  a9d703ba8977  run 70416cb698a5d521
 schedule   6: exited:2       5468 steps    run 1506c6347419c2d2
 ...
 
-schedule 6 ends differently; narrowing the steps it perturbs
-perturbing only steps 3629..5140 still ends differently
-step 5139 decides it: a reschedule there makes the run fail
+schedule 6 ends differently from schedule 0; finding the step that decides it
+schedule 6 limited to steps 3629..5140 still ends differently
+step 5139 decides it: a request to switch threads there makes the run fail
 
 passing: run 1989f6d02c080616, schedule 6 over steps 3629..5139
 failing: run 5c910df9774b38f2, schedule 6 over steps 3629..5140
@@ -62,7 +62,7 @@ $ rewind events 5c910df9 | grep SIGSEGV
 ...
 
 $ rewind replay 5c910df9
-identical: 1713 events over 5192 steps
+identical to the recording: 1713 events over 5192 steps
 ```
 
 ## Install

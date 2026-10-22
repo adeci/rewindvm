@@ -118,7 +118,7 @@ assertion `left == right` failed
 rewind: run 6544e96a1f5fd1a9 exited:101 after 1241 steps, 0.034s virtual, 0.342s wall (poweroff)
 
 $ rewind replay 6544e96a
-identical: 772 events over 1241 steps
+identical to the recording: 772 events over 1241 steps
 ```
 
 The task printed three lines and devenv kept two, as in the issue.
@@ -133,11 +133,11 @@ schedule   2: exited:0       1382 steps  77ac62e2629d  run 7e4a37b7d471985f
 schedule   3: exited:101       1338 steps    run c7068d6c5f13a7dd
 ...
 schedule 256: exited:101       1352 steps    run 5de3158c1d4279c3
-schedule 0 failed; 39 of 256 perturbed schedules ended differently
+schedule 0 failed; 39 of 256 other schedules ended differently
 
-schedule 2 passes where schedule 0 fails; narrowing the steps it perturbs
-perturbing only steps 1132..1187 still ends differently
-step 1186 decides it: a reschedule there makes the run pass
+schedule 2 passes where schedule 0 fails; finding the step that decides it
+schedule 2 limited to steps 1132..1187 still ends differently
+step 1186 decides it: a request to switch threads there makes the run pass
 
 passing: run 6cae788ea403bb7d, schedule 2 over steps 1132..1187
 failing: run a5e20f49f3dcee36, schedule 2 over steps 1132..1186
@@ -219,7 +219,7 @@ schedule   2: exited:101       1283 steps    run 70026aba5943a7b5
 schedule   3: exited:101       1267 steps    run c480b419033090dd
 ...
 schedule  64: exited:101       1256 steps    run 2db3efabd1dea387
-run 6544e96a1f5fd1a9 failed; 9 of 64 perturbed schedules ended differently
+run 6544e96a1f5fd1a9 failed; 9 of 64 other schedules ended differently
 ```
 
 ## Where the third line went
@@ -318,7 +318,7 @@ schedule   0: exited:0       1265 steps  77ac62e2629d  run 3a63d6f3fb4609e6
 schedule   1: exited:0       1328 steps  77ac62e2629d  run f4e0ee9226d42c85
 schedule   2: exited:0       1382 steps  77ac62e2629d  run 8c0642d5e58dd52d
 ...
-0 of 256 perturbed schedules ended differently
+0 of 256 other schedules ended differently
 same result under all 257 schedules
 ```
 

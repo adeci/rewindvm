@@ -65,11 +65,11 @@ schedule 215: exited:1     412580 steps    run a0c8fec9b93389af
 ...
 schedule 230: exited:1     410828 steps    run dcc8a0bbfa6c43f5
 ...
-7 of 256 perturbed schedules ended differently
+7 of 256 other schedules ended differently
 
-schedule 21 ends differently; narrowing the steps it perturbs
-perturbing only steps 12773..23118 still ends differently
-step 23117 decides it: a reschedule there makes the run fail
+schedule 21 ends differently from schedule 0; finding the step that decides it
+schedule 21 limited to steps 12773..23118 still ends differently
+step 23117 decides it: a request to switch threads there makes the run fail
 
 passing: run afa5b26cb911dae6, schedule 21 over steps 12773..23117
 failing: run 27f6a5bbc7694573, schedule 21 over steps 12773..23118
@@ -222,7 +222,7 @@ schedule  79: exited:1     413417 steps    run ed86a5ebafba1ed2
 ...
 schedule 187: exited:1     413406 steps    run e3e8ea11140c72f1
 ...
-5 of 256 perturbed schedules ended differently
+5 of 256 other schedules ended differently
 
 $ rewind log ed86a5eb | grep -E 'UNIQUE|is busy|TIMEOUT' | sort | uniq -c
       1 1/1 nix-functional-tests:ca / concurrent-builds TIMEOUT        300.04s   killed by signal 15 SIGTERM
@@ -239,7 +239,7 @@ transaction. Nix 2.35.2 from nixpkgs has both fixes and passes every schedule:
 $ rewind check --all --schedules 256 'github:fzakaria/rewindvm?dir=examples/case-studies#nix-concurrent-builds'
 schedule   0: exited:0      38124 steps  a50a5ab6d992  run b1c1bf1d6bd2524d
 ...
-0 of 256 perturbed schedules ended differently
+0 of 256 other schedules ended differently
 same result under all 257 schedules
 ```
 

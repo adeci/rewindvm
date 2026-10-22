@@ -102,9 +102,9 @@ schedule  14: exited:0       1603 steps    run 1bcf1791f134a68f
 schedule  15: exited:0       1566 steps    run d1fab586b7da4011
 schedule  16: exited:0       1681 steps    run c4fb16e2e92f6b43
 
-schedule 4 ends differently; narrowing the steps it perturbs
-perturbing only steps 367..1049 still ends differently
-step 1048 decides it: a reschedule there makes the run fail
+schedule 4 ends differently from schedule 0; finding the step that decides it
+schedule 4 limited to steps 367..1049 still ends differently
+step 1048 decides it: a request to switch threads there makes the run fail
 
 passing: run 0c2439ced829eda8, schedule 4 over steps 367..1048
 failing: run 9b47cd2f5625f191, schedule 4 over steps 367..1049
@@ -128,13 +128,13 @@ open both in the desktop app: rewind open 9b47cd2f5625f191 1052 --compare 0c2439
 
 `check` narrows schedule 4's failure to one step, 1048. The
 passing run perturbs the same steps less that one, and only the failing run
-gets a reschedule there. The last block shows where the test's own output
+gets a request to switch threads there. The last block shows where the test's own output
 then differs. The search took 57 seconds. `--all` tries every
 schedule:
 
 ```console
 $ rewind check --all --root mylib.tar --cwd /src -- make check | grep 'ended differently'
-13 of 64 perturbed schedules ended differently
+13 of 64 other schedules ended differently
 ```
 
 ## Look at the failure
@@ -251,10 +251,10 @@ listed by [elfutils](https://sourceware.org/elfutils/Debuginfod.html).
 
 ```console
 $ rewind replay 9b47cd2f
-identical: 319 events over 1081 steps
+identical to the recording: 319 events over 1081 steps
 
 $ rewind replay 9b47cd2f --from 367
-identical from the keyframe at step 256 to the end (1.38s)
+identical to the recording from the snapshot at step 256 to the end (1.38s)
 ```
 
 `--from` starts at the nearest keyframe before the step. A run replays on any
@@ -348,7 +348,7 @@ sha256:9a37184dd412e037e3486f53d3eb382423c303868a9f90599504cdb083b96494
 
 $ rewind check --all --root mylib.tar --cwd /src -- make check
 ...
-0 of 64 perturbed schedules ended differently
+0 of 64 other schedules ended differently
 same result under all 65 schedules
 ```
 

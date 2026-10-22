@@ -168,7 +168,7 @@ $ rewind check --epoch {{epoch}} --seeds 8 --schedules 0 {{repo}}#hash-order | g
 <!-- capture deciding_seed: seed (\d+) decides it -->
 <!-- capture hash_passing: passing: run (\w+) -->
 <!-- set hash_start: rewind events {{hash_passing}} --json | jq -r 'select(.kind.type == "mark" and .kind.text == "rewind-start") | .step' -->
-<!-- assert: grep -qE '^seed [0-9]+ decides it: unperturbed, seed [0-9]+ passes and seed [0-9]+ fails$' {{out:seeds}} -->
+<!-- assert: grep -qE '^seed [0-9]+ decides it: under schedule 0, seed [0-9]+ passes and seed [0-9]+ fails$' {{out:seeds}} -->
 
 Seed {{deciding_seed}} puts the tags in the other order and the test fails.
 With `--schedules` above 0, check also perturbs the schedule under each

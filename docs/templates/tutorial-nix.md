@@ -92,8 +92,8 @@ $ rewind check --epoch {{epoch}} {{flake}}
 <!-- capture passing: passing: run (\w+) -->
 <!-- capture failing: failing: run (\w+) -->
 <!-- capture narrowed: schedule (\d+) ends differently -->
-<!-- capture window_from: perturbing only steps (\d+)\.\. -->
-<!-- capture window_until: perturbing only steps \d+\.\.(\d+) -->
+<!-- capture window_from: limited to steps (\d+)\.\. -->
+<!-- capture window_until: limited to steps \d+\.\.(\d+) -->
 <!-- capture deciding: step (\d+) decides it -->
 <!-- capture deciding_words: decides it: (.+) there makes the run fail -->
 <!-- capture base: schedule +0: .* run (\w+) -->
@@ -116,7 +116,7 @@ differs. The search took {{check_seconds}} seconds.
 $ rewind check --all --epoch {{epoch}} {{flake}} | grep 'ended differently'
 ```
 
-<!-- capture flaky: (\d+) of 64 perturbed schedules ended differently -->
+<!-- capture flaky: (\d+) of 64 other schedules ended differently -->
 
 ## Look at the failure
 
@@ -248,7 +248,7 @@ queue after the workers are joined:
 $ rewind check --all --epoch {{epoch}} .#mylib
 ```
 
-<!-- assert: grep -q '^0 of 64 perturbed schedules ended differently' {{out:fixed}} -->
+<!-- assert: grep -q '^0 of 64 other schedules ended differently' {{out:fixed}} -->
 
 Before the fix, {{flaky}} of the same 64 schedules crashed.
 

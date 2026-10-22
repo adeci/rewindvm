@@ -427,11 +427,12 @@
     const body = document.createElement("span");
     if (s < DIVERGENCE_STEP) {
       title.textContent = "Same as run #2 so far";
-      body.textContent = `The two runs are the same until step ${fmt(SPLIT_STEP)}, where only this run has a reschedule. They do the same things until step ${fmt(DIVERGENCE_STEP)}.`;
+      body.textContent = `The two runs are identical until step ${fmt(SPLIT_STEP)}. There, Rewind asks the kernel to switch threads in this run only. They do the same things until step ${fmt(DIVERGENCE_STEP)}.`;
     } else {
       title.textContent = `Diverged from run #2 at step ${fmt(DIVERGENCE_STEP)}`;
       body.textContent =
-        `The two runs are the same until step ${fmt(SPLIT_STEP)}, where only this run has a reschedule. ` +
+        "This run failed and the passing run did not. " +
+        `The two runs are identical until step ${fmt(SPLIT_STEP)}. There, Rewind asks the kernel to switch threads in this run only. ` +
         "In the passing run the shutdown futex woke worker-0 first. Here worker-1 wins and frees the queue while worker-0 still holds a pointer into it.";
     }
     el.diff.replaceChildren(title, body);

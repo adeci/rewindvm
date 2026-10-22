@@ -49,7 +49,7 @@ narrows it to the step that decides it:
 
 ```console
 $ rewind check --epoch 1790985600 --property 'no-read-while-written=*.conf' github:fzakaria/rewindvm#config-reload | grep -E 'decides it|failing run'
-step 3274 decides it: a reschedule there makes the run violate no-read-while-written
+step 3274 decides it: a request to switch threads there makes the run violate no-read-while-written
 failing run violates no-read-while-written: step 3285: process 140 (config) opened /build/config-reload/app.conf for reading while process 139 (config), which opened it for writing at step 3274, had not closed it
 ```
 
@@ -113,7 +113,7 @@ a run that loses a deposit:
 ```console
 $ rewind check --epoch 1790985600 github:fzakaria/rewindvm#bank | grep -E 'decides it|passing:|failing:|failing run violates sdk|^true in'
 true in 15 of 17 runs that checked it: sometimes "deposits-concurrent"
-step 3258 decides it: a reschedule there makes the run violate same-outcome, sdk
+step 3258 decides it: a request to switch threads there makes the run violate same-outcome, sdk
 passing: run 0771d706a710f8d7, schedule 0
 failing: run 5a0942f7af3b77bf, schedule 1 over steps 3258..3259
 failing run violates sdk: step 3298: always "balance-adds-up" failed: balance 380, expected 400
@@ -195,7 +195,7 @@ $ rewind check --epoch 1790985600 --seeds 8 --schedules 0 github:fzakaria/rewind
 rewind: packing 67 store paths for hash-order-0.1.0
 seed  0 schedule   0: exited:0       4811 steps  83f239c2e313  run 2fedde184b908b25
 seed  1 schedule   0: exited:2       3557 steps    run fb6b808a0e60208d
-seed 1 decides it: unperturbed, seed 0 passes and seed 1 fails
+seed 1 decides it: under schedule 0, seed 0 passes and seed 1 fails
 passing: run 2fedde184b908b25, seed 0, schedule 0
 failing: run fb6b808a0e60208d, seed 1, schedule 0
 ```

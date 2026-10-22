@@ -101,9 +101,9 @@ schedule  14: exited:2       5135 steps    run d57f7944fa088959
 schedule  15: exited:0       7367 steps  a9d703ba8977  run e2462b467fc9629e
 schedule  16: exited:0       7330 steps  a9d703ba8977  run 8cb3470aaa49ba31
 
-schedule 3 ends differently; narrowing the steps it perturbs
-perturbing only steps 4821..5081 still ends differently
-step 5080 decides it: a 1280 µs stall there makes the run fail
+schedule 3 ends differently from schedule 0; finding the step that decides it
+schedule 3 limited to steps 4821..5081 still ends differently
+step 5080 decides it: a 1280 µs pause of the running thread there makes the run fail
 
 passing: run 516c10eebf667023, schedule 3 over steps 4821..5080
 failing: run c2ca1ecd2243eff6, schedule 3 over steps 4821..5081
@@ -127,14 +127,14 @@ open both in the desktop app: rewind open c2ca1ecd2243eff6 5105 --compare 516c10
 
 Schedules 3, 4, 7, 8, 13 and 14 fail. `check` narrows schedule 3's failure to one step, 5080. The passing run perturbs the same steps less that one, so the two
 runs are the same until 5080, and only the failing one gets
-a 1280 µs stall there. The last block shows where the test's own output then
+a 1280 µs pause of the running thread there. The last block shows where the test's own output then
 differs. The search took 13 seconds.
 
 `--all` tries every schedule, which measures how flaky a build is:
 
 ```console
 $ rewind check --all --epoch 1790985600 github:fzakaria/rewindvm#mylib | grep 'ended differently'
-17 of 64 perturbed schedules ended differently
+17 of 64 other schedules ended differently
 ```
 
 ## Look at the failure
@@ -250,10 +250,10 @@ type into.
 
 ```console
 $ rewind replay c2ca1ecd
-identical: 1756 events over 5145 steps
+identical to the recording: 1756 events over 5145 steps
 
 $ rewind replay c2ca1ecd --from 4821
-identical from the keyframe at step 1279 to the end (0.65s)
+identical to the recording from the snapshot at step 1279 to the end (0.65s)
 ```
 
 `--from` starts at the nearest keyframe before the step. A run replays on any
@@ -297,7 +297,7 @@ The desktop app shows a run on a timeline: drag the playhead to any step for
 the output, processes, files and event there, jump to the failure or to where
 the run left the passing one, and fork from the playhead. Opened on `check`'s
 two runs, a dashed blue mark on the timeline is step 5080, where only
-the failing run gets a 1280 µs stall.
+the failing run gets a 1280 µs pause of the running thread.
 
 ```console
 $ rewind-app ~/.local/share/rewind/runs/c2ca1ecd2243eff6 --compare ~/.local/share/rewind/runs/516c10eebf667023
@@ -356,7 +356,7 @@ queue after the workers are joined:
 ```console
 $ rewind check --all --epoch 1790985600 .#mylib
 ...
-0 of 64 perturbed schedules ended differently
+0 of 64 other schedules ended differently
 same result under all 65 schedules
 ```
 

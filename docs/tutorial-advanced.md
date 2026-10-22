@@ -7,11 +7,11 @@ and in the desktop app. They use the Nix tutorial's runs and install.
 ## The runs
 
 ```console
-$ rewind check --epoch 1790985600 github:fzakaria/rewindvm#mylib | grep -E 'ends differently|perturbing only|decides it|passing:|failing:|same run until|open both'
+$ rewind check --epoch 1790985600 github:fzakaria/rewindvm#mylib | grep -E 'ends differently|limited to|decides it|passing:|failing:|same run until|open both'
 rewind: packing 62 store paths for mylib-0.3.0
-schedule 3 ends differently; narrowing the steps it perturbs
-perturbing only steps 4821..5081 still ends differently
-step 5080 decides it: a 1280 µs stall there makes the run fail
+schedule 3 ends differently from schedule 0; finding the step that decides it
+schedule 3 limited to steps 4821..5081 still ends differently
+step 5080 decides it: a 1280 µs pause of the running thread there makes the run fail
 passing: run 516c10eebf667023, schedule 3 over steps 4821..5080
 failing: run c2ca1ecd2243eff6, schedule 3 over steps 4821..5081
 the two are the same run until step 5080
@@ -119,7 +119,7 @@ forks the run.
 
 `check` names step 5080 as the one that decides it. Its passing run is the
 same schedule without that step, so the two runs are the same machine until
-5080, where only the failing run gets a 1280 µs stall, and everything
+5080, where only the failing run gets a 1280 µs pause of the running thread, and everything
 they do differently follows from it. `rewind where` names the thread that was
 on the CPU there:
 
@@ -142,7 +142,7 @@ called from #16 __GI___clone3 (../sysdeps/unix/sysv/linux/x86_64/clone3.S:78)
 
 A worker checks `p->stopping` without the lock, prints its job, and then
 counts it through `p->queue`, which `pool_shutdown` frees. At step
-5080 the worker has made its check and is printing; a 1280 µs stall
+5080 the worker has made its check and is printing; a 1280 µs pause of the running thread
 there holds it before the count. The test's main thread runs meanwhile, sees
 half the jobs done, and shuts the pool down, setting the queue to NULL, and
 the worker faults on it 25 steps later. Without that step's
@@ -162,7 +162,7 @@ where the threads were:
 In the app, the deciding step is a dashed blue mark on the timeline, before
 the solid one where the runs' events first differ. Zoomed in around the crash:
 
-![The app zoomed in around the crash: a dashed blue mark at step 5080 on the timeline, the crash just after it, and the divergence card saying the two runs are the same until step 5080, where only this run has a 1280 µs stall](../site/img/app-decides.png)
+![The app zoomed in around the crash: a dashed blue mark at step 5080 on the timeline, the crash just after it, and the divergence card saying the two runs are identical until step 5080, where only this run gets a 1280 µs pause of the running thread](../site/img/app-decides.png)
 
 ## See which thread held the CPU
 
@@ -534,7 +534,7 @@ exit 1
 ```console
 $ rewind check --epoch 1790985600 --property script=./adds-up.sh github:fzakaria/rewindvm#bank | grep -E 'decides it|failing run violates adds-up'
 rewind: packing 62 store paths for bank-0.1.0
-step 3258 decides it: a reschedule there makes the run violate adds-up, sdk
+step 3258 decides it: a request to switch threads there makes the run violate adds-up, sdk
 failing run violates adds-up: balance 380, expected 400
 ```
 
@@ -549,7 +549,7 @@ no-crash
 script=adds-up.sh
 
 $ rewind check --epoch 1790985600 --properties rewind.properties github:fzakaria/rewindvm#bank | grep 'decides it'
-step 3258 decides it: a reschedule there makes the run violate adds-up, sdk
+step 3258 decides it: a request to switch threads there makes the run violate adds-up, sdk
 ```
 
 ## Count the schedules that fail from a step
@@ -577,7 +577,7 @@ schedule  13: exited:0       6662 steps  a9d703ba8977  run a119d86c9ef77739
 schedule  14: exited:0       6663 steps  a9d703ba8977  run acca7909d5a77867
 schedule  15: exited:0       6633 steps  a9d703ba8977  run d80914166b8f7f97
 schedule  16: exited:0       6651 steps  a9d703ba8977  run 199a9c41c4dc92c5
-4 of 16 perturbed schedules ended differently
+4 of 16 other schedules ended differently
 ```
 
 4 of the 16 crash. Without `--no-narrow`, `check --run` narrows the first of
@@ -614,10 +614,10 @@ same result under all 65 schedules
 up to 1 s:
 
 ```console
-$ rewind check --root ready --stall-max 50ms -- /bin/ready | grep -E 'ends differently|perturbing only|decides it|passing:|failing:'
-schedule 10 ends differently; narrowing the steps it perturbs
-perturbing only steps 303..343 still ends differently
-step 342 decides it: a reschedule and a 20.48 ms stall there makes the run fail
+$ rewind check --root ready --stall-max 50ms -- /bin/ready | grep -E 'ends differently|limited to|decides it|passing:|failing:'
+schedule 10 ends differently from schedule 0; finding the step that decides it
+schedule 10 limited to steps 303..343 still ends differently
+step 342 decides it: a request to switch threads and a 20.48 ms pause of the running thread there makes the run fail
 passing: run 6a5ed09c603046e4, schedule 10 over steps 303..342, stalls up to 50 ms
 failing: run 8e3c6d0bdfcbd8b5, schedule 10 over steps 303..343, stalls up to 50 ms
 ```
@@ -648,7 +648,7 @@ $ rewind nix -q --epoch 1790985600 --name hash-order github:fzakaria/rewindvm#ha
 
 ```console
 $ rewind check --run hash-order --seeds 8 --schedules 0 | grep -E 'decides it|passing:|failing:'
-seed 1 decides it: unperturbed, seed 0 passes and seed 1 fails
+seed 1 decides it: under schedule 0, seed 0 passes and seed 1 fails
 passing: run 2fedde184b908b25, seed 0, schedule 0
 failing: run 64f50ddd67b8feac, seed 1 from step 301, schedule 0
 ```
@@ -671,7 +671,7 @@ $ REWIND_HOME=elsewhere rewind import crash.rwd
 c2ca1ecd2243eff6  exited:2          5145 steps  mylib-0.3.0
 
 $ REWIND_HOME=elsewhere rewind replay c2ca1ecd
-identical: 1756 events over 5145 steps
+identical to the recording: 1756 events over 5145 steps
 ```
 
 A replayable export carries the keyframes, the image and the VM's kernel, and

@@ -10,14 +10,14 @@ and in the desktop app. They use the Nix tutorial's runs and install.
 ## The runs
 
 ```console run name=check
-$ rewind check --epoch {{epoch}} {{flake}} | grep -E 'ends differently|perturbing only|decides it|passing:|failing:|same run until|open both'
+$ rewind check --epoch {{epoch}} {{flake}} | grep -E 'ends differently|limited to|decides it|passing:|failing:|same run until|open both'
 ```
 
 <!-- capture passing: passing: run (\w+) -->
 <!-- capture failing: failing: run (\w+) -->
 <!-- capture deciding: step (\d+) decides it -->
 <!-- capture deciding_words: decides it: (.+) there makes the run fail -->
-<!-- capture window_from: perturbing only steps (\d+)\.\. -->
+<!-- capture window_from: limited to steps (\d+)\.\. -->
 <!-- set crash_step: rewind events {{failing}} | grep -m1 SIGSEGV | awk '{print $1}' -->
 <!-- set pid: rewind events {{failing}} | grep -m1 SIGSEGV | awk '{print $2}' | cut -d/ -f1 -->
 <!-- set crash_tid: rewind events {{failing}} | grep -m1 SIGSEGV | awk '{print $2}' | cut -d/ -f2 -->
@@ -122,7 +122,7 @@ the solid one where the runs' events first differ. Zoomed in around the crash:
 
 <!-- screenshot site/img/app-decides: {{home}}/runs/{{failing}} --compare {{home}}/runs/{{passing}} --step {{crash_step}} ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus -->
 
-![The app zoomed in around the crash: a dashed blue mark at step {{deciding}} on the timeline, the crash just after it, and the divergence card saying the two runs are the same until step {{deciding}}, where only this run has {{deciding_words}}](../site/img/app-decides.png)
+![The app zoomed in around the crash: a dashed blue mark at step {{deciding}} on the timeline, the crash just after it, and the divergence card saying the two runs are identical until step {{deciding}}, where only this run gets {{deciding_words}}](../site/img/app-decides.png)
 
 ## See which thread held the CPU
 
@@ -428,8 +428,8 @@ stops at the count. From the deciding step of the passing run:
 $ rewind check --run {{passing|short}} --schedule-from {{deciding}} --schedules 16 --all --no-narrow
 ```
 
-<!-- assert: grep -qE '^[0-9]+ of 16 perturbed schedules ended differently$' {{out:sweep}} -->
-<!-- capture sweep_differing: ([0-9]+) of 16 perturbed schedules ended differently -->
+<!-- assert: grep -qE '^[0-9]+ of 16 other schedules ended differently$' {{out:sweep}} -->
+<!-- capture sweep_differing: ([0-9]+) of 16 other schedules ended differently -->
 
 {{sweep_differing}} of the 16 crash. Without `--no-narrow`, `check --run` narrows the first of
 them to the step that decides it, as for a build.
@@ -467,10 +467,10 @@ $ rewind check --root ready --schedules 64 --all --no-narrow -- /bin/ready
 up to 1 s:
 
 ```console run name=long_stalls
-$ rewind check --root ready --stall-max 50ms -- /bin/ready | grep -E 'ends differently|perturbing only|decides it|passing:|failing:'
+$ rewind check --root ready --stall-max 50ms -- /bin/ready | grep -E 'ends differently|limited to|decides it|passing:|failing:'
 ```
 
-<!-- assert: grep -qE 'decides it: .*[0-9.]+ ms stall there makes the run fail$' {{out:long_stalls}} && grep -q 'stalls up to 50 ms$' {{out:long_stalls}} -->
+<!-- assert: grep -qE 'decides it: .*[0-9.]+ ms pause of the running thread there makes the run fail$' {{out:long_stalls}} && grep -q 'stalls up to 50 ms$' {{out:long_stalls}} -->
 
 <!-- set mylib_default: rewind check --epoch {{epoch}} --schedules 32 --all --no-narrow {{flake}} 2>/dev/null | tail -1 | awk '{print $1}' -->
 <!-- set mylib_long: rewind check --epoch {{epoch}} --schedules 32 --all --no-narrow --stall-max 100ms {{flake}} 2>/dev/null | tail -1 | awk '{print $1}' -->
@@ -503,7 +503,7 @@ $ rewind nix -q --epoch {{epoch}} --name hash-order github:fzakaria/rewindvm#has
 $ rewind check --run hash-order --seeds 8 --schedules 0 | grep -E 'decides it|passing:|failing:'
 ```
 
-<!-- assert: grep -qE 'decides it: unperturbed, seed [0-9]+ passes and seed [0-9]+ fails$' {{out:reseed}} && grep -qE 'seed [0-9]+ from step [0-9]+, schedule 0$' {{out:reseed}} -->
+<!-- assert: grep -qE 'decides it: under schedule 0, seed [0-9]+ passes and seed [0-9]+ fails$' {{out:reseed}} && grep -qE 'seed [0-9]+ from step [0-9]+, schedule 0$' {{out:reseed}} -->
 
 ## Move around a long run
 

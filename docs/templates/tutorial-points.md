@@ -66,7 +66,7 @@ $ rewind check --epoch {{epoch}} .#counter | grep -E 'decides it|passing:|failin
 <!-- capture deciding: step (\d+) decides it -->
 <!-- capture assert_step: failing run violates sdk: step (\d+): -->
 <!-- capture lost_total: always "hits-add-up" failed: (\d+) hits -->
-<!-- assert: grep -qE '^step [0-9]+ decides it: a reschedule there makes the run violate same-outcome, sdk$' {{out:found}} -->
+<!-- assert: grep -qE '^step [0-9]+ decides it: a request to switch threads there makes the run violate same-outcome, sdk$' {{out:found}} -->
 <!-- assert: grep -qE 'failing run violates sdk: step [0-9]+: always "hits-add-up" failed: 1?[0-9] hits, expected 20' {{out:found}} -->
 
 <!-- set from: echo $(( {{deciding}} - 2 )) -->

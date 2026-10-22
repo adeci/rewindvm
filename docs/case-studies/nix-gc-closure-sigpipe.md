@@ -47,7 +47,7 @@ rewind: packing 217 store paths for nix-functional-gc-closure-2.36pre20260912_20
 rewind: run d6deb54e63ee7a3b exited:1 after 37507 steps, 1.436s virtual, 6.449s wall (poweroff)
 
 $ rewind replay d6deb54e
-identical: 9809 events over 37507 steps
+identical to the recording: 9809 events over 37507 steps
 ```
 
 `input2_out` got the right value, and the test still died of signal 13.
@@ -169,11 +169,11 @@ schedule  41: exited:1      43328 steps    run f3a81773fc0c51e5
 ...
 schedule 214: exited:1      84959 steps    run efad69daaa21e8b5
 ...
-schedule 0 failed; 254 of 256 perturbed schedules ended differently
+schedule 0 failed; 254 of 256 other schedules ended differently
 
-schedule 1 passes where schedule 0 fails; narrowing the steps it perturbs
-perturbing only steps 37303..37872 still ends differently
-step 37871 decides it: a timer 49.9 µs late there makes the run pass
+schedule 1 passes where schedule 0 fails; finding the step that decides it
+schedule 1 limited to steps 37303..37872 still ends differently
+step 37871 decides it: a timer firing 49.9 µs late there makes the run pass
 
 passing: run 9ab082205f1b42d3, schedule 1 over steps 37303..37872
 failing: run 2b1a9ab1f5e313b8, schedule 1 over steps 37303..37871
@@ -213,7 +213,7 @@ schedule  30: exited:1      37529 steps    run e416ba8b839efea7
 schedule  36: exited:1      37536 steps    run 0326b5b03deeac5a
 ...
 schedule  64: exited:0      88360 steps  a50a5ab6d992  run 47af11d7e52a9cc2
-run d6deb54e63ee7a3b failed; 62 of 64 perturbed schedules ended differently
+run d6deb54e63ee7a3b failed; 62 of 64 other schedules ended differently
 ```
 
 Schedules 30 and 36 fail the same way, in the same pipeline: `head` exits
@@ -235,7 +235,7 @@ schedule 843: exited:1      82981 steps    run e164c79070f367cd
 ...
 schedule 894: exited:1      82957 steps    run 836489d5467dfbec
 ...
-schedule 0 failed; 1020 of 1024 perturbed schedules ended differently
+schedule 0 failed; 1020 of 1024 other schedules ended differently
 ```
 
 On the host it fails only when the writer is made the low-priority task on its
@@ -267,7 +267,7 @@ $ rewind check --all 'github:fzakaria/rewindvm?dir=examples/case-studies#nix-git
 schedule   0: exited:0      83722 steps  a50a5ab6d992  run e6deae8939c0328e
 schedule   1: exited:0      94498 steps  a50a5ab6d992  run ea7dfcb0b2d8cdfe
 ...
-0 of 64 perturbed schedules ended differently
+0 of 64 other schedules ended differently
 same result under all 65 schedules
 ```
 
