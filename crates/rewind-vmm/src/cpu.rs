@@ -179,6 +179,9 @@ pub const SIGNATURE: &[u8; 12] = b"RewindRewind";
 const HYPERVISOR_LEAF: u32 = 0x4000_0000;
 
 /// The host's CPUID shaped for a deterministic guest of the given model.
+/// A new run's model is checked with [`check`] before its machine is
+/// built, so a refusal here is of a recorded run's model, and says where
+/// the run replays rather than which --cpu to run with.
 pub fn cpuid(kvm: &Kvm, model: CpuModel) -> Result<CpuId> {
     let host = host_cpuid(kvm)?;
     let entries = match model {
@@ -188,17 +191,59 @@ pub fn cpuid(kvm: &Kvm, model: CpuModel) -> Result<CpuId> {
     CpuId::from_entries(&entries).context("building CPUID")
 }
 
+/// The model a run that asks for none gets on a host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DefaultModel {
+    /// The host has the whole x86-64-v3 baseline.
+    V3,
+    /// The host lacks ERMS and nothing else.
+    V3Compat,
+    /// The host lacks more than ERMS, so only `--cpu host` records there.
+    /// `lacking` names the missing bits, as "leaf 7 EBX bits 0x220".
+    HostOnly { lacking: String },
+}
+
+impl DefaultModel {
+    /// The model a run gets, or for a host that leaves only the host model
+    /// a refusal naming the missing bits.
+    pub fn model(&self) -> Result<CpuModel> {
+        match self {
+            DefaultModel::V3 => Ok(CpuModel::V3),
+            DefaultModel::V3Compat => Ok(CpuModel::V3Compat),
+            DefaultModel::HostOnly { lacking } => {
+                anyhow::bail!("this CPU lacks the x86-64-v3 model's {lacking}; run with --cpu host")
+            }
+        }
+    }
+}
+
+/// The model a run that asks for none gets on this host.
+pub fn default_for(kvm: &Kvm) -> Result<DefaultModel> {
+    classify(&host_cpuid(kvm)?)
+}
+
 /// The model a run shows the guest when none is asked for: v3 on a host
 /// with the whole x86-64-v3 baseline, or v3-compat on one that lacks only
 /// ERMS. Fails, naming the missing bits, on any other host.
 pub fn default_model(kvm: &Kvm) -> Result<CpuModel> {
-    choose(&host_cpuid(kvm)?)
+    default_for(kvm)?.model()
 }
 
 /// Fails, naming the missing bits and the models that would run, when this
-/// host cannot show the guest `model`.
+/// host cannot show a new run `model`.
 pub fn check(kvm: &Kvm, model: CpuModel) -> Result<()> {
-    supports(&host_cpuid(kvm)?, model)
+    supports(&host_cpuid(kvm)?, model, RunKind::New)
+}
+
+/// ERMS as a refusal names it.
+const ERMS_NAMED: &str = "ERMS (leaf 7 EBX bit 9)";
+
+/// The run a model is asked for: a new one, which can take another model
+/// with --cpu, or a recorded one, whose model is part of its inputs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunKind {
+    New,
+    Recorded,
 }
 
 /// The feature bits the baseline keeps, by leaf, subleaf and register.
@@ -401,26 +446,28 @@ impl Fixed {
 }
 
 /// The model for a run that asks for none: v3 where the host has every v3
-/// feature, and v3-compat where it lacks ERMS alone.
-fn choose(host: &[kvm_cpuid_entry2]) -> Result<CpuModel> {
+/// feature, v3-compat where it lacks ERMS alone, and otherwise only the
+/// host model.
+fn classify(host: &[kvm_cpuid_entry2]) -> Result<DefaultModel> {
     let lacking = Features::V3.lacking(Features::of(host)?);
     if lacking == Features::NONE {
-        return Ok(CpuModel::V3);
+        return Ok(DefaultModel::V3);
     }
     if lacking == Features::ERMS_ONLY {
-        return Ok(CpuModel::V3Compat);
+        return Ok(DefaultModel::V3Compat);
     }
 
     // The host lacks more than ERMS, which neither fixed model hides.
-    anyhow::bail!(
-        "this CPU lacks the x86-64-v3 model's {}; run with --cpu host",
-        lacking.describe()
-    )
+    Ok(DefaultModel::HostOnly {
+        lacking: lacking.describe(),
+    })
 }
 
-/// Whether a host can show the guest `model`: a fixed model's features
-/// must all be the host's, and the host model is always shown.
-fn supports(host: &[kvm_cpuid_entry2], model: CpuModel) -> Result<()> {
+/// Whether a host can show the guest `model` for `run`: a fixed model's
+/// features must all be the host's, and the host model is always shown.
+/// A refusal of a new run names the --cpu models that would record here,
+/// and of a recorded run where the run replays.
+fn supports(host: &[kvm_cpuid_entry2], model: CpuModel, run: RunKind) -> Result<()> {
     let Some(fixed) = Fixed::of(model) else {
         return Ok(());
     };
@@ -429,12 +476,34 @@ fn supports(host: &[kvm_cpuid_entry2], model: CpuModel) -> Result<()> {
         return Ok(());
     }
 
-    // The v3 model on a host that lacks only ERMS: the same model with
-    // ERMS hidden runs there.
-    if model == CpuModel::V3 && lacking == Features::ERMS_ONLY {
+    // Whether the v3 model lacks only ERMS here, where v3-compat would
+    // record, and the model's name as --cpu takes it.
+    let erms_only = model == CpuModel::V3 && lacking == Features::ERMS_ONLY;
+    let name = model.cli_name();
+
+    // A recorded run cannot change its model: it replays where the host
+    // has the features, and recording it again here is another run.
+    if run == RunKind::Recorded {
+        if erms_only {
+            anyhow::bail!(
+                "this {name} run needs a CPU with {ERMS_NAMED}, which this CPU lacks; replay it \
+                 on a host with ERMS. Recording it again here with --cpu v3-compat or --cpu host \
+                 makes a different run"
+            );
+        }
         anyhow::bail!(
-            "this CPU lacks ERMS (leaf 7 EBX bit 9), which the x86-64-v3 model shows the guest; \
-             run with --cpu v3-compat, the same model without ERMS, or --cpu host"
+            "this {name} run needs the {name} model's {}, which this CPU lacks; replay it on a \
+             host that has them. Recording it again here with --cpu host makes a different run",
+            lacking.describe()
+        );
+    }
+
+    // A new v3 run on a host that lacks only ERMS: the same model with
+    // ERMS hidden runs there.
+    if erms_only {
+        anyhow::bail!(
+            "this CPU lacks {ERMS_NAMED}, which the x86-64-v3 model shows the guest; run with \
+             --cpu v3-compat, the same model without ERMS, or --cpu host"
         );
     }
     anyhow::bail!(
@@ -444,12 +513,12 @@ fn supports(host: &[kvm_cpuid_entry2], model: CpuModel) -> Result<()> {
     )
 }
 
-/// The fixed model `model` from the host's shaped CPUID. Fails when the
-/// host lacks a feature the model shows the guest, and for the host model,
-/// which is not fixed.
+/// The fixed model `model` from the host's shaped CPUID. Fails, as for a
+/// recorded run, when the host lacks a feature the model shows the guest,
+/// and for the host model, which is not fixed.
 fn baseline(host: &[kvm_cpuid_entry2], model: CpuModel) -> Result<Vec<kvm_cpuid_entry2>> {
     let fixed = Fixed::of(model).context("the host CPU model has no baseline")?;
-    supports(host, model)?;
+    supports(host, model, RunKind::Recorded)?;
 
     // The host's vendor, which the fixed models keep.
     let find = |f: u32, i: u32| {
@@ -738,22 +807,33 @@ mod tests {
     #[test]
     fn the_default_model_follows_what_the_host_lacks() {
         // Three hosts: one with the whole baseline gets v3, one without
-        // ERMS gets v3-compat, and one without ERMS and AVX2 gets neither,
-        // and the refusal names both missing bits.
+        // ERMS gets v3-compat, and one without ERMS and AVX2 gets only the
+        // host model, with both missing bits named. A run that asks for no
+        // model is refused on that last host, which says to use --cpu host.
         const AVX2: u32 = 1 << 5;
-        assert_eq!(choose(&host(NOTHING)).unwrap(), CpuModel::V3);
+        assert_eq!(classify(&host(NOTHING)).unwrap(), DefaultModel::V3);
         assert_eq!(
-            choose(&host(Features::ERMS_ONLY)).unwrap(),
-            CpuModel::V3Compat
+            classify(&host(Features::ERMS_ONLY)).unwrap(),
+            DefaultModel::V3Compat
         );
         let lacking = Features {
             leaf7_ebx: ERMS | AVX2,
             ..NOTHING
         };
-        let refused = choose(&host(lacking)).unwrap_err().to_string();
-        assert!(refused.contains("leaf 7 EBX bits 0x220"), "{refused}");
-        assert!(refused.contains("--cpu host"), "{refused}");
-        assert!(!refused.contains("v3-compat"), "{refused}");
+        let host_only = classify(&host(lacking)).unwrap();
+        assert_eq!(
+            host_only,
+            DefaultModel::HostOnly {
+                lacking: "leaf 7 EBX bits 0x220".into()
+            }
+        );
+        assert_eq!(DefaultModel::V3.model().unwrap(), CpuModel::V3);
+        assert_eq!(DefaultModel::V3Compat.model().unwrap(), CpuModel::V3Compat);
+        let refused = host_only.model().unwrap_err().to_string();
+        assert_eq!(
+            refused,
+            "this CPU lacks the x86-64-v3 model's leaf 7 EBX bits 0x220; run with --cpu host"
+        );
     }
 
     #[test]
@@ -763,16 +843,56 @@ mod tests {
         // host model are both fine on that host, and every model is fine
         // on a host with the whole baseline.
         let without_erms = host(Features::ERMS_ONLY);
-        let refused = supports(&without_erms, CpuModel::V3)
+        let refused = supports(&without_erms, CpuModel::V3, RunKind::New)
             .unwrap_err()
             .to_string();
         assert!(refused.contains("ERMS"), "{refused}");
         assert!(refused.contains("--cpu v3-compat"), "{refused}");
         assert!(refused.contains("--cpu host"), "{refused}");
-        supports(&without_erms, CpuModel::V3Compat).unwrap();
-        supports(&without_erms, CpuModel::Host).unwrap();
+        supports(&without_erms, CpuModel::V3Compat, RunKind::New).unwrap();
+        supports(&without_erms, CpuModel::Host, RunKind::New).unwrap();
         for model in [CpuModel::V3, CpuModel::V3Compat, CpuModel::Host] {
-            supports(&host(NOTHING), model).unwrap();
+            supports(&host(NOTHING), model, RunKind::New).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_recorded_v3_run_without_erms_says_where_it_replays() {
+        // A recorded v3 run's machine built on a host that lacks only
+        // ERMS: the refusal names the run's model and the missing ERMS,
+        // says to replay where ERMS is, and offers recording again here
+        // only as a different run, never as a --cpu to run with.
+        let refused = baseline(&host(Features::ERMS_ONLY), CpuModel::V3)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            refused,
+            "this v3 run needs a CPU with ERMS (leaf 7 EBX bit 9), which this CPU lacks; \
+             replay it on a host with ERMS. Recording it again here with --cpu v3-compat or \
+             --cpu host makes a different run"
+        );
+    }
+
+    #[test]
+    fn a_recorded_run_missing_more_says_where_it_replays() {
+        // Recorded runs of both fixed models on a host without AVX2: the
+        // refusal names the run's model and the missing bits, says to
+        // replay where they are, and offers only --cpu host for a new run.
+        const AVX2: u32 = 1 << 5;
+        let lacking = Features {
+            leaf7_ebx: AVX2,
+            ..NOTHING
+        };
+        for (model, name) in [(CpuModel::V3, "v3"), (CpuModel::V3Compat, "v3-compat")] {
+            let refused = baseline(&host(lacking), model).unwrap_err().to_string();
+            assert_eq!(
+                refused,
+                format!(
+                    "this {name} run needs the {name} model's leaf 7 EBX bits 0x20, which this \
+                     CPU lacks; replay it on a host that has them. Recording it again here with \
+                     --cpu host makes a different run"
+                )
+            );
         }
     }
 }

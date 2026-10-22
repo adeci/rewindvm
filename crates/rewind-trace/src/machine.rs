@@ -27,6 +27,17 @@ pub enum CpuModel {
     V3Compat,
 }
 
+impl CpuModel {
+    /// The model as `--cpu` takes it.
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            CpuModel::Host => "host",
+            CpuModel::V3 => "v3",
+            CpuModel::V3Compat => "v3-compat",
+        }
+    }
+}
+
 /// What virtual time follows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

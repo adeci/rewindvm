@@ -8,6 +8,8 @@ use rewind_core::home::bytes_under;
 use rewind_core::run::Unreadable;
 use rewind_core::{Guest, Home, Run};
 
+use rewind_vmm::cpu::DefaultModel;
+
 use crate::show;
 
 /// How a finding stands.
@@ -66,6 +68,7 @@ const TOPIC_WIDTH: usize = 12;
 /// Everything doctor looks at, in the order it says it.
 pub fn findings(home: &Home) -> Vec<Finding> {
     let mut found = vec![kvm()];
+    found.extend(cpu());
     let guest = Guest::from_env();
     found.push(match &guest {
         Ok(g) => Finding::new(
@@ -116,6 +119,53 @@ fn kvm() -> Finding {
     match rewind_vmm::kvm::open() {
         Ok(_) => Finding::new(Level::Ok, "kvm", "/dev/kvm opens"),
         Err(e) => Finding::new(Level::Fail, "kvm", format!("{e:#}")),
+    }
+}
+
+/// The CPU model a run without --cpu gets here, or nothing where KVM does
+/// not open, which the kvm finding already says.
+fn cpu() -> Option<Finding> {
+    let kvm = rewind_vmm::kvm::open().ok()?;
+    let default = match rewind_vmm::cpu::default_for(&kvm) {
+        Ok(default) => default,
+        Err(e) => return Some(Finding::new(Level::Warn, "cpu", format!("{e:#}"))),
+    };
+
+    // A fixed model also needs the address bits of the extras slot, which
+    // a host with every feature can still lack, such as a VM shown 36.
+    if let Ok(model) = default.model()
+        && let Err(e) = rewind_vmm::extras_for(model)
+    {
+        return Some(Finding::new(Level::Warn, "cpu", format!("{e:#}")));
+    }
+    Some(cpu_finding(&default))
+}
+
+/// The finding for the model a run without --cpu gets: v3, v3-compat with
+/// why, or only `--cpu host`, with the bits the fixed models need and this
+/// CPU lacks.
+fn cpu_finding(default: &DefaultModel) -> Finding {
+    match default {
+        DefaultModel::V3 => Finding::new(
+            Level::Ok,
+            "cpu",
+            "runs without --cpu get v3, the fixed x86-64-v3 model",
+        ),
+        DefaultModel::V3Compat => Finding::new(
+            Level::Ok,
+            "cpu",
+            "runs without --cpu get v3-compat: this CPU lacks ERMS (leaf 7 EBX bit 9), which v3 \
+             needs; v3-compat runs replay on hosts with or without ERMS, and v3 runs do not \
+             replay here",
+        ),
+        DefaultModel::HostOnly { lacking } => Finding::new(
+            Level::Warn,
+            "cpu",
+            format!(
+                "this CPU lacks the x86-64-v3 model's {lacking}, so only --cpu host records \
+                 here, and those runs replay only on this CPU model"
+            ),
+        ),
     }
 }
 
@@ -370,6 +420,37 @@ mod tests {
             "7 runs have manifests another build of rewind wrote: 0000000000000000, \
              0000000000000001, 0000000000000002, 0000000000000003, 0000000000000004 and 2 \
              more; `rewind remove <id>` removes one"
+        );
+    }
+
+    #[test]
+    fn the_cpu_finding_names_the_model_a_run_gets() {
+        // The three kinds of host, from the model a run without --cpu gets
+        // on each: v3 and v3-compat are fine, the second with why, and a
+        // host that leaves only --cpu host is a warning naming what it
+        // lacks.
+        let v3 = cpu_finding(&DefaultModel::V3);
+        assert_eq!(v3.level, Level::Ok);
+        assert_eq!(
+            v3.text,
+            "runs without --cpu get v3, the fixed x86-64-v3 model"
+        );
+        let compat = cpu_finding(&DefaultModel::V3Compat);
+        assert_eq!(compat.level, Level::Ok);
+        assert_eq!(
+            compat.text,
+            "runs without --cpu get v3-compat: this CPU lacks ERMS (leaf 7 EBX bit 9), which v3 \
+             needs; v3-compat runs replay on hosts with or without ERMS, and v3 runs do not \
+             replay here"
+        );
+        let host_only = cpu_finding(&DefaultModel::HostOnly {
+            lacking: "leaf 7 EBX bits 0x220".into(),
+        });
+        assert_eq!(host_only.level, Level::Warn);
+        assert_eq!(
+            host_only.text,
+            "this CPU lacks the x86-64-v3 model's leaf 7 EBX bits 0x220, so only --cpu host \
+             records here, and those runs replay only on this CPU model"
         );
     }
 }

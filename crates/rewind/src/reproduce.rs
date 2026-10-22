@@ -102,12 +102,7 @@ pub fn command(m: &Manifest) -> Result<Vec<String>, Unset> {
     if spec.mem_mib != crate::cmd::record::DEFAULT_MEM_MIB {
         flag(&mut args, "mem", spec.mem_mib.to_string());
     }
-    let cpu = match spec.cpu {
-        rewind_vmm::CpuModel::V3 => "v3",
-        rewind_vmm::CpuModel::V3Compat => "v3-compat",
-        rewind_vmm::CpuModel::Host => "host",
-    };
-    flag(&mut args, "cpu", cpu.into());
+    flag(&mut args, "cpu", spec.cpu.cli_name().into());
     let clock = match spec.clock {
         rewind_vmm::ClockSource::Exits => "exits",
         rewind_vmm::ClockSource::Branches(rewind_vmm::CounterEvent::Instructions) => {

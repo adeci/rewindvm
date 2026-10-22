@@ -74,6 +74,21 @@ fn extras_for_bits(cpu: CpuModel, bits: u32) -> Result<Extras> {
     }
 }
 
+/// Fails, saying where the run replays, when a recorded run reserves the
+/// extras slot and this host's CPU reaches only `bits` physical address
+/// bits, short of the slot.
+fn recorded_slot_fits(bits: u32) -> Result<()> {
+    if bits >= EXTRAS_ADDRESS_BITS {
+        return Ok(());
+    }
+    bail!(
+        "this run reserves the extras slot, which needs {EXTRAS_ADDRESS_BITS} physical address \
+         bits, and this CPU reaches {bits}; replay it on a host whose CPU reaches \
+         {EXTRAS_ADDRESS_BITS}. Recording it again here with --cpu host makes a different run, \
+         without the slot"
+    )
+}
+
 /// Everything that determines a run. Two machines built from equal configs
 /// run identically.
 #[derive(Clone, Debug)]
@@ -349,13 +364,7 @@ impl Machine {
                 // A run recorded where the CPU reaches the slot, replayed
                 // where the CPU does not: name the address bits, where KVM
                 // would fail with a bare EINVAL.
-                let bits = cpu::address_bits(&kvm)?;
-                if bits < EXTRAS_ADDRESS_BITS {
-                    bail!(
-                        "this run reserves the extras slot, which needs {EXTRAS_ADDRESS_BITS} \
-                         physical address bits, and this CPU reaches {bits}"
-                    );
-                }
+                recorded_slot_fits(cpu::address_bits(&kvm)?)?;
                 let slot = Mapping::anonymous(layout::EXTRAS_LEN as usize)?;
                 // SAFETY: the mapping outlives the VM; the slot is read-only.
                 unsafe {
@@ -1045,6 +1054,22 @@ mod tests {
         assert!(
             refused.contains("36") && refused.contains("--cpu host"),
             "{refused}"
+        );
+    }
+
+    #[test]
+    fn a_recorded_slot_past_the_host_says_where_it_replays() {
+        // A recorded run that reserves the extras slot, rebuilt on hosts on
+        // both sides of the slot's 39 bits: the narrower one refuses, says
+        // to replay where the bits are, and offers recording again only as
+        // a different run.
+        recorded_slot_fits(EXTRAS_ADDRESS_BITS).unwrap();
+        let refused = recorded_slot_fits(36).unwrap_err().to_string();
+        assert_eq!(
+            refused,
+            "this run reserves the extras slot, which needs 39 physical address bits, and this \
+             CPU reaches 36; replay it on a host whose CPU reaches 39. Recording it again here \
+             with --cpu host makes a different run, without the slot"
         );
     }
 

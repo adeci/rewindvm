@@ -491,7 +491,9 @@ The other machine also needs the features of the run's CPU model. A run
 without `--cpu` gets `v3`, whose features include ERMS, the fast `rep movsb`
 flag. On a host that lacks only ERMS it gets `v3-compat` instead, the same CPU
 with ERMS hidden, and rewind prints a line saying so. A `v3` run needs a host
-with ERMS, and a `v3-compat` run replays on hosts with or without it.
+with ERMS, and a `v3-compat` run replays on hosts with or without it. A replay
+on a host without the model's features names what is missing and where the
+run replays, and `rewind doctor` says which model a run gets on a machine.
 
 ## Which clock
 
