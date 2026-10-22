@@ -519,9 +519,9 @@ instruction, and the restored guest executes it a second time.
 Runs take a keyframe every quarter second of wall time. Seeking to a step
 restores the latest keyframe at or before it and runs forward, so a seek costs
 at most about one interval. `rewind replay --from` restores a keyframe, runs
-to the end and compares the rest of the trace with the original. Every
-keyframe checked this way reproduces the rest of its run exactly. The record
-buffer is empty at every step, so a
+to the end and compares the rest of the trace with the original, events and
+read and write records both. Every keyframe checked this way reproduces the
+rest of its run exactly. The record buffer is empty at every step, so a
 keyframe needs nothing of it beyond the shared page.
 
 A fork that looks inside a run, for `rewind where`, `gdb`, `cat` or `shell`,

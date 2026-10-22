@@ -114,12 +114,24 @@ impl Process {
 /// Where two traces first disagree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Divergence {
-    /// The index of the first differing event in each trace.
+    /// The index of the first differing event in each trace, or of the
+    /// first differing trace record of read and write records when `part`
+    /// says so.
     pub index: usize,
     /// The steps of the first differing events, or of the end of a trace
     /// that ran out first.
     pub left_step: u64,
     pub right_step: u64,
+    pub part: Part,
+}
+
+/// Which records of two traces a [`Divergence`] is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    Events,
+    /// The read and write records ([`io_records`]), with the events the
+    /// same.
+    IoRecords,
 }
 
 /// The job's exit, as init reported it.
@@ -371,6 +383,7 @@ impl Trace {
             index,
             left_step: step_of(self),
             right_step: step_of(other),
+            part: Part::Events,
         })
     }
 

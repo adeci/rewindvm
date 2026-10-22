@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use anyhow::{Result, bail};
 use rewind_core::{Guest, Home, Run, image};
+use rewind_trace::Part;
 
 use crate::{RUN_HELP, RUN_LONG_HELP, json, list, reproduce, show};
 
@@ -354,15 +355,21 @@ pub fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
             let run = Run::find(home, &run)?;
             let step = run.check_step(step)?;
             let started = std::time::Instant::now();
-            let (kf, original, again) = run.replay_from(home, step)?;
-            let identical = original.divergence(&again).is_none();
+            let replayed = run.replay_from(home, step)?;
+            let kf = replayed.keyframe;
+            let (original, again) = (&replayed.original, &replayed.again);
+            let identical = replayed.divergence.is_none();
             if json {
+                let divergence = match &replayed.divergence {
+                    Some(d) if d.part == Part::IoRecords => json::io_divergence(d),
+                    _ => json::divergence(original, again),
+                };
                 println!(
                     "{}",
                     serde_json::json!({
                         "identical": identical,
                         "keyframe": kf,
-                        "divergence": json::divergence(&original, &again),
+                        "divergence": divergence,
                     })
                 );
                 return Ok(if identical {
@@ -371,7 +378,7 @@ pub fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
                     ExitCode::FAILURE
                 });
             }
-            match original.divergence(&again) {
+            match &replayed.divergence {
                 None => {
                     println!(
                         "identical to the recording from the snapshot at step {kf} to the end ({:.2}s)",
@@ -379,9 +386,14 @@ pub fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
                     );
                     Ok(ExitCode::SUCCESS)
                 }
+                Some(d) if d.part == Part::IoRecords => {
+                    println!("DIFFERENT from the recording after the snapshot at step {kf}:");
+                    println!("{}", show::io_divergence(d));
+                    Ok(ExitCode::FAILURE)
+                }
                 Some(_) => {
                     println!("DIFFERENT from the recording after the snapshot at step {kf}:");
-                    print!("{}", show::divergence(&original, &again));
+                    print!("{}", show::divergence(original, again));
                     Ok(ExitCode::FAILURE)
                 }
             }
@@ -394,12 +406,13 @@ pub fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
             let run = Run::find(home, &run)?;
             let replayed = run.replay()?;
             if json {
-                let divergence = replayed.as_ref().map(|d| {
-                    serde_json::json!({
+                let divergence = replayed.as_ref().map(|d| match d.part {
+                    Part::IoRecords => json::io_divergence(d),
+                    Part::Events => serde_json::json!({
                         "index": d.index,
                         "left_step": d.left_step,
                         "right_step": d.right_step,
-                    })
+                    }),
                 });
                 println!(
                     "{}",
@@ -418,11 +431,19 @@ pub fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
             match replayed {
                 None => {
                     println!(
-                        "identical to the recording: {} events over {} steps",
+                        "identical to the recording: {} events and {} read and write records over {} steps",
                         run.trace()?.events.len(),
+                        run.io()?.records.len(),
                         run.manifest.outcome.as_ref().map_or(0, |o| o.step)
                     );
                     Ok(ExitCode::SUCCESS)
+                }
+                Some(d) if d.part == Part::IoRecords => {
+                    println!(
+                        "DIFFERENT from the recording: {}: the run was not deterministic",
+                        show::io_divergence(&d)
+                    );
+                    Ok(ExitCode::FAILURE)
                 }
                 Some(d) => {
                     println!(

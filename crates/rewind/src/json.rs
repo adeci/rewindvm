@@ -39,6 +39,17 @@ pub fn run(run: &Run) -> Result<Value> {
     }))
 }
 
+/// Where two runs' read and write records first differ, when their events
+/// are the same.
+pub fn io_divergence(d: &rewind_trace::Divergence) -> Value {
+    json!({
+        "part": "io_records",
+        "index": d.index,
+        "left_step": d.left_step,
+        "right_step": d.right_step,
+    })
+}
+
 /// Where two runs first differ, with the first event that differs on each
 /// side; null for identical runs.
 pub fn divergence(left: &Trace, right: &Trace) -> Value {

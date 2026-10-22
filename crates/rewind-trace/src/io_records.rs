@@ -28,6 +28,7 @@
 use std::collections::HashMap;
 
 use crate::event::{HEADER_LEN, RECORD_MAX};
+use crate::{Divergence, Part};
 
 /// The trace record kind read and write records are stored under. The
 /// guest kernel reserves it and never sends it.
@@ -158,6 +159,30 @@ pub fn decode(records: &[(u64, Vec<u8>)]) -> Result<IoLog, IoError> {
     }
     log.paths = tables.names;
     Ok(log)
+}
+
+/// The first place the read and write records among two trace files'
+/// records differ, steps included, as [`crate::Trace::divergence`] finds
+/// it for events: None when they are the same, which for a replay of a
+/// run is the claim it makes. The index counts trace records of [`KIND`].
+pub fn divergence(left: &[(u64, Vec<u8>)], right: &[(u64, Vec<u8>)]) -> Option<Divergence> {
+    let left: Vec<&(u64, Vec<u8>)> = left.iter().filter(|(_, r)| is_io(r)).collect();
+    let right: Vec<&(u64, Vec<u8>)> = right.iter().filter(|(_, r)| is_io(r)).collect();
+    let n = left.len().min(right.len());
+    let index = (0..n)
+        .find(|&i| left[i] != right[i])
+        .or((left.len() != right.len()).then_some(n))?;
+
+    // The step of the record at `index`, or of the last one of a side that
+    // ran out first.
+    let step_of =
+        |side: &[&(u64, Vec<u8>)]| side.get(index).or(side.last()).map_or(0, |(step, _)| *step);
+    Some(Divergence {
+        index,
+        left_step: step_of(&left),
+        right_step: step_of(&right),
+        part: Part::IoRecords,
+    })
 }
 
 /// Turns what the guest buffered between two steps into trace records.
@@ -767,6 +792,24 @@ mod tests {
                 format: FORMAT + 1
             })
         );
+    }
+
+    #[test]
+    fn the_first_differing_record_is_found() {
+        // Two traces whose records match at step 3 and part at step 6,
+        // where one wrote 4 bytes and the other 5: the first difference
+        // is the second record, at step 6 in both. Each is identical to
+        // itself.
+        let left = encode_all(&[(3, write(1, 2, 0, 4)), (6, write(1, 2, 4, 4))]);
+        let right = encode_all(&[(3, write(1, 2, 0, 4)), (6, write(1, 2, 4, 5))]);
+        assert_eq!(divergence(&left, &left), None);
+        let d = divergence(&left, &right).unwrap();
+        assert_eq!((d.index, d.left_step, d.right_step), (1, 6, 6));
+        assert_eq!(d.part, Part::IoRecords);
+
+        // One that ran out first parts at its end.
+        let d = divergence(&left, &left[..1]).unwrap();
+        assert_eq!((d.index, d.left_step, d.right_step), (1, 6, 3));
     }
 
     #[test]

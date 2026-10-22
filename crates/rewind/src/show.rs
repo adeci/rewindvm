@@ -6,7 +6,7 @@ use std::time::Duration;
 use rewind_core::Run;
 use rewind_core::compare::{Comparison, Source, Verdict};
 use rewind_trace::ending::{Ending, ExitStatus};
-use rewind_trace::{Event, EventKind, Trace, signal_name};
+use rewind_trace::{Divergence, Event, EventKind, Trace, signal_name};
 
 /// A one-line summary for `rewind ls`.
 pub fn summary(run: &Run) -> String {
@@ -378,6 +378,16 @@ fn tree(alive: &[&rewind_trace::Process], pid: u32, depth: usize, step: u64, out
     }
 }
 
+/// Where a replay's read and write records first differ from the
+/// recording's, when their events are the same: the recording is the left
+/// side and the replay the right.
+pub fn io_divergence(d: &Divergence) -> String {
+    format!(
+        "the read and write records first differ at step {} (record {}, step {} replayed)",
+        d.left_step, d.index, d.right_step
+    )
+}
+
 /// Where two runs first differ, with the events on each side.
 pub fn divergence(left: &Trace, right: &Trace) -> String {
     let Some(d) = left.divergence(right) else {
@@ -409,6 +419,23 @@ mod tests {
     use super::*;
 
     use crate::reproduce::tests::{job, spec};
+
+    #[test]
+    fn records_that_differ_say_where() {
+        // A replay whose events matched and whose read and write records
+        // part at record 4: the line names the recorded step first, then
+        // the record and the replayed step.
+        let d = Divergence {
+            index: 4,
+            left_step: 120,
+            right_step: 121,
+            part: rewind_trace::Part::IoRecords,
+        };
+        assert_eq!(
+            io_divergence(&d),
+            "the read and write records first differ at step 120 (record 4, step 121 replayed)"
+        );
+    }
 
     #[test]
     fn a_schedule_reads_as_its_seed_and_window() {

@@ -337,6 +337,18 @@ impl Observer for Recorder {
     }
 }
 
+/// A replay from a keyframe, as [`Run::replay_from`] made it.
+pub struct ReplayedFrom {
+    /// The step of the keyframe it started from.
+    pub keyframe: u64,
+    /// The run's events after the keyframe, and the replay's.
+    pub original: Trace,
+    pub again: Trace,
+    /// Where the replay first differed from the run, events or read and
+    /// write records; None when it made the same records.
+    pub divergence: Option<rewind_trace::Divergence>,
+}
+
 /// A trace an execution writes beside the run's recorded one. The new
 /// trace takes the recording's place only through `keep`, once the
 /// execution has finished; dropped before then, as when the execution
@@ -568,6 +580,15 @@ impl Run {
         let trace = Trace::decode(self.records()?)
             .with_context(|| format!("reading {}", path.display()))?;
         Ok(self.trace.get_or_init(|| trace))
+    }
+
+    /// The run's read and write records, decoded from its trace. A run
+    /// whose guest kernel buffered none, as every run recorded before
+    /// rewind made them, has an empty log.
+    pub fn io(&self) -> Result<rewind_trace::io_records::IoLog> {
+        let path = self.dir.join(TRACE);
+        rewind_trace::io_records::decode(self.records()?)
+            .with_context(|| format!("reading the read and write records of {}", path.display()))
     }
 
     /// The run's records as the guest wrote them, each with its step,
@@ -865,8 +886,9 @@ impl Run {
         })
     }
 
-    /// Runs the same inputs again and compares traces. None when the new
-    /// trace is identical, which is the claim every run makes.
+    /// Runs the same inputs again and compares traces, events first and
+    /// then read and write records. None when the new trace is identical,
+    /// which is the claim every run makes.
     pub fn replay(&self) -> Result<Option<rewind_trace::Divergence>> {
         let original = self.trace()?;
         let (tmp, file) = ReplayTrace::create(&self.dir)?;
@@ -881,8 +903,11 @@ impl Run {
         let mut machine = Machine::boot(&self.manifest.spec.config()?)?;
         machine.run(None, &mut recorder)?;
         recorder.trace.finish()?;
-        let again = Trace::read(tmp.path())?;
-        Ok(original.divergence(&again))
+        let records = rewind_trace::records(tmp.path())?;
+        let again = Trace::decode(&records)?;
+        Ok(original
+            .divergence(&again)
+            .or_else(|| rewind_trace::io_records::divergence(self.records().ok()?, &records)))
     }
 
     /// Where the run's keyframes are, its own and the ones it shares.
@@ -1162,9 +1187,10 @@ impl Run {
     }
 
     /// Restores the keyframe at or before `step` and runs to the end.
-    /// Returns the keyframe's step, the original trace after it, and the
-    /// new one, which should be the same: the claim every keyframe makes.
-    pub fn replay_from(&self, home: &Home, step: u64) -> Result<(u64, Trace, Trace)> {
+    /// Returns the keyframe's step, the original trace after it and the
+    /// new one, which should be the same, read and write records included:
+    /// the claim every keyframe makes.
+    pub fn replay_from(&self, home: &Home, step: u64) -> Result<ReplayedFrom> {
         let original = self.trace()?;
         let kf = self
             .keyframes()?
@@ -1184,11 +1210,24 @@ impl Run {
         let mut machine = self.machine_at(home, kf, Keep::Nothing, &mut recorder)?;
         machine.run(None, &mut recorder)?;
         recorder.trace.finish()?;
-        let again = Trace::read(tmp.path())?;
+        let records = rewind_trace::records(tmp.path())?;
+        let again = Trace::decode(&records)?;
         let suffix = Trace {
             events: original.events[original.index_after(kf)..].to_vec(),
         };
-        Ok((kf, suffix, again))
+
+        // The events first, then the read and write records after the
+        // keyframe.
+        let divergence = suffix.divergence(&again).or_else(|| {
+            let made = self.records_after(kf).ok()?;
+            rewind_trace::io_records::divergence(&made, &records)
+        });
+        Ok(ReplayedFrom {
+            keyframe: kf,
+            original: suffix,
+            again,
+            divergence,
+        })
     }
 
     /// The runs in a home, newest first.
