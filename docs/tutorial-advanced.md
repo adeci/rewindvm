@@ -417,7 +417,7 @@ $ rewind open 5a5e9cc4 5105 --compare 0f06d70c
 ## Rebuild a run exactly
 
 A run's id is the hash of its inputs, which its `manifest.json` lists, so the
-same command makes the same run on a machine with the same CPU vendor and
+same command follows the same run on a machine with the same CPU vendor and
 guest. `rewind show` prints that command with every input spelled out,
 including the epoch, which defaults to the start of the day the run was made.
 For a fork it prints its parents' commands first. `@`, the newest run, is the

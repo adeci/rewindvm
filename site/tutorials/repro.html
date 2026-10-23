@@ -49,9 +49,9 @@
         A build is reproducible when the same inputs give the same bytes, so anyone can rebuild a
         package and check that it matches the one they were given. Rewind VM fixes every input of a
         build, down to its random numbers, the order its threads run in and the order its
-        directories list in, so one build makes the same run every time. Change one of those inputs
-        and build again: if the output changes, that input changed it, and both runs are kept to
-        replay and compare.
+        directories list in, so one build follows the same run every time. Change one of those
+        inputs and build again: if the output changes, that input changed it, and both runs are kept
+        to replay and compare.
       </p>
       <p>
         The examples are <code>tiles</code> and <code>plugins</code> from
@@ -84,7 +84,7 @@
           it.
         </p>
         <p>
-          A run's seed decides every random number the build draws, Python's hash seed among them.
+          A run's seed decides every random number the build draws, including Python's hash seed.
           <code>check</code> builds <code>tiles</code> under eight seeds, each with the default
           schedule only:
         </p>
@@ -103,8 +103,8 @@ seed  6 schedule   0: exited:0       4035 steps  d20b5efd388d  run af24df10ae7ac
 seed  7 schedule   0: exited:0       4035 steps  b4501793e383  run b5268e20063c5a9e
 6 of 7 other runs ended differently</code></pre>
         <p>
-          The column before each run id is the start of the output's hash. Eight builds made 5
-          different outputs, so <code>tiles</code> is not reproducible.
+          The third column from the end is the start of the output's hash, and the last is the run
+          id. Eight builds made 5 different outputs, so <code>tiles</code> is not reproducible.
         </p>
       </section>
 

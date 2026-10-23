@@ -3,10 +3,10 @@
 A build is reproducible when the same inputs give the same bytes, so anyone
 can rebuild a package and check that it matches the one they were given.
 Rewind VM fixes every input of a build, down to its random numbers, the
-order its threads run in and the order its directories list in, so one
-build makes the same run every time. Change one of those inputs and build
-again: if the output changes, that input changed it, and both runs are kept
-to replay and compare.
+order its threads run in and the order its directories list in, so one build
+follows the same run every time. Change one of those inputs and build again:
+if the output changes, that input changed it, and both runs are kept to
+replay and compare.
 
 The examples are `tiles` and `plugins` from
 [examples](https://github.com/fzakaria/rewindvm/tree/main/examples), two
@@ -20,8 +20,8 @@ packages it links against in a set. Python iterates a set in an order drawn
 from its hash seed. nixpkgs pins that seed with `PYTHONHASHSEED=0`, and
 `tiles` unsets it.
 
-A run's seed decides every random number the build draws, Python's hash seed
-among them. `check` builds `tiles` under eight seeds, each with the default
+A run's seed decides every random number the build draws, including Python's
+hash seed. `check` builds `tiles` under eight seeds, each with the default
 schedule only:
 
 ```console
@@ -39,8 +39,8 @@ seed  7 schedule   0: exited:0       4035 steps  b4501793e383  run b5268e20063c5
 6 of 7 other runs ended differently
 ```
 
-The column before each run id is the start of the output's hash. Eight
-builds made 5 different outputs, so `tiles` is not
+The third column from the end is the start of the output's hash, and the
+last is the run id. Eight builds made 5 different outputs, so `tiles` is not
 reproducible.
 
 ## What differs
