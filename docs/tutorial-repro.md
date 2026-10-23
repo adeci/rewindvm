@@ -172,23 +172,20 @@ is the same in every run: `/build` lists its newest file first. On a real
 machine, ext4 lists a directory by a hash of each name, keyed by a seed
 chosen when the disk was formatted, so two machines can list one directory
 in two orders. The guest kernel does the same when its command line has
-`rewind.dirents=N`: every directory lists in an order keyed by N. Build
-under two keys:
+`rewind.dirents=N`: every directory lists in an order keyed by N.
+`check --dirents 3` builds it again under keys 1 to 3 and compares each
+build with the stock order, dirents 0:
 
 ```console
-$ rewind nix --epoch 1790985600 --quiet --kernel-args rewind.dirents=1 .#plugins
-rewind: run e4c221b26df20a9c exited:0 after 3885 steps, 0.097s virtual, 1.168s wall (poweroff)
-/nix/store/b729hjnswi2l739nvpxzwmx4laf5ynlj-plugins-0.1.0 3d555b5412961f82  differs from your store
-...
-
-$ rewind nix --epoch 1790985600 --quiet --kernel-args rewind.dirents=2 .#plugins
-rewind: run 593a9430de55e469 exited:0 after 3885 steps, 0.097s virtual, 1.165s wall (poweroff)
-/nix/store/b729hjnswi2l739nvpxzwmx4laf5ynlj-plugins-0.1.0 925dde4ef23a27e2  differs from your store
-...
+$ rewind check --epoch 1790985600 --seeds 1 --schedules 0 --all --no-narrow --dirents 3 .#plugins
+dirents  0 schedule   0: exited:0       3885 steps  77b96f07540a  run 8d64b8b46c5c8b68
+dirents  1 schedule   0: exited:0       3885 steps  3d555b541296  run e4c221b26df20a9c
+dirents  2 schedule   0: exited:0       3885 steps  925dde4ef23a  run 593a9430de55e469
+dirents  3 schedule   0: exited:0       3885 steps  abd7877043a8  run 067e05c27c9ceb09
+3 of 3 other runs ended differently
 ```
 
-The hash after each store path is the output's, and the two keys give two
-outputs. The index is the file that changed:
+Each key builds another output. The index is the file that changed:
 
 ```console
 $ rewind diff --file /build/plugins/plugins.txt e4c221b2 593a9430
@@ -209,9 +206,7 @@ Lines marked - are only in the left run. Lines marked + are only in the right ru
 
 Under each key the index names the same five plugins in another order.
 
-The key is one of the run's inputs, so each order replays. `check` does not
-vary the key yet, and there is no `--dirents` option: give it with
-`--kernel-args`.
+The key is one of the run's inputs, so each order replays.
 
 Sort the names in `gen-index.py`:
 
@@ -228,17 +223,17 @@ Sort the names in `gen-index.py`:
 ```
 
 ```console
-$ rewind nix --epoch 1790985600 --quiet --kernel-args rewind.dirents=1 .#plugins
+$ rewind check --epoch 1790985600 --seeds 1 --schedules 0 --all --no-narrow --dirents 3 .#plugins
 ...
-rewind: run baa0f5b19a200665 exited:0 after 3885 steps, 0.097s virtual, 1.136s wall (poweroff)
-/nix/store/qszqipypi46g5602vksnh8l6i9vqs2x5-plugins-0.1.0 164f7a685a087fd4  not in your store or 6 caches
-
-$ rewind nix --epoch 1790985600 --quiet --kernel-args rewind.dirents=2 .#plugins
-rewind: run 66cd95f7f45800ae exited:0 after 3885 steps, 0.097s virtual, 1.140s wall (poweroff)
-/nix/store/qszqipypi46g5602vksnh8l6i9vqs2x5-plugins-0.1.0 164f7a685a087fd4  not in your store or 6 caches
+dirents  0 schedule   0: exited:0       3885 steps  164f7a685a08  run b6df38ae66f5fe2a
+dirents  1 schedule   0: exited:0       3885 steps  164f7a685a08  run baa0f5b19a200665
+dirents  2 schedule   0: exited:0       3885 steps  164f7a685a08  run 66cd95f7f45800ae
+dirents  3 schedule   0: exited:0       3885 steps  164f7a685a08  run 277108e566a7d02b
+0 of 3 other runs ended differently
+same result under all 4 runs
 ```
 
-Both keys now build the same output, `164f7a685a087fd4`.
+Every key now builds the same output, `164f7a685a08`.
 
 ## What to read next
 
