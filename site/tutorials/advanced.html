@@ -985,11 +985,11 @@ failing: run 470fde424ab965f6, seed 1 from step 301, schedule 0</code></pre>
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind nix --kernel-args rewind.dirents=2 github:fzakaria/rewindvm#mylib</span></code></pre>
         <p>
-          Build with a few keys and compare the outputs with <code>rewind diff --outputs</code>.
-          setuptools 80.9.0 builds a wheel that names its own version as <code>1.0</code> under key
-          2, because it reads its version from whichever <code>.egg-info</code> directory lists
-          first. There is no <code>--dirents</code> option yet, and <code>check</code> does not vary
-          the key.
+          <code>rewind check --dirents 3</code> builds under keys 1 to 3 besides the stock order, a
+          line each, and reports the first key whose build ends differently;
+          <code>rewind diff --outputs</code> shows what it changed. setuptools 80.9.0 builds a wheel
+          that names its own version as <code>1.0</code> under key 2, because it reads its version
+          from whichever <code>.egg-info</code> directory lists first.
           <a href="https://github.com/fzakaria/rewindvm/blob/main/docs/design.md#directory-order"
             >Directory order</a
           >

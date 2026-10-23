@@ -444,9 +444,17 @@ version from `bootstrap.egg-info`, whose `PKG-INFO` says `Version: 1.0`, and
 `WHEEL` says `Generator: setuptools (1.0)`. The guest's own tmpfs order
 gives the first of the two.
 
-There is no `--dirents` option yet. `--kernel-args rewind.dirents=N` sets
-the key for `rewind run`, `rewind nix` and `rewind check`, and `check` does
-not vary it from run to run.
+`--kernel-args rewind.dirents=N` sets one key for `rewind run`, `rewind nix`
+and `rewind check`. `rewind check --dirents N` tries keys 1 to N as well:
+it runs the first seed's unperturbed schedule again from boot under each
+key and judges each run against schedule 0, the stock order, by the same
+properties. Each key has a line of its own, and the count with `--all`
+includes the key runs. A key's run is never perturbed. One that ends
+differently is reported as a seed's is: against schedule 0, with no step
+to narrow to, since the key is in the run from boot, and both runs get
+keyframes. With `--seeds`, only the first seed runs under the keys.
+`--dirents` is refused with `--run`, whose inputs stand, and with a
+`--kernel-args` that sets the key.
 
 ## Runs on disk
 

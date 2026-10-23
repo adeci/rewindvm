@@ -152,6 +152,19 @@ pub struct CheckArgs {
     /// each other one reseeds the run's RNG at --schedule-from.
     #[arg(long, default_value_t = 1)]
     pub(crate) seeds: u64,
+    /// How many directory orders to try besides the stock one: the first
+    /// seed's unperturbed run again under each key from 1 to N, as
+    /// `--kernel-args rewind.dirents=KEY` sets one, so the search makes N
+    /// more runs, each from boot.
+    ///
+    /// A key lists every directory in another order, as another ext4 disk
+    /// would. Each key's run is judged against schedule 0 as a seed's is,
+    /// and one that ends differently is reported without narrowing, since
+    /// its directories list differently from boot. No key's run is
+    /// perturbed, and with --seeds only the first seed runs under the
+    /// keys. Refused beside a --kernel-args that sets rewind.dirents.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub(crate) dirents: u64,
     /// What a correct run is. The search looks for a schedule that
     /// violates a property schedule 0 holds, or that holds every property
     /// where schedule 0 violates one, and narrows it to the step that
@@ -225,7 +238,7 @@ pub struct CheckArgs {
 
 /// The options of `rewind check` that say what job to record and how,
 /// which a run recorded already has fixed: refused beside --run.
-const RUN_FIXES: [&str; 17] = [
+const RUN_FIXES: [&str; 18] = [
     "installable",
     "root",
     "env",
@@ -243,7 +256,54 @@ const RUN_FIXES: [&str; 17] = [
     "name",
     "no_keyframes",
     "kernel_args",
+    "dirents",
 ];
+
+/// The guest kernel's argument that keys the order every directory lists
+/// in.
+const DIRENTS_ARG: &str = "rewind.dirents";
+
+/// The directory order key that leaves each filesystem its own order.
+const STOCK_DIRENTS: u64 = 0;
+
+/// Whether kernel arguments set the directory order key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DirentsArg {
+    Set,
+    Unset,
+}
+
+/// Whether `kernel_args` sets the directory order key, as `rewind.dirents=N`.
+fn dirents_arg(kernel_args: &str) -> DirentsArg {
+    let set = kernel_args.split_whitespace().any(|arg| {
+        arg.split_once('=')
+            .is_some_and(|(name, _)| name == DIRENTS_ARG)
+    });
+    if set {
+        return DirentsArg::Set;
+    }
+    DirentsArg::Unset
+}
+
+/// `kernel_args` with the directory order key `key` added.
+fn with_dirents(kernel_args: &str, key: u64) -> String {
+    format!("{kernel_args} {DIRENTS_ARG}={key}")
+        .trim()
+        .to_string()
+}
+
+/// The directory order key a run's kernel command line sets, the last
+/// one given as the kernel keeps it, or the stock order's when it sets
+/// none.
+fn dirents_of(cmdline: &str) -> u64 {
+    cmdline
+        .split_whitespace()
+        .rev()
+        .filter_map(|arg| arg.split_once('='))
+        .find(|(name, _)| *name == DIRENTS_ARG)
+        .and_then(|(_, key)| key.parse().ok())
+        .unwrap_or(STOCK_DIRENTS)
+}
 
 /// What `rewind check` perturbs, and so how it makes each run it tries.
 enum Subject<'a> {
@@ -363,6 +423,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         run,
         schedules,
         seeds,
+        dirents,
         mut properties,
         properties_file,
         all,
@@ -384,6 +445,15 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     if seeds == 0 {
         bail!("--seeds needs at least one seed");
     }
+
+    // The keys --dirents tries replace the one key a run would otherwise
+    // get from --kernel-args, so the two together are refused.
+    if dirents > 0 && dirents_arg(&machine.kernel_args) == DirentsArg::Set {
+        bail!(
+            "--kernel-args sets {DIRENTS_ARG} already; give the keys to try with --dirents or the one key with --kernel-args"
+        );
+    }
+
     if let Some(file) = &properties_file {
         properties.extend(Property::read_file(file)?);
     }
@@ -395,8 +465,9 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     machine.no_keyframes = true;
     machine.quiet = true;
     let (user_from, user_until) = (machine.schedule_from, machine.schedule_until);
-    let label = |seed: u64, schedule: u64| run_label(seeds, seed, schedule);
-    let name = |seed: u64, schedule: u64| run_name(seeds, seed, schedule);
+    let varies = Varies { seeds, dirents };
+    let label = |seed: u64, key: u64, schedule: u64| run_label(varies, seed, key, schedule);
+    let name = |seed: u64, key: u64, schedule: u64| run_name(varies, seed, key, schedule);
 
     // The unperturbed run, and how every other run is made. A recorded
     // run is the unperturbed run, and each schedule forks it.
@@ -437,9 +508,15 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             machine.schedule_from = 0;
             if seeds > 1 {
                 let plural = if schedules == 1 { "" } else { "s" };
+                let keys = if dirents > 0 {
+                    let key_plural = if dirents == 1 { "" } else { "s" };
+                    format!(", and the first under {dirents} other directory order{key_plural}")
+                } else {
+                    String::new()
+                };
                 say(format!(
-                    "rewind: {seeds} random seeds, each run under schedule 0 and {schedules} other schedule{plural}: {} runs",
-                    seeds * (schedules + 1)
+                    "rewind: {seeds} random seeds, each run under schedule 0 and {schedules} other schedule{plural}{keys}: {} runs",
+                    seeds * (schedules + 1) + dirents
                 ));
             }
             let base = execute(
@@ -468,7 +545,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     let first_seed = base.manifest.spec.seed;
     let base_words = match &subject {
         Subject::Run { .. } => format!("run {}", base.manifest.id),
-        Subject::Job { .. } => name(first_seed, 0),
+        Subject::Job { .. } => name(first_seed, STOCK_DIRENTS, 0),
     };
 
     // A job that asserts with the Rewind SDK is judged by its assertions
@@ -489,7 +566,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     let base_violations = judge.violations(&base)?;
     say(format!(
         "{}: {}{}",
-        label(first_seed, 0),
+        label(first_seed, STOCK_DIRENTS, 0),
         show::outcome_line(&base)?,
         verdict_words(&judge, &base_violations)
     ));
@@ -545,7 +622,61 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     let mut found: Option<Found> = None;
     let mut differing = 0;
     let mut tried = 0;
+
+    // The first seed's unperturbed run under each other directory order,
+    // from boot, a machine per job at a time. A key is in the run from
+    // boot, as a seed is, so a key's run that ends differently is not
+    // perturbed or narrowed.
+    let keys: Vec<u64> = (1..=dirents).collect();
+    for batch in keys.chunks(jobs) {
+        if found.is_some() && !all {
+            break;
+        }
+        let Some((guest, prepared)) = inputs else {
+            bail!("--dirents needs a job to record");
+        };
+        let machines = batch
+            .iter()
+            .map(|&key| MachineArgs {
+                kernel_args: with_dirents(&machine.kernel_args, key),
+                ..machine.clone()
+            })
+            .collect();
+        status(&format!(
+            "rewind: dirents {}..{} executing",
+            batch[0],
+            batch[batch.len() - 1]
+        ));
+        let runs = execute_all(home, guest, prepared, machines, Start::Boot);
+        let judged = runs.and_then(|runs| judge_all(&judge, runs));
+        clear_status();
+        for (&key, (run, violations)) in batch.iter().zip(judged?) {
+            let differs = differs_by(&violations);
+            say(format!(
+                "{}: {}{}",
+                label(first_seed, key, 0),
+                show::outcome_line(&run)?,
+                verdict_words(&judge, &violations)
+            ));
+            tried_runs.push(schedule_json(&run, differs, &violations)?);
+            coverage.add(&run)?;
+            tried += 1;
+            if !differs {
+                continue;
+            }
+            differing += 1;
+            if found.is_none() {
+                found = Some(Found::Key(Box::new(run)));
+            }
+        }
+    }
+
+    // Each seed's unperturbed run and its perturbed schedules, unless a
+    // key already found a run that ends differently.
     for i in 0..seeds {
+        if found.is_some() && !all {
+            break;
+        }
         let seed = first_seed + i;
 
         // Another seed's unperturbed run, from boot, judged as any other
@@ -610,7 +741,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             let differs = differs_by(&violations);
             say(format!(
                 "{}: {}{}",
-                label(seed, 0),
+                label(seed, STOCK_DIRENTS, 0),
                 show::outcome_line(&seed_base)?,
                 verdict_words(&judge, &violations)
             ));
@@ -659,7 +790,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                 let differs = differs_by(&violations);
                 say(format!(
                     "{}: {}{}",
-                    label(seed, run.manifest.spec.schedule),
+                    label(seed, STOCK_DIRENTS, run.manifest.spec.schedule),
                     show::outcome_line(&run)?,
                     verdict_words(&judge, &violations)
                 ));
@@ -677,11 +808,12 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                 break;
             }
         }
-        if found.is_some() && !all {
-            break;
-        }
     }
-    let tried_words = if seeds > 1 {
+
+    // A search that varies an input besides the schedule counts runs, and
+    // one that varies only the schedule counts schedules.
+    let other_inputs = seeds > 1 || dirents > 0;
+    let tried_words = if other_inputs {
         "other runs"
     } else {
         "other schedules"
@@ -731,6 +863,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                 "true": reach.hits,
             })).collect::<Vec<_>>(),
             "seeds": seeds,
+            "dirents": dirents,
             "schedules": tried_runs,
             "tried": tried,
             "differing": differing,
@@ -738,7 +871,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             "narrowed": narrowed,
         })
     };
-    let (one_run, all_runs) = if seeds > 1 {
+    let (one_run, all_runs) = if other_inputs {
         ("run", "runs")
     } else {
         ("schedule", "schedules")
@@ -827,13 +960,38 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             (chosen.base, first.base, seed, None)
         }
 
+        // A directory order key: its run against the first seed's
+        // unperturbed run, as a seed's is, since the key too is in the
+        // run from boot.
+        Found::Key(chosen) => {
+            let chosen = *chosen;
+            let first = seeded.swap_remove(0);
+            let key = dirents_of(&chosen.manifest.spec.cmdline);
+            let violated = violated(&chosen)?;
+            let (good, bad) = if base_bad {
+                (key, STOCK_DIRENTS)
+            } else {
+                (STOCK_DIRENTS, key)
+            };
+            let words = match (same_outcome_only, base_bad) {
+                (true, _) => format!("dirents {good} passes and dirents {bad} fails"),
+                (false, _) => format!(
+                    "dirents {good} holds every property and dirents {bad} violates {violated}"
+                ),
+            };
+            say(format!(
+                "\ndirents {key} decides it: under schedule 0, {words}\n"
+            ));
+            (chosen, first.base, first.seed, None)
+        }
+
         // A schedule: narrowed within its seed to a short window of steps
         // its perturbation still decides it in (see rewind_core::check).
         Found::Schedule(i, worst) => {
             let worst = *worst;
             let s = seeded.swap_remove(i);
             let schedule = worst.manifest.spec.schedule;
-            let found_name = name(s.seed, schedule);
+            let found_name = name(s.seed, STOCK_DIRENTS, schedule);
             let end = worst
                 .manifest
                 .outcome
@@ -844,7 +1002,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             let seed_words = if s.seed == first_seed {
                 base_words.clone()
             } else {
-                name(s.seed, 0)
+                name(s.seed, STOCK_DIRENTS, 0)
             };
             if same_outcome_only && base_failed {
                 say(format!(
@@ -933,6 +1091,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         (worst.join().expect("taking keyframes panicked"), partner)
     });
     let (worst, partner) = (worst?, partner?);
+    let found_key = dirents_of(&worst.manifest.spec.cmdline);
 
     // Whether a late timer is part of what the step does depends on
     // whether its exit armed one, which only running it shows.
@@ -1006,6 +1165,7 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         };
         let narrowed = serde_json::json!({
             "seed": found_seed,
+            "dirents": found_key,
             "schedule": schedule,
             "from": from,
             "until": until,
@@ -1022,11 +1182,15 @@ pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     }
     let words = |run: &Run| {
         let spec = &run.manifest.spec;
+        let mut words = Vec::new();
         if seeds > 1 {
-            format!("{}, {}", show::seed_words(spec), show::schedule_words(spec))
-        } else {
-            show::schedule_words(spec)
+            words.push(show::seed_words(spec));
         }
+        if dirents > 0 {
+            words.push(format!("dirents {}", dirents_of(&spec.cmdline)));
+        }
+        words.push(show::schedule_words(spec));
+        words.join(", ")
     };
     println!("passing: run {}, {}", passing.manifest.id, words(&passing));
     println!("failing: run {}, {}", failing.manifest.id, words(&failing));
@@ -1127,31 +1291,49 @@ fn judge_all(judge: &Judge, runs: Vec<Run>) -> Result<Vec<(Run, Vec<Violation>)>
 }
 
 /// What a search found first: a seed whose unperturbed run differs, by
-/// its index among the seeds, or a perturbed schedule of a seed that
-/// does.
+/// its index among the seeds, a directory order key whose run does, or a
+/// perturbed schedule of a seed that does.
 enum Found {
     Seed(usize),
+    Key(Box<Run>),
     Schedule(usize, Box<Run>),
 }
 
-/// How a search's lines start: a run's schedule, and its seed too when
-/// the search tries more than one, padded so the lines align.
-fn run_label(seeds: u64, seed: u64, schedule: u64) -> String {
-    if seeds > 1 {
-        format!("seed {seed:>2} schedule {schedule:>3}")
-    } else {
-        format!("schedule {schedule:>3}")
+/// What a search varies besides the schedule: how many seeds it tries,
+/// and how many directory order keys besides the stock order.
+#[derive(Clone, Copy, Debug)]
+struct Varies {
+    seeds: u64,
+    dirents: u64,
+}
+
+/// How a search's lines start: a run's schedule, its seed too when the
+/// search tries more than one, and its directory order key when the
+/// search tries keys, padded so the lines align.
+fn run_label(varies: Varies, seed: u64, key: u64, schedule: u64) -> String {
+    let mut label = String::new();
+    if varies.seeds > 1 {
+        label.push_str(&format!("seed {seed:>2} "));
     }
+    if varies.dirents > 0 {
+        label.push_str(&format!("dirents {key:>2} "));
+    }
+    label.push_str(&format!("schedule {schedule:>3}"));
+    label
 }
 
 /// How a search's sentences name a run, as [`run_label`] without the
 /// padding.
-fn run_name(seeds: u64, seed: u64, schedule: u64) -> String {
-    if seeds > 1 {
-        format!("seed {seed} schedule {schedule}")
-    } else {
-        format!("schedule {schedule}")
+fn run_name(varies: Varies, seed: u64, key: u64, schedule: u64) -> String {
+    let mut name = String::new();
+    if varies.seeds > 1 {
+        name.push_str(&format!("seed {seed} "));
     }
+    if varies.dirents > 0 {
+        name.push_str(&format!("dirents {key} "));
+    }
+    name.push_str(&format!("schedule {schedule}"));
+    name
 }
 
 /// `machine` with keyframes and progress, for an unperturbed run that
@@ -1870,12 +2052,13 @@ fn execute_all(
     })
 }
 
-/// A run `rewind check` tried, for its JSON: the run, its seed and schedule,
-/// whether its verdict differs from the unperturbed run's, and the
-/// properties it violates.
+/// A run `rewind check` tried, for its JSON: the run, its seed, directory
+/// order key and schedule, whether its verdict differs from the
+/// unperturbed run's, and the properties it violates.
 fn schedule_json(run: &Run, differs: bool, violations: &[Violation]) -> Result<serde_json::Value> {
     let mut value = json::run(run)?;
     value["seed"] = show::seed_of(&run.manifest.spec).into();
+    value["dirents"] = dirents_of(&run.manifest.spec.cmdline).into();
     value["schedule"] = run.manifest.spec.schedule.into();
     value["differs"] = differs.into();
     value["violations"] = violations_json(violations);
@@ -2115,5 +2298,63 @@ mod tests {
             echo_for(Loudness::Quiet, Progress::Hidden, Terminal::Yes),
             Echo::Quiet
         );
+    }
+
+    #[test]
+    fn a_search_over_directory_orders_names_the_key_on_every_line() {
+        // The labels of a search that varies the directory order key, with
+        // one seed and with several, built for the stock order and for a
+        // key: each line names its key in a column of its own, so the
+        // lines of one search are as wide as each other. A search that
+        // varies neither keeps its schedule-only labels.
+        let keys = Varies {
+            seeds: 1,
+            dirents: 3,
+        };
+        assert_eq!(run_label(keys, 0, 0, 0), "dirents  0 schedule   0");
+        assert_eq!(run_label(keys, 0, 2, 0), "dirents  2 schedule   0");
+        assert_eq!(run_name(keys, 0, 2, 0), "dirents 2 schedule 0");
+
+        let both = Varies {
+            seeds: 8,
+            dirents: 3,
+        };
+        assert_eq!(run_label(both, 0, 2, 0), "seed  0 dirents  2 schedule   0");
+        assert_eq!(run_label(both, 5, 0, 0), "seed  5 dirents  0 schedule   0");
+        assert_eq!(run_name(both, 5, 0, 0), "seed 5 dirents 0 schedule 0");
+
+        let neither = Varies {
+            seeds: 1,
+            dirents: 0,
+        };
+        assert_eq!(run_label(neither, 0, 0, 12), "schedule  12");
+        assert_eq!(run_name(neither, 0, 0, 12), "schedule 12");
+    }
+
+    #[test]
+    fn a_key_run_adds_the_key_to_the_kernel_arguments() {
+        // Kernel arguments with and without other arguments, given a key:
+        // the key is appended as rewind.dirents=N, and read back from a
+        // run's whole command line, 0 when the line sets none.
+        assert_eq!(with_dirents("", 2), "rewind.dirents=2");
+        assert_eq!(with_dirents("norandmaps", 3), "norandmaps rewind.dirents=3");
+        assert_eq!(dirents_of(&format!("{BASE_CMDLINE} rewind.dirents=3")), 3);
+        assert_eq!(dirents_of(&format!("{BASE_CMDLINE} norandmaps")), 0);
+        assert_eq!(dirents_of(BASE_CMDLINE), 0);
+    }
+
+    #[test]
+    fn kernel_arguments_that_set_the_key_are_found() {
+        // Kernel arguments that set the key, alone, among others, or
+        // empty, and ones that only look like it: only an argument named
+        // rewind.dirents counts, which --dirents refuses beside it.
+        assert_eq!(dirents_arg("rewind.dirents=1"), DirentsArg::Set);
+        assert_eq!(
+            dirents_arg("loglevel=7 rewind.dirents=0 norandmaps"),
+            DirentsArg::Set
+        );
+        assert_eq!(dirents_arg(""), DirentsArg::Unset);
+        assert_eq!(dirents_arg("norandmaps"), DirentsArg::Unset);
+        assert_eq!(dirents_arg("rewind.direntsx=1"), DirentsArg::Unset);
     }
 }

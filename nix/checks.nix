@@ -1348,6 +1348,86 @@ in
         touch $out
       '';
 
+  # checks.check-dirents: `rewind check --dirents` runs a job again under
+  # other directory order keys. A job that passes only when a tmpfs
+  # directory lists its newest file first passes under the stock order
+  # and fails under some key: check names that key on its line, reports
+  # it against schedule 0 without narrowing, and the two runs it reports
+  # keep their keyframes. With --all it counts the key runs, and its JSON
+  # names each run's key; with --seeds only the first seed runs under the
+  # keys. A job that lists no directory ends the same under every key.
+  # --dirents is refused beside --run and beside a --kernel-args that
+  # sets the key. Boots the VM, so it needs /dev/kvm.
+  check-dirents =
+    pkgs.runCommand "rewind-check-dirents"
+      {
+        nativeBuildInputs = [
+          rewind
+          pkgs.jq
+        ];
+        requiredSystemFeatures = [ "kvm" ];
+      }
+      ''
+        export REWIND_HOME=$TMPDIR/rewind
+        # Five files made in order on /dev/shm, a tmpfs, which lists the
+        # newest first. busybox find lists a directory unsorted, and the
+        # job passes when the first file it lists is e, the newest.
+        newest='mkdir /dev/shm/d && for f in a b c d e; do echo > /dev/shm/d/$f; done
+        set -- $(busybox find /dev/shm/d -mindepth 1); test "$1" = /dev/shm/d/e'
+        check() { rewind check -j 4 --clock exits --schedules 0 "$@" --root ${busyboxRoot} -- sh -c "$newest"; }
+
+        # The search: the first key that ends differently, reported
+        # against the stock order with no step to narrow to.
+        ! check --dirents 4 > found
+        cat found
+        grep -q '^dirents  0 schedule   0: exited:0 ' found
+        grep -qE '^dirents  [1-4] schedule   0: exited:1 ' found
+        grep -qE '^dirents [1-4] decides it: under schedule 0, dirents 0 passes and dirents [1-4] fails$' found
+        grep -qE '^passing: run [0-9a-f]+, dirents 0, schedule 0$' found
+        grep -qE '^failing: run [0-9a-f]+, dirents [1-4], schedule 0$' found
+        ! grep -q 'finding the step' found
+
+        # The two reported runs keep keyframes, the key's run taking them
+        # once it is reported, and replay as recorded.
+        for side in passing failing; do
+          id=$(sed -n "s/^$side: run \([0-9a-f]*\),.*/\1/p" found)
+          ls $REWIND_HOME/runs/$id/keyframes > keyframes
+          grep -q '\.kf$' keyframes
+          rewind replay $id | grep '^identical'
+        done
+
+        # Every key, counted, and named in the JSON.
+        ! check --dirents 4 --all --no-narrow > all
+        cat all
+        test "$(grep -cE '^dirents  [1-4] schedule   0: ' all)" = 4
+        grep -qE '^[1-4] of 4 other runs ended differently$' all
+        ! check --dirents 4 --all --no-narrow --json > all.json
+        jq -e '.dirents == 4 and .tried == 4 and [.schedules[].dirents] == [0, 1, 2, 3, 4]' all.json
+        jq -e '.differing > 0 and ([.schedules[] | select(.differs)] | length) == .differing' all.json
+
+        # With two seeds, only the first runs under the keys.
+        ! check --seeds 2 --dirents 2 --all --no-narrow > seeded
+        cat seeded
+        grep -q ': 4 runs$' seeded
+        test "$(grep -cE '^seed  0 dirents  [12] schedule   0: ' seeded)" = 2
+        grep -q '^seed  1 dirents  0 schedule   0: ' seeded
+
+        # A job that lists no directory ends the same under every key.
+        rewind check -j 4 --clock exits --schedules 0 --dirents 4 --all \
+          --root ${busyboxRoot} -- sh -c 'echo same' > same
+        cat same
+        grep -q '^0 of 4 other runs ended differently$' same
+        grep -q '^same result under all 5 runs$' same
+
+        # A recorded run's key stands, as does one --kernel-args gives.
+        ! rewind check --run abc --dirents 2 2> refused
+        grep -q -- '--dirents' refused
+        ! check --dirents 2 --kernel-args rewind.dirents=1 2> refused
+        cat refused
+        grep -q -- '--kernel-args sets rewind.dirents' refused
+        touch $out
+      '';
+
   # checks.check-point: the SDK's rewind_point is a schedule point. point's
   # threads race only in computation, so with no points every schedule
   # holds; with a point between each load and store, check finds a

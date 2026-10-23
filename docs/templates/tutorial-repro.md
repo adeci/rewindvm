@@ -149,24 +149,25 @@ is the same in every run: `/build` lists its newest file first. On a real
 machine, ext4 lists a directory by a hash of each name, keyed by a seed
 chosen when the disk was formatted, so two machines can list one directory
 in two orders. The guest kernel does the same when its command line has
-`rewind.dirents=N`: every directory lists in an order keyed by N. Build
-under two keys:
+`rewind.dirents=N`: every directory lists in an order keyed by N.
+`check --dirents 3` builds it again under keys 1 to 3 and compares each
+build with the stock order, dirents 0:
 
-```console run name=keys show=-3:-1
-$ rewind nix --epoch {{epoch}} --quiet --kernel-args rewind.dirents=1 .#plugins
-$ rewind nix --epoch {{epoch}} --quiet --kernel-args rewind.dirents=2 .#plugins
+```console run name=keys
+$ rewind check --epoch {{epoch}} --seeds 1 --schedules 0 --all --no-narrow --dirents 3 .#plugins
 ```
 
-<!-- set key1: grep -m1 -o 'run [0-9a-f]* exited' {{out:keys}} | awk '{print $2}' -->
-<!-- set key2: grep -o 'run [0-9a-f]* exited' {{out:keys}} | sed -n 2p | awk '{print $2}' -->
-<!-- set keyhash1: grep -m1 'plugins-0.1.0 ' {{out:keys}} | awk '{print $2}' -->
-<!-- set keyhash2: grep 'plugins-0.1.0 ' {{out:keys}} | sed -n 2p | awk '{print $2}' -->
-<!-- set key1_steps: grep -m1 -o 'exited:0 after [0-9]* steps' {{out:keys}} | awk '{print $3}' -->
-<!-- set key2_steps: grep -o 'exited:0 after [0-9]* steps' {{out:keys}} | sed -n 2p | awk '{print $3}' -->
-<!-- assert: test {{keyhash1}} != {{keyhash2}} -->
+<!-- capture key1: dirents +1 schedule +0: .* run (\w+) -->
+<!-- capture key2: dirents +2 schedule +0: .* run (\w+) -->
+<!-- capture keyhash0: dirents +0 schedule +0: \S+ +\d+ steps +(\w+) -->
+<!-- capture keyhash1: dirents +1 schedule +0: \S+ +\d+ steps +(\w+) -->
+<!-- capture keyhash2: dirents +2 schedule +0: \S+ +\d+ steps +(\w+) -->
+<!-- capture key1_steps: dirents +1 schedule +0: \S+ +(\d+) steps -->
+<!-- capture key2_steps: dirents +2 schedule +0: \S+ +(\d+) steps -->
+<!-- assert: test {{keyhash1}} != {{keyhash2}} && test {{keyhash1}} != {{keyhash0}} && test {{keyhash2}} != {{keyhash0}} -->
+<!-- assert: grep -q '^3 of 3 other runs ended differently$' {{out:keys}} -->
 
-The hash after each store path is the output's, and the two keys give two
-outputs. The index is the file that changed:
+Each key builds another output. The index is the file that changed:
 
 ```console run name=index
 $ rewind diff --file /build/plugins/plugins.txt {{key1|short}} {{key2|short}}
@@ -178,24 +179,21 @@ $ rewind diff --file /build/plugins/plugins.txt {{key1|short}} {{key2|short}}
 
 Under each key the index names the same five plugins in another order.
 
-The key is one of the run's inputs, so each order replays. `check` does not
-vary the key yet, and there is no `--dirents` option: give it with
-`--kernel-args`.
+The key is one of the run's inputs, so each order replays.
 
 Sort the names in `gen-index.py`:
 
 <!-- diff: plugins-fix.patch -->
 <!-- run: patch -p1 < {{dir}}/plugins-fix.patch -->
 
-```console run name=sorted show=-2:
-$ rewind nix --epoch {{epoch}} --quiet --kernel-args rewind.dirents=1 .#plugins
-$ rewind nix --epoch {{epoch}} --quiet --kernel-args rewind.dirents=2 .#plugins
+```console run name=sorted show=-6:
+$ rewind check --epoch {{epoch}} --seeds 1 --schedules 0 --all --no-narrow --dirents 3 .#plugins
 ```
 
-<!-- assert: test $(grep 'plugins-0.1.0 ' {{out:sorted}} | awk '{print $2}' | sort -u | wc -l) -eq 1 -->
-<!-- set sorted_hash: grep -m1 'plugins-0.1.0 ' {{out:sorted}} | awk '{print $2}' -->
+<!-- assert: grep -q '^0 of 3 other runs ended differently$' {{out:sorted}} -->
+<!-- capture sorted_hash: dirents +0 schedule +0: \S+ +\d+ steps +(\w+) -->
 
-Both keys now build the same output, `{{sorted_hash}}`.
+Every key now builds the same output, `{{sorted_hash}}`.
 
 ## What to read next
 

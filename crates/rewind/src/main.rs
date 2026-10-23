@@ -454,6 +454,17 @@ mod tests {
     }
 
     #[test]
+    fn check_tries_directory_orders_only_for_a_job_it_records() {
+        // check --dirents parsed beside a job to record and beside a run
+        // recorded already: a recorded run's inputs stand, its directory
+        // order among them, so the pair is refused.
+        let parses = |line: &str| Cli::try_parse_from(line.split_whitespace()).is_ok();
+        assert!(parses("rewind check nixpkgs#hello --dirents 3"));
+        assert!(parses("rewind check --dirents 3 --root r -- true"));
+        assert!(!parses("rewind check --run abc --dirents 3"));
+    }
+
+    #[test]
     fn commands_that_replay_to_a_step_say_how_far_they_got() {
         // --progress goes before or after the command, as REWIND_PROGRESS
         // would set it, and is auto without either. The commands that

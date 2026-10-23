@@ -519,12 +519,13 @@ replays:
 $ rewind nix --kernel-args rewind.dirents=2 {{flake}}
 ```
 
-Build with a few keys and compare the outputs with `rewind diff --outputs`.
-setuptools 80.9.0 builds a wheel that names its own version as `1.0` under
-key 2, because it reads its version from whichever `.egg-info` directory
-lists first. There is no `--dirents` option yet, and `check` does not vary
-the key. [Directory order](design.md#directory-order) in the design notes
-says how the kernel does it.
+`rewind check --dirents 3` builds under keys 1 to 3 besides the stock
+order, a line each, and reports the first key whose build ends differently;
+`rewind diff --outputs` shows what it changed. setuptools 80.9.0 builds a
+wheel that names its own version as `1.0` under key 2, because it reads its
+version from whichever `.egg-info` directory lists first.
+[Directory order](design.md#directory-order) in the design notes says how
+the kernel does it.
 
 ## Move around a long run
 
