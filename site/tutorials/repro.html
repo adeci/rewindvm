@@ -78,11 +78,10 @@
           <a class="anchor" href="#build-it-under-eight-seeds">Build it under eight seeds</a>
         </h2>
         <p>
-          <code>tiles</code> writes the pkg-config file of a small library with a Python script. The
-          script collects the packages the library links against into a set, and Python iterates a
-          set of strings in an order drawn from its hash seed. nixpkgs sets
-          <code>PYTHONHASHSEED=0</code> in any build that has Python as an input, so
-          <code>tiles</code> unsets it, to stand for a build that runs Python some other way.
+          <code>tiles</code> writes its pkg-config file with a Python script that keeps the packages
+          it links against in a set. Python iterates a set in an order drawn from its hash seed.
+          nixpkgs pins that seed with <code>PYTHONHASHSEED=0</code>, and <code>tiles</code> unsets
+          it.
         </p>
         <p>
           A run's seed decides every random number the build draws, Python's hash seed among them.
@@ -311,12 +310,7 @@ Likely cause: something inside python3 (pid 112), such as randomness or the orde
 
       <section class="step">
         <h2 id="fix-it"><a class="anchor" href="#fix-it">Fix it</a></h2>
-        <p>Clone the repository to edit <code>tiles</code>:</p>
-        <pre
-          class="console"
-        ><code><span class="cmd"><span class="prompt">$</span> git clone https://github.com/fzakaria/rewindvm</span>
-<span class="cmd"><span class="prompt">$</span> cd rewindvm</span></code></pre>
-        <p>In <code>examples/tiles/gen-pc.py</code>, sort the packages before writing them:</p>
+        <p>Sort the packages in <code>gen-pc.py</code> before writing them:</p>
         <pre class="console diff"><code><span class="hunk">@@ -27,5 +27,5 @@</span>
 <span class="ctx"> print("Name: tiles")</span>
 <span class="ctx"> print("Description: Tile a large image into small ones")</span>
@@ -607,7 +601,7 @@ Lines marked - are only in the left run. Lines marked + are only in the right ru
           vary the key yet, and there is no <code>--dirents</code> option: give it with
           <code>--kernel-args</code>.
         </p>
-        <p>In <code>examples/plugins/gen-index.py</code>, sort the names:</p>
+        <p>Sort the names in <code>gen-index.py</code>:</p>
         <pre class="console diff"><code><span class="hunk">@@ -12,7 +12,7 @@</span>
 <span class="ctx"></span>
 <span class="ctx"> directory = sys.argv[1]</span>

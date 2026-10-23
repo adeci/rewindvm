@@ -15,11 +15,10 @@ small builds that each write one text file. Install Rewind as the
 
 ## Build it under eight seeds
 
-`tiles` writes the pkg-config file of a small library with a Python script.
-The script collects the packages the library links against into a set, and
-Python iterates a set of strings in an order drawn from its hash seed.
-nixpkgs sets `PYTHONHASHSEED=0` in any build that has Python as an input, so
-`tiles` unsets it, to stand for a build that runs Python some other way.
+`tiles` writes its pkg-config file with a Python script that keeps the
+packages it links against in a set. Python iterates a set in an order drawn
+from its hash seed. nixpkgs pins that seed with `PYTHONHASHSEED=0`, and
+`tiles` unsets it.
 
 A run's seed decides every random number the build draws, Python's hash seed
 among them. `check` builds `tiles` under eight seeds, each with the default
@@ -135,14 +134,7 @@ first byte that differs. For `/build/tiles/tiles.pc` that is step
 
 ## Fix it
 
-Clone the repository to edit `tiles`:
-
-```console
-$ git clone https://github.com/fzakaria/rewindvm
-$ cd rewindvm
-```
-
-In `examples/tiles/gen-pc.py`, sort the packages before writing them:
+Sort the packages in `gen-pc.py` before writing them:
 
 ```diff
 @@ -27,5 +27,5 @@
@@ -221,7 +213,7 @@ The key is one of the run's inputs, so each order replays. `check` does not
 vary the key yet, and there is no `--dirents` option: give it with
 `--kernel-args`.
 
-In `examples/plugins/gen-index.py`, sort the names:
+Sort the names in `gen-index.py`:
 
 ```diff
 @@ -12,7 +12,7 @@
