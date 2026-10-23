@@ -43,6 +43,7 @@ use crate::ui::selectable::{colored, selectable, selects, viewer_line};
 use crate::ui::sideways::{shifted, sideways_layer};
 use crate::ui::splits::{Edge, grip, measure};
 use crate::ui::tabs::RightTab;
+use crate::ui::waiting::waiting_block;
 use crate::ui::widgets::{icon, panel_title};
 
 /// Whose stack the panel shows at `step`: the thread of the latest event
@@ -297,6 +298,15 @@ impl Scrubber {
         panel.shown.as_ref()?.located()
     }
 
+    /// Stops the lookup the panel waits on; the engine's answer, a
+    /// cancellation, then says so.
+    fn cancel_source_lookup(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = self.source.as_ref().and_then(|p| p.in_flight.as_ref()) {
+            cancel.cancel();
+        }
+        cx.notify();
+    }
+
     /// Shows the engine's answer for the thread at `step`.
     fn show_place(&mut self, step: u64, result: EngineResult<Located>, cx: &mut Context<Self>) {
         let Some(panel) = &mut self.source else {
@@ -452,6 +462,7 @@ impl Scrubber {
             (Some(Shown::Booting { .. }), None) => "the VM is still booting".to_string(),
             (Some(Shown::Unreadable { .. }), None) => "not available for this run".to_string(),
             (Some(Shown::Failed { .. }), None) => "could not walk the stack".to_string(),
+            (Some(Shown::Stopped { .. }), None) => "not read".to_string(),
         };
         // A window of a large file says which of its lines it holds.
         let shown_file = self.shown_file();
@@ -523,6 +534,16 @@ impl Scrubber {
                 }
                 rows.into_any_element()
             }
+            (None, None, Some((text, _))) if panel.loading && panel.shown.is_none() => div()
+                .p(px(size::PANEL_PAD_X))
+                .font_family(self.fonts.ui.clone())
+                .child(waiting_block(
+                    "source-cancel",
+                    Some(text),
+                    panel.progress.waiting.rows(|_| None),
+                    cx.listener(|this, _, _, cx| this.cancel_source_lookup(cx)),
+                ))
+                .into_any_element(),
             (None, None, Some((text, color))) => {
                 let part = selected
                     .as_ref()
@@ -857,6 +878,7 @@ fn source_message(panel: &SourcePanel) -> Option<(String, u32)> {
         ),
         Some(Shown::Unreadable { message, .. }) => (message.to_string(), theme::SOFT),
         Some(Shown::Failed { message, .. }) => (message.clone(), theme::RED_SOFT),
+        Some(Shown::Stopped { .. }) => (crate::source::STOPPED.to_string(), theme::SOFT),
         None => (panel.progress.text(), theme::MUTED),
     })
 }

@@ -562,6 +562,20 @@ first row; each keyframe on the way added 14 to 21 MB of pages, however long
 its stretch. A keyframe whose step a fork's parent owns is kept there only
 when the parent reads the keyframe it is a delta from.
 
+A replay toward a step says how far it got: as it starts, every half second
+and at its step. On a terminal the command draws it as a status line;
+`--progress json`, or `REWIND_PROGRESS=json`, prints a line of JSON each
+time instead, with the run, the step it started from, the step reached, the
+step it goes to and the milliseconds taken. The desktop app asks for JSON,
+and while it waits on a read it shows the replay with a bar, the time left
+and a Cancel button once the time left passes three seconds. The time left
+goes by the speed over the last 20 seconds of replay, after the first five:
+a replay restored from a keyframe starts slow while the guest's memory is
+read back in, and the guest's own work changes the speed. The sagittarius
+run above replayed from boot to step 100,000 in 10 s and then about 1,000
+steps a second, so at step 150,000 the speed so far would say about 56 s
+were left of a replay to step 290,000 that takes 140 s more.
+
 A delta lists the pages KVM's dirty log names, less the ones whose contents
 are what they were at the parent keyframe, often zero. About one entry in ten
 of the shared keyframe a fork takes (see [Forks](#forks)) is a page written

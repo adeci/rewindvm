@@ -46,5 +46,6 @@ pub mod tour;
 pub mod ui;
 pub mod view;
 pub mod viewer;
+pub mod waiting;
 #[cfg(target_family = "wasm")]
 pub mod web;

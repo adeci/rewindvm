@@ -690,6 +690,21 @@ in
         test "$(bare_keyframes | tail -1)" = "$end"
         along=$(bare_keyframes | sed -n 1p)
         rewind replay bare --from "$along" | grep "^identical to the recording from the snapshot at step $along "
+
+        # Asked with --progress json, or with REWIND_PROGRESS=json as the
+        # desktop app asks, a look inside a run says how far its replay
+        # got on standard error, a line of JSON as it starts and one at
+        # its step. Without a terminal and without asking, it says
+        # nothing.
+        mid=$((end / 2))
+        rewind --progress json cat bare "$mid" /bin/busybox 2> said > /dev/null
+        cat said
+        grep -q "^{\"replaying\":{\"run\":\"[0-9a-f]*\",\"from\":[0-9]*,\"at\":$mid,\"to\":$mid," said
+        test "$(grep -c '"replaying"' said)" -ge 2
+        REWIND_PROGRESS=json rewind cat bare $((mid + 1000)) /bin/busybox 2> said-env > /dev/null
+        grep -q '"replaying"' said-env
+        rewind cat bare $((mid + 2000)) /bin/busybox 2> quiet > /dev/null
+        test ! -s quiet
         rewind remove bare --json
         rewind gc --json | tee collected-bare
         grep -q '"pages":[1-9]' collected-bare

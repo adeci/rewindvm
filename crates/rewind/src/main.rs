@@ -10,6 +10,7 @@ mod junit;
 mod list;
 mod locate;
 mod open_files;
+mod progress;
 mod property;
 mod reproduce;
 mod show;
@@ -42,6 +43,21 @@ const STEP_LONG_HELP: &str = "A step of the run: how many times the VM had stopp
 struct Cli {
     #[command(subcommand)]
     command: Command,
+    /// How commands that bring a run back to a step, such as cat, diff
+    /// --outputs, where and gdb, say how far the replay to it got.
+    ///
+    /// On standard error: a status line when it is a terminal (auto), a
+    /// line of JSON each time, for a program to read (json), or nothing
+    /// (off).
+    #[arg(
+        long = rewind_trace::replaying::PROGRESS_OPTION,
+        global = true,
+        value_enum,
+        default_value_t,
+        env = rewind_trace::replaying::PROGRESS_ENV,
+        value_name = "HOW"
+    )]
+    progress: progress::Format,
 }
 
 #[derive(Subcommand)]
@@ -256,6 +272,43 @@ enum HomeHold {
 }
 
 impl Command {
+    /// Whether the command says how far its replays got: the commands
+    /// that bring a run back to a step to look inside it do. Every command
+    /// says, so a new one cannot forget to.
+    fn replays(&self) -> progress::Says {
+        match self {
+            Command::Cat(_)
+            | Command::Shell(_)
+            | Command::Gdb(_)
+            | Command::Where(_)
+            | Command::Threads(_)
+            | Command::Blame(_) => progress::Says::Replays,
+            Command::Diff(args) if args.reads_files() => progress::Says::Replays,
+            // `check` draws a status line of its own, and the others
+            // execute runs or replay to compare traces.
+            Command::Run(_)
+            | Command::Nix(_)
+            | Command::Check(_)
+            | Command::Fork(_)
+            | Command::Replay(_)
+            | Command::Export(_)
+            | Command::Import(_)
+            | Command::Prune(_)
+            | Command::Remove(_)
+            | Command::Gc(_)
+            | Command::Pmu(_)
+            | Command::Open(_)
+            | Command::Doctor
+            | Command::Ls(_)
+            | Command::Show(_)
+            | Command::Log(_)
+            | Command::Ps(_)
+            | Command::Events(_)
+            | Command::Diff(_)
+            | Command::Generate(_) => progress::Says::Nothing,
+        }
+    }
+
     /// Every command says, so a new one cannot forget to.
     fn home_hold(&self) -> HomeHold {
         match self {
@@ -321,11 +374,17 @@ fn run(cli: Cli) -> Result<ExitCode> {
 
     // Completions and man pages need no runs, and a package's build has no
     // home to find them under.
-    let command = match cli.command {
+    let Cli { command, progress } = cli;
+    let command = match command {
         Command::Generate(args) => return cmd::setup::generate(args),
         command => command,
     };
     let home = Home::open()?;
+
+    // Commands that bring a run back to a step say how far the replay got.
+    if command.replays() == progress::Says::Replays {
+        progress::listen(progress);
+    }
 
     // Commands that pack images, boot a run or read pages hold the home in
     // use until they exit (see `HomeHold`).
@@ -392,6 +451,55 @@ mod tests {
         }
         assert!(!parses("rewind ps abc --at 5"));
         assert!(!parses("rewind log abc --at 5"));
+    }
+
+    #[test]
+    fn commands_that_replay_to_a_step_say_how_far_they_got() {
+        // --progress goes before or after the command, as REWIND_PROGRESS
+        // would set it, and is auto without either. The commands that
+        // bring a run back to a step to look inside it say how far the
+        // replay got; the ones that execute runs, check among them, which
+        // draws its own status line, say nothing of their replays.
+        let cli = |line: &str| Cli::try_parse_from(line.split_whitespace()).unwrap();
+        assert_eq!(cli("rewind cat abc 5 /x").progress, progress::Format::Auto);
+        assert_eq!(
+            cli("rewind --progress json cat abc 5 /x").progress,
+            progress::Format::Json
+        );
+        assert_eq!(
+            cli("rewind cat abc 5 /x --progress off").progress,
+            progress::Format::Off
+        );
+        for line in [
+            "rewind cat abc 5 /etc/hosts",
+            "rewind shell abc 5",
+            "rewind gdb abc 5",
+            "rewind where abc 5",
+            "rewind threads abc --from 1 --to 5",
+            "rewind diff abc def --outputs",
+            "rewind diff abc def --file /x",
+            "rewind blame abc def /x",
+        ] {
+            assert_eq!(
+                cli(line).command.replays(),
+                progress::Says::Replays,
+                "{line}"
+            );
+        }
+        for line in [
+            "rewind run --root r -- true",
+            "rewind check nixpkgs#hello",
+            "rewind fork abc 5 --schedule 2",
+            "rewind diff abc def",
+            "rewind replay abc",
+            "rewind ls",
+        ] {
+            assert_eq!(
+                cli(line).command.replays(),
+                progress::Says::Nothing,
+                "{line}"
+            );
+        }
     }
 
     #[test]

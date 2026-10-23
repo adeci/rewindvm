@@ -34,6 +34,7 @@ mod terminal;
 mod toolbar;
 mod tour;
 mod viewer;
+mod waiting;
 mod widgets;
 mod zoom;
 

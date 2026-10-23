@@ -25,6 +25,7 @@ pub mod machine;
 pub mod manifest;
 pub mod properties;
 pub mod prune;
+pub mod replaying;
 pub mod schedule;
 pub mod sdk;
 pub mod stop;

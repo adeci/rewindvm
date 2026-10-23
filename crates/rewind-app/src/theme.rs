@@ -287,6 +287,10 @@ pub mod size {
     pub const RADIUS_SEGMENT: f32 = 3.0;
     pub const RADIUS_PLAYHEAD: f32 = 2.0;
     pub const RADIUS_FOCUS: f32 = 6.0;
+
+    // The bar under a long replay's line while a view waits for it.
+    pub const PROGRESS_BAR_HEIGHT: f32 = 6.0;
+    pub const RADIUS_PROGRESS_BAR: f32 = 3.0;
 }
 
 /// Layout proportions.

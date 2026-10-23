@@ -18,6 +18,7 @@ pub mod link_map;
 pub mod maps;
 pub mod nix;
 pub mod pmu;
+pub mod progress;
 pub mod prune;
 pub mod run;
 #[cfg(test)]

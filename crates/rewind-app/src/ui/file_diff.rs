@@ -25,6 +25,7 @@
 use std::ops::Range;
 use std::time::Duration;
 
+use futures::StreamExt;
 use gpui::{
     AnyElement, Context, CursorStyle, Div, FontWeight, HighlightStyle, MouseButton, Role,
     ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, div, prelude::*, px,
@@ -37,7 +38,7 @@ use crate::diff_view::{
     self, Cell, Column, Compared, Copy, Ends, Laid, Layout, Parted, Place, Row, Side, Whose,
     Writes, first_offset, other_step, unrecorded_note, write_note,
 };
-use crate::engine::{Cancel, EngineResult, FileAtStep, Outputs};
+use crate::engine::{Cancel, EngineError, EngineResult, FileAtStep, Outputs};
 use crate::request::Request;
 use crate::run::Run;
 use crate::selection::{Mapped, Pos, Surface, part_of_line};
@@ -50,8 +51,10 @@ use crate::ui::selectable::{Registry, selectable, selects};
 use crate::ui::sideways::{shifted, sideways_layer};
 use crate::ui::tabs::RightTab;
 use crate::ui::viewer::{explain, unavailable, unavailable_run};
+use crate::ui::waiting::waiting_block;
 use crate::ui::widgets::{icon, panel_title, tooltip};
 use crate::viewer::{FetchedAll, expand_tabs, hex_spans};
+use crate::waiting::Waiting;
 use rewind_trace::file_diff::Kind;
 use rewind_trace::writes::FileWrites;
 
@@ -74,9 +77,18 @@ const JOB_VIEW: u32 = 0;
 pub const MAX_TAB_CHARS: usize = 24;
 
 /// What the view says while it waits for both copies, and for the list.
-const READING_COPIES: &str =
-    "Rewind is bringing each run back to its step to read the file. This takes a few seconds.";
-const READING_OUTPUTS: &str = "Rewind is bringing each run to the step its job exited, to read the files it left behind. This takes a few seconds.";
+const READING_COPIES: &str = "Rewind is bringing each run back to its step to read the file.";
+const READING_OUTPUTS: &str =
+    "Rewind is bringing each run to the step its job exited, to read the files it left behind.";
+
+/// What the view says once Cancel stopped reading the copies, or the list.
+const COPIES_STOPPED: &str = "Stopped before both copies were read. Move the playhead, or click the file again, to read them.";
+const OUTPUTS_STOPPED: &str =
+    "Stopped before the files were read. Click Files that differ to read them.";
+
+/// The names a replay's line goes by in a view of two runs.
+const THIS_RUN: &str = "This run";
+const OTHER_RUN: &str = "The other run";
 
 /// What the view says under a comparison at the playhead that neither
 /// run has the file at.
@@ -115,6 +127,8 @@ enum Read {
     Waiting,
     Answered(FileAtStep),
     Failed(String),
+    /// Cancel stopped the read before the engine answered.
+    Stopped,
 }
 
 /// The list of files that differ at the runs' ends.
@@ -123,6 +137,8 @@ pub enum OutputList {
     Reading,
     Listed(Outputs),
     Failed(String),
+    /// Cancel stopped the reading before the engine answered.
+    Stopped,
 }
 
 /// The open view.
@@ -149,10 +165,14 @@ pub struct FileDiffPanel {
     request: Request,
     /// Stops the engine commands of the latest request while they run.
     in_flight: Vec<Cancel>,
+    /// How far the engine's replays to the copies' steps have got.
+    waiting: Waiting,
     /// The list of files that differ, once asked for.
     pub outputs: Option<OutputList>,
     outputs_request: Option<Request>,
     outputs_cancel: Option<Cancel>,
+    /// How far the engine's replays to the runs' ends have got.
+    outputs_waiting: Waiting,
     scroll: UniformListScrollHandle,
     sideways: Sideways,
 }
@@ -259,18 +279,24 @@ impl Scrubber {
         // The layout and the list, and the wait for it, go on from a view
         // open before.
         let mut kept = self.file_diff.take();
-        let (layout, outputs, outputs_request, outputs_cancel) = match kept.as_mut() {
-            Some(panel) => (
-                panel.layout,
-                panel.outputs.clone(),
-                panel.outputs_request.take(),
-                panel.outputs_cancel.take(),
-            ),
-            None => (Layout::SideBySide, None, None, None),
-        };
+        let (layout, outputs, outputs_request, outputs_cancel, outputs_waiting) =
+            match kept.as_mut() {
+                Some(panel) => (
+                    panel.layout,
+                    panel.outputs.clone(),
+                    panel.outputs_request.take(),
+                    panel.outputs_cancel.take(),
+                    std::mem::take(&mut panel.outputs_waiting),
+                ),
+                None => (Layout::SideBySide, None, None, None, Waiting::default()),
+            };
         drop(kept);
         self.clear_selection_in(&ROW_SURFACES);
-        let reading_list = path.is_none() && outputs.is_none() && unavailable.is_none();
+
+        // The list is read when it never was, or Cancel stopped the last
+        // reading.
+        let unread = matches!(outputs, None | Some(OutputList::Stopped));
+        let reading_list = path.is_none() && unread && unavailable.is_none();
         self.right_tab = RightTab::FileDiff;
         self.file_diff = Some(FileDiffPanel {
             path,
@@ -284,9 +310,11 @@ impl Scrubber {
             loading: false,
             request: self.requests.issue(),
             in_flight: Vec::new(),
+            waiting: Waiting::default(),
             outputs,
             outputs_request,
             outputs_cancel,
+            outputs_waiting,
             scroll: UniformListScrollHandle::new(),
             sideways: Sideways::default(),
         });
@@ -430,6 +458,7 @@ impl Scrubber {
         panel.request = self.requests.issue();
         panel.steps = steps;
         panel.loading = true;
+        panel.waiting = Waiting::default();
         let request = panel.request;
 
         // Each run's copy: a kept answer, nothing while its VM still boots,
@@ -457,9 +486,32 @@ impl Scrubber {
             panel.in_flight.push(cancel.clone());
             let engine = self.engine.clone();
             let path = path.clone();
-            let task =
-                crate::jobs::on_own_thread(move || engine.cat(&run, step, None, &path, &cancel));
+
+            // The engine's lines come through a channel as it says them,
+            // and the channel closes when the engine is done.
+            let (lines, mut said) = futures::channel::mpsc::unbounded::<String>();
+            let task = crate::jobs::on_own_thread(move || {
+                engine.cat(&run, step, None, &path, &cancel, &mut |line| {
+                    let _ = lines.unbounded_send(line.to_string());
+                })
+            });
             cx.spawn(async move |this, cx| {
+                // Each line of a replay's progress updates what the view
+                // says while it still waits for this request.
+                while let Some(line) = said.next().await {
+                    let alive = this.update(cx, |this, cx| {
+                        let Some(panel) = &mut this.file_diff else {
+                            return;
+                        };
+                        if panel.request == request && panel.waiting.said(&line) {
+                            cx.notify();
+                        }
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
+                }
+
                 let result = task.await;
                 let _ = this.update(cx, |this, cx| {
                     this.got_copy(request, side, key, result, cx);
@@ -491,6 +543,7 @@ impl Scrubber {
                 self.file_answers.insert(key, answer.clone());
                 Read::Answered(answer)
             }
+            Err(EngineError::Cancelled) => Read::Stopped,
             Err(e) => Read::Failed(explain(&e)),
         };
         *panel.copy_of(side) = read;
@@ -512,14 +565,14 @@ impl Scrubber {
                     Some(Some((bytes.clone(), *complete)))
                 }
                 Read::Answered(FileAtStep::Missing) => Some(None),
-                Read::Waiting | Read::Failed(_) => None,
+                Read::Waiting | Read::Failed(_) | Read::Stopped => None,
             }
         };
         let (Some(here), Some(there)) = (copy(&panel.copies.0), copy(&panel.copies.1)) else {
-            // A copy that could not be read ends the wait: its reason shows.
-            if matches!(panel.copies.0, Read::Failed(_))
-                || matches!(panel.copies.1, Read::Failed(_))
-            {
+            // A copy that could not be read, or whose reading was stopped,
+            // ends the wait: its reason shows.
+            let ended = |read: &Read| matches!(read, Read::Failed(_) | Read::Stopped);
+            if ended(&panel.copies.0) || ended(&panel.copies.1) {
                 panel.loading = false;
             }
             cx.notify();
@@ -588,6 +641,44 @@ impl Scrubber {
         }
     }
 
+    /// Stops reading both copies; the engine's answers, cancellations,
+    /// then say so.
+    fn cancel_copies(&mut self, cx: &mut Context<Self>) {
+        if let Some(panel) = &self.file_diff {
+            for cancel in &panel.in_flight {
+                cancel.cancel();
+            }
+        }
+        cx.notify();
+    }
+
+    /// Stops reading the list of files that differ; the engine's answer, a
+    /// cancellation, then says so.
+    fn cancel_outputs(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = self
+            .file_diff
+            .as_ref()
+            .and_then(|p| p.outputs_cancel.as_ref())
+        {
+            cancel.cancel();
+        }
+        cx.notify();
+    }
+
+    /// The name a replay of the run with id `run` goes by in this view:
+    /// this run or the other one.
+    fn run_label(&self, run: &str) -> Option<String> {
+        let session = self.session.as_ref()?;
+        let is = |r: Option<&Run>| r.and_then(Run::id).is_some_and(|id| id.as_str() == run);
+        if is(Some(&session.run)) {
+            return Some(THIS_RUN.to_string());
+        }
+        if is(session.other.as_ref()) {
+            return Some(OTHER_RUN.to_string());
+        }
+        None
+    }
+
     /// Asks the engine for the files that differ at the runs' ends.
     fn fetch_outputs(&mut self, cx: &mut Context<Self>) {
         let (Some(panel), Some(session)) = (&mut self.file_diff, &self.session) else {
@@ -601,12 +692,35 @@ impl Scrubber {
         panel.outputs = Some(OutputList::Reading);
         panel.outputs_request = Some(request);
         panel.outputs_cancel = Some(cancel.clone());
+        panel.outputs_waiting = Waiting::default();
         let (this_run, other_run) = (session.run.path.clone(), other.path.clone());
         let engine = self.engine.clone();
+
+        // The engine's lines come through a channel as it says them, and
+        // the channel closes when the engine is done.
+        let (lines, mut said) = futures::channel::mpsc::unbounded::<String>();
         let task = crate::jobs::on_own_thread(move || {
-            engine.differing_outputs(&this_run, &other_run, &cancel)
+            engine.differing_outputs(&this_run, &other_run, &cancel, &mut |line| {
+                let _ = lines.unbounded_send(line.to_string());
+            })
         });
         cx.spawn(async move |this, cx| {
+            // Each line of a replay's progress updates what the list says
+            // while it still waits for this request.
+            while let Some(line) = said.next().await {
+                let alive = this.update(cx, |this, cx| {
+                    let Some(panel) = &mut this.file_diff else {
+                        return;
+                    };
+                    if panel.outputs_request == Some(request) && panel.outputs_waiting.said(&line) {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
                 let Some(panel) = &mut this.file_diff else {
@@ -618,6 +732,7 @@ impl Scrubber {
                 panel.outputs_cancel = None;
                 panel.outputs = Some(match result {
                     Ok(outputs) => OutputList::Listed(outputs),
+                    Err(EngineError::Cancelled) => OutputList::Stopped,
                     Err(e) => OutputList::Failed(explain(&e)),
                 });
                 cx.notify();
@@ -716,10 +831,23 @@ impl Scrubber {
         }
         let listed = match &panel.outputs {
             None | Some(OutputList::Reading) => {
+                let rows = panel.outputs_waiting.rows(|run| self.run_label(run));
+                let waiting = waiting_block(
+                    "file-diff-outputs-cancel",
+                    Some(READING_OUTPUTS.to_string()),
+                    rows,
+                    cx.listener(|this, _, _, cx| this.cancel_outputs(cx)),
+                );
                 return div()
                     .flex()
                     .flex_col()
-                    .child(column.child(message(READING_OUTPUTS.to_string(), theme::MUTED)));
+                    .child(column.child(waiting.font_family(self.fonts.ui.clone())));
+            }
+            Some(OutputList::Stopped) => {
+                return div()
+                    .flex()
+                    .flex_col()
+                    .child(column.child(message(OUTPUTS_STOPPED.to_string(), theme::SOFT)));
             }
             Some(OutputList::Failed(message_text)) => {
                 return div()
@@ -873,6 +1001,12 @@ impl Scrubber {
                 status.push((message.clone(), theme::RED_SOFT));
             }
         }
+        let stopped = [&panel.copies.0, &panel.copies.1]
+            .iter()
+            .any(|read| matches!(read, Read::Stopped));
+        if stopped {
+            status.push((COPIES_STOPPED.to_string(), theme::SOFT));
+        }
         let shown = panel.shown.as_ref();
         let mut summary_line = None;
         match shown {
@@ -889,6 +1023,20 @@ impl Scrubber {
             None if status.is_empty() => status.push((READING_COPIES.to_string(), theme::MUTED)),
             _ => {}
         }
+
+        // While the copies load, a long replay's lines, bars and Cancel
+        // button.
+        let rows = panel.waiting.rows(|run| self.run_label(run));
+        let waiting = (panel.loading && !rows.is_empty()).then(|| {
+            waiting_block(
+                "file-diff-copies-cancel",
+                None,
+                rows,
+                cx.listener(|this, _, _, cx| this.cancel_copies(cx)),
+            )
+            .font_family(self.fonts.ui.clone())
+            .text_size(px(size::TEXT_SMALL))
+        });
 
         // What the view can say of the writes that set the bytes: a line
         // when a run did not record them, and the way to the write that
@@ -952,6 +1100,9 @@ impl Scrubber {
                     .child(line)
                     .child(go),
             );
+        }
+        if let Some(waiting) = waiting {
+            heading = heading.child(waiting);
         }
         heading = heading.child(choices);
 

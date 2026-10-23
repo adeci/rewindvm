@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use crate::source::{Located, Thread};
 use crate::viewer::{self, FetchedAll};
 use rewind_trace::manifest::MANIFEST;
+use rewind_trace::replaying::{PROGRESS_ENV, PROGRESS_JSON};
 
 /// The engine's command, looked up on PATH.
 pub const DEFAULT_PROGRAM: &str = "rewind";
@@ -268,8 +269,10 @@ pub trait Engine: Send + Sync {
 
     /// Reads `path` inside the VM as it was at `step` of `run`, as process
     /// `pid` saw it when one is given. The engine brings the run back to
-    /// the step to read it, which takes seconds.
-    /// `cancel` stops it early.
+    /// the step to read it, which takes seconds, or minutes far from a
+    /// saved snapshot; `progress` is handed each line the engine says while
+    /// it works, how far the replay got among them (see
+    /// [`crate::waiting`]), and `cancel` stops it early.
     fn cat(
         &self,
         run: &Path,
@@ -277,18 +280,21 @@ pub trait Engine: Send + Sync {
         pid: Option<u32>,
         path: &str,
         cancel: &Cancel,
+        progress: &mut dyn FnMut(&str),
     ) -> EngineResult<FileAtStep>;
 
     /// The files the jobs of runs `this` and `other` wrote and left
     /// behind whose bytes differ, as each run had them when its job
     /// exited, and how many are the same. The engine brings each run back
-    /// to that step once to read them all, which takes seconds. `cancel`
-    /// stops it early.
+    /// to that step once to read them all, which takes seconds, or minutes
+    /// far from a saved snapshot; `progress` is handed each line the
+    /// engine says while it works, and `cancel` stops it early.
     fn differing_outputs(
         &self,
         this: &Path,
         other: &Path,
         cancel: &Cancel,
+        progress: &mut dyn FnMut(&str),
     ) -> EngineResult<Outputs>;
 
     /// Where in the program's own code `thread` was at `step` of `run`:
@@ -659,6 +665,7 @@ impl Engine for CliEngine {
         pid: Option<u32>,
         path: &str,
         cancel: &Cancel,
+        progress: &mut dyn FnMut(&str),
     ) -> EngineResult<FileAtStep> {
         // `rewind cat` exits 3 for a file that did not exist at the step.
         const MISSING_STATUS: i32 = 3;
@@ -686,6 +693,7 @@ impl Engine for CliEngine {
         }
         let mut child = Command::new(&self.program)
             .args(&args)
+            .env(PROGRESS_ENV, PROGRESS_JSON)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -702,33 +710,48 @@ impl Engine for CliEngine {
             return Err(EngineError::Cancelled);
         }
 
-        // Read no more than the viewer shows, and one byte more to know
-        // whether there was more; stop the engine if there was.
+        // The file, on a thread of its own: no more than the viewer shows,
+        // and one byte more to know whether there was more, when the
+        // engine is stopped.
         let limit = viewer::MAX_SHOWN as u64 + 1;
-        let mut bytes = Vec::new();
+        let group = child.id();
         let stdout = child.stdout.take().expect("stdout is piped");
-        stdout
-            .take(limit)
-            .read_to_end(&mut bytes)
+        let answer = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let read = stdout.take(limit).read_to_end(&mut bytes);
+            if bytes.len() > viewer::MAX_SHOWN {
+                stop_group(group);
+            }
+            read.map(|_| bytes)
+        });
+
+        // The engine's lines, each handed on as it says it.
+        let mut stderr = String::new();
+        if let Some(pipe) = child.stderr.take() {
+            for line in BufReader::new(pipe).lines() {
+                let Ok(line) = line else {
+                    break;
+                };
+                progress(&line);
+                stderr.push_str(&line);
+                stderr.push('\n');
+            }
+        }
+        let status = child.wait().map_err(|e| failed(e.to_string()))?;
+        cancel.finished();
+        let mut bytes = answer
+            .join()
+            .unwrap_or_else(|_| Ok(Vec::new()))
             .map_err(|e| failed(e.to_string()))?;
+        if cancel.cancelled() {
+            return Err(EngineError::Cancelled);
+        }
         if bytes.len() > viewer::MAX_SHOWN {
             bytes.truncate(viewer::MAX_SHOWN);
-            let _ = child.kill();
-            let _ = child.wait();
-            cancel.finished();
             return Ok(FileAtStep::Exists {
                 bytes,
                 complete: FetchedAll::No,
             });
-        }
-        let mut stderr = String::new();
-        if let Some(mut pipe) = child.stderr.take() {
-            let _ = pipe.read_to_string(&mut stderr);
-        }
-        let status = child.wait().map_err(|e| failed(e.to_string()))?;
-        cancel.finished();
-        if cancel.cancelled() {
-            return Err(EngineError::Cancelled);
         }
         match status.code() {
             Some(0) => Ok(FileAtStep::Exists {
@@ -749,6 +772,7 @@ impl Engine for CliEngine {
         this: &Path,
         other: &Path,
         cancel: &Cancel,
+        progress: &mut dyn FnMut(&str),
     ) -> EngineResult<Outputs> {
         // rewind diff <this> <other> --outputs --json, which exits 1 when
         // some differ: the JSON is what says it read them.
@@ -759,7 +783,7 @@ impl Engine for CliEngine {
             "--outputs".into(),
             "--json".into(),
         ];
-        let out = self.streamed(&args, cancel, &mut |_| {})?;
+        let out = self.streamed(&args, cancel, progress)?;
         out.stdout
             .lines()
             .rev()
@@ -902,7 +926,8 @@ impl CliEngine {
     }
 
     /// Runs the engine with `args` in a process group of its own, with
-    /// any gdb it starts, which cancelling stops whole. Each line it says
+    /// any gdb it starts, which cancelling stops whole, asked to say how
+    /// far its replays get as JSON (see [`crate::waiting`]). Each line it says
     /// on standard error is handed to `progress` as it comes; standard
     /// output is read beside them, so a full pipe cannot stop the engine.
     fn streamed(
@@ -917,6 +942,7 @@ impl CliEngine {
         }
         let mut child = Command::new(&self.program)
             .args(args)
+            .env(PROGRESS_ENV, PROGRESS_JSON)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1163,13 +1189,15 @@ mod tests {
         call()
     }
 
-    /// A stand-in engine: a script that prints `stdout` and `stderr` and
+    /// A stand-in engine: a script that writes its arguments to `args`
+    /// and how it was asked to say its progress to `progress`, prints
+    /// `stdout` and `stderr` and
     /// exits `code`.
     fn fake_engine(dir: &Path, stdout: &str, stderr: &str, code: i32) -> CliEngine {
         let script = dir.join("rewind");
         std::fs::write(
             &script,
-            format!("#!/bin/sh\nprintf '%s\\n' \"$*\" > \"{}/args\"\nprintf '{stdout}'\nprintf '{stderr}' >&2\nexit {code}\n", dir.display()),
+            format!("#!/bin/sh\nprintf '%s\\n' \"$*\" > \"{dir}/args\"\nprintf '%s' \"${PROGRESS_ENV}\" > \"{dir}/progress\"\nprintf '{stdout}'\nprintf '{stderr}' >&2\nexit {code}\n", dir = dir.display()),
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1218,7 +1246,14 @@ mod tests {
         let call = {
             let cancel = cancel.clone();
             std::thread::spawn(move || {
-                engine.cat(Path::new("/run"), 5, None, "/etc/hosts", &cancel)
+                engine.cat(
+                    Path::new("/run"),
+                    5,
+                    None,
+                    "/etc/hosts",
+                    &cancel,
+                    &mut |_| {},
+                )
             })
         };
         let pid_file = dir.join("pid");
@@ -1244,7 +1279,14 @@ mod tests {
         let engine = slow_engine(&dir);
         let cancel = Cancel::default();
         cancel.cancel();
-        let result = engine.cat(Path::new("/run"), 5, None, "/etc/hosts", &cancel);
+        let result = engine.cat(
+            Path::new("/run"),
+            5,
+            None,
+            "/etc/hosts",
+            &cancel,
+            &mut |_| {},
+        );
         assert!(matches!(result, Err(EngineError::Cancelled)));
         assert!(!dir.join("pid").exists());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1599,7 +1641,8 @@ mod tests {
         let engine = fake_engine(&dir, json, "", 1);
         let (this, other) = (dir.join("a"), dir.join("b"));
         let outputs =
-            retrying(|| engine.differing_outputs(&this, &other, &Cancel::default())).unwrap();
+            retrying(|| engine.differing_outputs(&this, &other, &Cancel::default(), &mut |_| {}))
+                .unwrap();
         assert_eq!(outputs.same, 4);
         assert_eq!(
             outputs.differ,
@@ -1613,11 +1656,111 @@ mod tests {
         );
         let args = std::fs::read_to_string(dir.join("args")).unwrap();
         assert!(args.starts_with("diff ") && args.contains("--outputs --json"));
+        let asked = std::fs::read_to_string(dir.join("progress")).unwrap();
+        assert_eq!(asked, rewind_trace::replaying::PROGRESS_JSON);
 
         let engine = fake_engine(&dir, "", "rewind: no run a\n", 1);
         let err =
-            retrying(|| engine.differing_outputs(&this, &other, &Cancel::default())).unwrap_err();
+            retrying(|| engine.differing_outputs(&this, &other, &Cancel::default(), &mut |_| {}))
+                .unwrap_err();
         assert!(matches!(err, EngineError::Failed { .. }), "{err:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A replay's progress reaches the caller while `rewind cat` runs, and
+    /// the engine is asked for it as JSON. The stand-in says a progress
+    /// line, then waits up to five seconds for a file the caller makes
+    /// when the line reaches it, and prints the file only once that file
+    /// is there.
+    #[test]
+    fn cat_hands_on_the_replay_s_progress_as_it_comes() {
+        let dir = temp_dir("cat-progress");
+        let go = dir.join("go");
+        let line = r#"{"replaying":{"run":"r","from":0,"at":10,"to":20,"elapsed_ms":900}}"#;
+        let script = dir.join("rewind");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s' \"${PROGRESS_ENV}\" > '{dir}/progress'\n\
+                 printf '%s\\n' '{line}' >&2\n\
+                 i=0; while [ ! -e '{go}' ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i + 1)); done\n\
+                 [ -e '{go}' ] || exit 1\n\
+                 printf 'contents'\n",
+                dir = dir.display(),
+                go = go.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let engine = CliEngine::new(script);
+
+        let said = std::cell::RefCell::new(Vec::new());
+        let read = retrying(|| {
+            engine.cat(
+                &dir.join("run"),
+                20,
+                None,
+                "/x",
+                &Cancel::default(),
+                &mut |l| {
+                    said.borrow_mut().push(l.to_string());
+                    std::fs::write(&go, "").unwrap();
+                },
+            )
+        })
+        .unwrap();
+        assert_eq!(
+            read,
+            FileAtStep::Exists {
+                bytes: b"contents".to_vec(),
+                complete: FetchedAll::Yes
+            }
+        );
+        assert_eq!(said.into_inner(), vec![line.to_string()]);
+        let asked = std::fs::read_to_string(dir.join("progress")).unwrap();
+        assert_eq!(asked, rewind_trace::replaying::PROGRESS_JSON);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A file longer than the viewer shows is cut there, and the engine
+    /// stopped: the stand-in prints more than that and then waits half a
+    /// minute with its standard error open, and the call returns within a
+    /// few seconds with the first MAX_SHOWN bytes.
+    #[test]
+    fn cat_stops_the_engine_past_what_the_viewer_shows() {
+        const GIVE_UP: std::time::Duration = std::time::Duration::from_secs(5);
+        let dir = temp_dir("cat-long");
+        let script = dir.join("rewind");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nhead -c {} /dev/zero\nexec sleep 30\n",
+                viewer::MAX_SHOWN + 10
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let engine = CliEngine::new(script);
+        let asked = std::time::Instant::now();
+        let read = retrying(|| {
+            engine.cat(
+                &dir.join("run"),
+                1,
+                None,
+                "/x",
+                &Cancel::default(),
+                &mut |_| {},
+            )
+        })
+        .unwrap();
+        assert!(asked.elapsed() < GIVE_UP);
+        assert_eq!(
+            read,
+            FileAtStep::Exists {
+                bytes: vec![0; viewer::MAX_SHOWN],
+                complete: FetchedAll::No
+            }
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1636,6 +1779,7 @@ mod tests {
                 Some(174),
                 "/build/Makefile",
                 &Cancel::default(),
+                &mut |_| {},
             )
         })
         .unwrap();
@@ -1650,12 +1794,22 @@ mod tests {
         assert!(args.contains("cat") && args.contains("3795 /build/Makefile --pid 174"));
 
         let engine = fake_engine(&dir, "", "rewind: no such file then\\n", 3);
-        let read =
-            retrying(|| engine.cat(&run, 10, None, "/build/core", &Cancel::default())).unwrap();
+        let read = retrying(|| {
+            engine.cat(
+                &run,
+                10,
+                None,
+                "/build/core",
+                &Cancel::default(),
+                &mut |_| {},
+            )
+        })
+        .unwrap();
         assert_eq!(read, FileAtStep::Missing);
 
         let engine = fake_engine(&dir, "", "rewind: no keyframes for this run\\n", 1);
-        let err = retrying(|| engine.cat(&run, 10, None, "/x", &Cancel::default())).unwrap_err();
+        let err = retrying(|| engine.cat(&run, 10, None, "/x", &Cancel::default(), &mut |_| {}))
+            .unwrap_err();
         let EngineError::Failed { message, .. } = err else {
             panic!("{err:?}");
         };

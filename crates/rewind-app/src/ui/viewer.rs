@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use futures::StreamExt;
 use gpui::{
     Context, CursorStyle, Div, MouseButton, Role, ScrollStrategy, UniformListScrollHandle, div,
     prelude::*, px, relative, rgb, uniform_list,
@@ -31,8 +32,10 @@ use crate::ui::scrubber::{READING_A_FILE, Scrubber};
 use crate::ui::selectable::{colored, selectable, selects, viewer_line};
 use crate::ui::sideways::{shifted, sideways_layer};
 use crate::ui::tabs::RightTab;
+use crate::ui::waiting::waiting_block;
 use crate::ui::widgets::{icon, panel_title};
 use crate::viewer::{self, Kind, View, hex_spans};
+use crate::waiting::Waiting;
 
 /// How long the playhead must rest before a pinned viewer asks again.
 const DEBOUNCE: Duration = Duration::from_millis(400);
@@ -45,6 +48,13 @@ const EXAMPLE_REASON: &str = "This example was recorded on another machine and s
 const EXPORT_TRACE_REASON: &str = "This run was opened from a .rwd file that holds its trace only. Open its replayable export, the -replayable.rwd file, to read its files at any step.";
 const EXPORT_IMPORTING_REASON: &str = "This run is being imported into Rewind from its .rwd file. Its files can be read at any step once it is in.";
 const TRACE_REASON: &str = "This run was opened from a bare trace file. Open its run directory instead to read its files at any step.";
+
+/// What the viewer says while the engine brings the run back to the step.
+pub(super) const READING: &str = "Rewind is bringing the run back to this step to read the file.";
+
+/// What the viewer says once Cancel stopped a read.
+const STOPPED: &str =
+    "Stopped before the file was read. Move the playhead, or click the file again, to read it.";
 
 /// Whether the viewer follows the playhead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +90,10 @@ pub enum Fetched {
         step: u64,
         job_start: u64,
     },
+    /// Cancel stopped the read before the engine answered.
+    Stopped {
+        step: u64,
+    },
 }
 
 /// The open viewer.
@@ -95,6 +109,8 @@ pub struct FileViewer {
     pub unavailable: Option<&'static str>,
     pub shown: Option<Fetched>,
     pub loading: bool,
+    /// How far the engine's replay to the step has got, while loading.
+    waiting: Waiting,
     /// The request whose answer this waits on; an answer to any other,
     /// from before the playhead moved or this was opened, is dropped.
     request: Request,
@@ -167,6 +183,7 @@ impl Scrubber {
             unavailable,
             shown: None,
             loading: unavailable.is_none(),
+            waiting: Waiting::default(),
             request: self.requests.issue(),
             in_flight: None,
             scroll: UniformListScrollHandle::new(),
@@ -186,6 +203,17 @@ impl Scrubber {
             self.right_tab = RightTab::AtStep;
         }
         self.clear_selection_in(&[Surface::Viewer]);
+        cx.notify();
+    }
+
+    /// Stops the read the viewer waits on; the engine's answer, a
+    /// cancellation, then says so.
+    pub(super) fn cancel_viewer_read(&mut self, cx: &mut Context<Self>) {
+        if let Some(viewer) = &mut self.viewer
+            && let Some(cancel) = &viewer.in_flight
+        {
+            cancel.cancel();
+        }
         cx.notify();
     }
 
@@ -329,15 +357,39 @@ impl Scrubber {
             return;
         };
         viewer.loading = true;
+        viewer.waiting = Waiting::default();
         let request = viewer.request;
         let (run, pid, path) = (session.run.path.clone(), viewer.pid, viewer.path.clone());
         let key = FileKey::at(&run, &session.run.timeline.trace, &path, pid, step);
         let engine = self.engine.clone();
         let cancel = Cancel::default();
         viewer.in_flight = Some(cancel.clone());
-        let task =
-            crate::jobs::on_own_thread(move || engine.cat(&run, step, Some(pid), &path, &cancel));
+
+        // The engine's lines come through a channel as it says them, and
+        // the channel closes when the engine is done.
+        let (lines, mut said) = futures::channel::mpsc::unbounded::<String>();
+        let task = crate::jobs::on_own_thread(move || {
+            engine.cat(&run, step, Some(pid), &path, &cancel, &mut |line| {
+                let _ = lines.unbounded_send(line.to_string());
+            })
+        });
         cx.spawn(async move |this, cx| {
+            // Each line of the replay's progress updates what the viewer
+            // says while it still waits for this request.
+            while let Some(line) = said.next().await {
+                let alive = this.update(cx, |this, cx| {
+                    let Some(viewer) = &mut this.viewer else {
+                        return;
+                    };
+                    if viewer.request == request && viewer.waiting.said(&line) {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
                 if this.viewer.as_ref().is_none_or(|v| v.request != request) {
@@ -388,6 +440,7 @@ impl Scrubber {
                 step,
                 message: REPLAYS_ANOTHER_WAY,
             },
+            Err(EngineError::Cancelled) => Fetched::Stopped { step },
             Err(e) => Fetched::Failed {
                 step,
                 message: explain(&e),
@@ -407,7 +460,8 @@ impl Scrubber {
             | Some(Fetched::Missing { step })
             | Some(Fetched::Failed { step, .. })
             | Some(Fetched::Unreadable { step, .. })
-            | Some(Fetched::Booting { step, .. }) => *step,
+            | Some(Fetched::Booting { step, .. })
+            | Some(Fetched::Stopped { step }) => *step,
             None => viewer.step,
         };
         let pin_label = match viewer.pin {
@@ -458,10 +512,14 @@ impl Scrubber {
             (Some(Fetched::Failed { .. }), None) => "could not be read".to_string(),
             (Some(Fetched::Unreadable { .. }), None) => "not available for this run".to_string(),
             (Some(Fetched::Booting { .. }), None) => "the VM is still booting".to_string(),
+            (Some(Fetched::Stopped { .. }), None) => "not read".to_string(),
         };
         let status = if viewer.loading && viewer.shown.is_some() {
+            let left = viewer.waiting.left().map_or(String::new(), |left| {
+                format!(", {} left", rewind_trace::replaying::about(left))
+            });
             format!(
-                "{status} \u{b7} reading step {}\u{2026}",
+                "{status} \u{b7} reading step {}\u{2026}{left}",
                 thousands(viewer.step)
             )
         } else {
@@ -493,8 +551,22 @@ impl Scrubber {
                     .child(status),
             );
 
+        // While older contents stay on screen, a long replay's line, bar
+        // and Cancel button go under the status.
+        let rows = viewer.waiting.rows(|_| None);
+        let heading = if viewer.loading && viewer.shown.is_some() && !rows.is_empty() {
+            heading.child(waiting_block(
+                "viewer-cancel",
+                None,
+                rows,
+                cx.listener(|this, _, _, cx| this.cancel_viewer_read(cx)),
+            ))
+        } else {
+            heading
+        };
+
         // The body: the contents, or a message in their place, both
-        // selectable.
+        // selectable; while the first read waits, what the replay says.
         let registry = self.selecting.registry.clone();
         let selected = self.selected_range(Surface::Viewer);
         let body = match (&viewer.shown, viewer.unavailable, viewer_message(viewer)) {
@@ -598,6 +670,16 @@ impl Scrubber {
                 .py(px(size::LIST_PAD_Y))
                 .into_any_element()
             }
+            (None, None, Some((text, _))) if viewer.loading => div()
+                .p(px(size::PANEL_PAD_X))
+                .font_family(self.fonts.ui.clone())
+                .child(waiting_block(
+                    "viewer-cancel",
+                    Some(text),
+                    viewer.waiting.rows(|_| None),
+                    cx.listener(|this, _, _, cx| this.cancel_viewer_read(cx)),
+                ))
+                .into_any_element(),
             (_, _, Some((text, color))) => {
                 let part = selected
                     .as_ref()
@@ -722,10 +804,8 @@ fn viewer_message(viewer: &FileViewer) -> Option<(String, u32)> {
             ),
             theme::SOFT,
         ),
-        None => (
-            "Rewind is bringing the run back to this step to read the file. This takes a few seconds.".to_string(),
-            theme::MUTED,
-        ),
+        Some(Fetched::Stopped { .. }) => (STOPPED.to_string(), theme::SOFT),
+        None => (READING.to_string(), theme::MUTED),
     })
 }
 

@@ -1117,9 +1117,16 @@ impl Run {
             .collect();
         let mut checked = Checked::new(obs, made);
 
-        // To the step in stretches, keeping a keyframe at the end of one
-        // when enough replay has passed since the last, when asked to.
+        // To the step in stretches, saying how far the replay got after
+        // each, and keeping a keyframe at the end of one when enough
+        // replay has passed since the last, when asked to.
         let mut pace = crate::keyframes::Pace::default();
+        let mut reports = crate::progress::Reports::start(
+            crate::progress::listener().map(|l| l.as_ref()),
+            self.manifest.id.as_str(),
+            (machine.step(), step),
+            Instant::now(),
+        );
         let outcome = loop {
             let at = machine.step();
             let stop = pace.next_stop(at, step);
@@ -1131,8 +1138,10 @@ impl Run {
             }
             let paused = matches!(outcome, Outcome::Paused) && machine.step() == stop;
             if !paused || stop == step {
+                reports.ended(machine.step(), Instant::now());
                 break outcome;
             }
+            reports.reached(stop, Instant::now());
             if keep == Keep::Keyframe
                 && pace.keep_at(stop, step)
                 && self.keep_keyframe(home, &mut machine, &mut base)?

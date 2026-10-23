@@ -188,6 +188,10 @@ pub enum Shown {
         step: u64,
         message: String,
     },
+    /// Cancel stopped the lookup before the engine answered.
+    Stopped {
+        step: u64,
+    },
 }
 
 impl Shown {
@@ -197,7 +201,8 @@ impl Shown {
             Shown::Located { step, .. }
             | Shown::Booting { step, .. }
             | Shown::Unreadable { step, .. }
-            | Shown::Failed { step, .. } => *step,
+            | Shown::Failed { step, .. }
+            | Shown::Stopped { step } => *step,
         }
     }
 
@@ -234,19 +239,29 @@ const ENGINE_PREFIX: &str = "rewind: ";
 
 /// What the panel says while the engine looks, until the engine says
 /// something of its own.
-pub const LOOKING: &str = "Rewind is forking the run at this step and walking the thread's stack in gdb. This takes a few seconds.";
+pub const LOOKING: &str =
+    "Rewind is forking the run at this step and walking the thread's stack in gdb.";
+
+/// What the panel says once Cancel stopped a lookup.
+pub const STOPPED: &str = "Stopped before the stack was read. Move the playhead to look again.";
 
 /// What the panel says while the engine looks: the latest of the engine's
-/// own lines, once it has said one.
+/// own lines, once it has said one, and how far its replay to the step
+/// has got.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Progress {
     latest: Option<String>,
+    pub waiting: crate::waiting::Waiting,
 }
 
 impl Progress {
-    /// Takes `line`, which the engine said on its standard error; only
-    /// rewind's own lines, not ones it passes on from gdb, are kept.
+    /// Takes `line`, which the engine said on its standard error: a
+    /// replay's progress goes to `waiting`, and of the rest only rewind's
+    /// own lines, not ones it passes on from gdb, are kept.
     pub fn said(&mut self, line: &str) {
+        if self.waiting.said(line) {
+            return;
+        }
         let Some(own) = line.strip_prefix(ENGINE_PREFIX) else {
             return;
         };
@@ -279,6 +294,7 @@ pub fn shown(step: u64, answer: Result<Located, EngineError>) -> Shown {
             step,
             message: crate::engine::REPLAYS_ANOTHER_WAY,
         },
+        Err(EngineError::Cancelled) => Shown::Stopped { step },
         Err(EngineError::Failed { message, .. }) => Shown::Failed {
             step,
             message: format!(
@@ -521,6 +537,39 @@ mod tests {
             panic!("not a failure");
         };
         assert!(message.contains("needs the rewind command"));
+    }
+
+    /// A replay's progress lines are not the panel's text: the text stays
+    /// the fixed sentence, and a long replay comes back as a row with a
+    /// bar. A cancelled lookup shows as stopped, not as a failure.
+    #[test]
+    fn a_replay_s_progress_is_a_row_under_the_text() {
+        let mut progress = Progress::default();
+        let line = |at, elapsed_ms| {
+            rewind_trace::replaying::Replaying {
+                run: "r".into(),
+                from: 0,
+                at,
+                to: 100_000,
+                elapsed_ms,
+            }
+            .line()
+        };
+        progress.said(&line(0, 0));
+        progress.said(&line(10_000, 10_000));
+        assert_eq!(progress.text(), LOOKING);
+        let rows = progress.waiting.rows(|_| None);
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].text.contains("now at step 10,000"),
+            "{}",
+            rows[0].text
+        );
+
+        assert_eq!(
+            shown(10, Err(EngineError::Cancelled)),
+            Shown::Stopped { step: 10 }
+        );
     }
 
     /// The panel's loading text: the fixed sentence until the engine says
