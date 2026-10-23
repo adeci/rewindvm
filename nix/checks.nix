@@ -669,6 +669,30 @@ in
         rewind replay b --from 300 | grep '^identical'
         rewind gc --json | tee again
         grep -q '"pages":0' again
+
+        # A look far into a run recorded without keyframes, as rewind
+        # check records most of its runs, keeps a keyframe on the way
+        # after each ten seconds or so of replay, as well as one at its
+        # step. The run replays exactly from one kept on the way, and the
+        # kept keyframes are the run's like any other: removing the run
+        # and collecting takes their pages with it. Two million writes
+        # take about half a minute to replay here, long enough for at
+        # least one stretch on a machine twice as fast.
+        bare_writes='for i in $(seq 2000000); do echo $i; done'
+        rewind run -q --no-keyframes --name bare --root ${busyboxRoot} -- sh -c "$bare_writes"
+        bare=$(dirname "$(grep -l '"name": "bare"' $REWIND_HOME/runs/*/manifest.json)")
+        test ! -e "$bare/keyframes"
+        end=$(rewind events bare | grep 'mark "rewind-exit ' | awk '{print $1}')
+        rewind cat bare "$end" /bin/busybox > /dev/null
+        bare_keyframes() { ls "$bare/keyframes" | grep '\.kf$' | sed 's/\.kf$//; s/^0*//'; }
+        echo "a look at step $end of bare kept keyframes at: $(bare_keyframes | tr '\n' ' ')"
+        test "$(bare_keyframes | wc -l)" -ge 2
+        test "$(bare_keyframes | tail -1)" = "$end"
+        along=$(bare_keyframes | sed -n 1p)
+        rewind replay bare --from "$along" | grep "^identical to the recording from the snapshot at step $along "
+        rewind remove bare --json
+        rewind gc --json | tee collected-bare
+        grep -q '"pages":[1-9]' collected-bare
         touch $out
       '';
 

@@ -257,6 +257,25 @@ impl Layers {
         &layer.dir
     }
 
+    /// Whether the run that owns `step` (see [`Layers::owner`]) reads the
+    /// keyframe at `parent`, so a keyframe kept there may name it as its
+    /// parent; None, boot, has nothing to read. The run reads its own
+    /// keyframes and those of the runs it shares with, never those of a
+    /// fork of it, which a fork may hold for a shared step when it could
+    /// not write to its parent's directory.
+    pub fn owner_reads(&self, step: u64, parent: Option<u64>) -> bool {
+        let Some(parent) = parent else {
+            return true;
+        };
+        let layer_of = |dir: &Path| self.layers.iter().position(|l| l.dir == dir);
+        let owner = layer_of(self.owner(step));
+        let holder = self
+            .path(parent)
+            .and_then(|p| p.parent()?.parent().map(Path::to_path_buf))
+            .and_then(|dir| layer_of(&dir));
+        matches!((owner, holder), (Some(owner), Some(holder)) if holder >= owner)
+    }
+
     pub fn load(&self, step: u64) -> Result<Keyframe> {
         let p = self.path(step).with_context(|| {
             format!(
@@ -358,6 +377,80 @@ pub const KEEP_AFTER: u64 = 512;
 pub fn worth_keeping(steps: &[u64], step: u64) -> bool {
     let nearest = steps.iter().copied().rfind(|s| *s <= step).unwrap_or(0);
     step - nearest > KEEP_AFTER
+}
+
+/// How much replay a look inside a run, on its way to its step, goes
+/// without keeping a keyframe: a later look anywhere on that stretch then
+/// replays at most about this long. Keyframes kept this way cost disk
+/// like any other, so the stretch is far longer than [`TARGET`], which
+/// recording aims for.
+///
+/// A check run of a sagittarius build, 296,484 steps recorded without
+/// keyframes, was read at step 290,000 and then at steps 100,000,
+/// 175,000, 250,000 and 289,000, in a page store holding only its
+/// schedule 0's pages. Keeping a keyframe only at each read's step, the
+/// first read took 191 s, kept one keyframe of 6.2 MB and added 183 MB of
+/// pages, and the later ones took 10, 75, 75 and 38 s. Keeping one every
+/// 2 s of replay as well, the first read took 218 s and kept 48 of 47 MB
+/// adding 829 MB, and the later ones took 3.7 to 5.3 s; every 5 s, 210 s,
+/// 27 of 35 MB adding 645 MB, and 4.8 to 8.0 s; every 10 s, 203 s, 15 of
+/// 24 MB adding 470 MB, and 3.1 to 10.5 s. Each keyframe holds the pages
+/// written since the last, 14 to 21 MB of new pages here, however long
+/// the stretch, so the cost goes with how many there are. 10 s leaves no
+/// later read waiting more than about 10 s plus the restore, against
+/// minutes before, for less than half of what 2 s adds past the first
+/// read's own keyframe: 287 MB against 646 MB.
+pub const KEEP_EVERY: Duration = Duration::from_secs(10);
+
+/// How much replay a replay toward a step goes between two stops on the
+/// way, where it says how far it got and sees whether a keyframe is due.
+pub const STOP_EVERY: Duration = Duration::from_millis(250);
+
+/// Paces a replay toward a step: where it stops on the way, and at which
+/// of those stops a look inside the run keeps a keyframe.
+pub struct Pace {
+    /// Steps from one stop to the next, aimed at STOP_EVERY of replay.
+    stride: u64,
+    /// Replay since the keyframe the machine started from or last kept.
+    since_kept: Duration,
+}
+
+impl Default for Pace {
+    fn default() -> Pace {
+        Pace {
+            stride: MIN_INTERVAL,
+            since_kept: Duration::ZERO,
+        }
+    }
+}
+
+impl Pace {
+    /// The step of the next stop from `at` on the way to `to`.
+    pub fn next_stop(&self, at: u64, to: u64) -> u64 {
+        at.saturating_add(self.stride).min(to)
+    }
+
+    /// Takes the stretch just replayed, `steps` long in `took`, and aims
+    /// the next one at STOP_EVERY.
+    pub fn ran(&mut self, steps: u64, took: Duration) {
+        self.since_kept += took;
+        let took = took.max(Duration::from_micros(1));
+        let scaled = steps as f64 * STOP_EVERY.as_secs_f64() / took.as_secs_f64();
+        self.stride = (scaled.round() as u64).clamp(MIN_INTERVAL, MAX_INTERVAL);
+    }
+
+    /// Whether a look stopped at `at` on its way to `to` keeps a keyframe
+    /// there: once KEEP_EVERY of replay has passed since the last one,
+    /// and not within KEEP_AFTER of `to`, where the look keeps one of its
+    /// own (see [`worth_keeping`]).
+    pub fn keep_at(&self, at: u64, to: u64) -> bool {
+        self.since_kept >= KEEP_EVERY && to - at > KEEP_AFTER
+    }
+
+    /// Notes that a keyframe was kept at the last stop.
+    pub fn kept(&mut self) {
+        self.since_kept = Duration::ZERO;
+    }
 }
 
 /// Runs a machine to the end, taking keyframes as it goes. The first one
@@ -566,6 +659,23 @@ mod tests {
     }
 
     #[test]
+    fn a_keyframe_kept_for_a_parent_names_one_the_parent_reads() {
+        // c shares through 2400 with p. A keyframe kept at 2000 goes to p,
+        // which owns that step: one whose parent is p's 1200 is fine, one
+        // whose parent is a keyframe at 1800 in c's own directory, which
+        // p cannot read, is not, and boot, with no parent, always is.
+        let runs = runs("parent-reads");
+        run(&runs, "p", &[1200], None);
+        let c = run(&runs, "c", &[1800, 3000], share("p", 2400));
+        let layers = Layers::open(&c, share("p", 2400).as_ref()).unwrap();
+        assert!(layers.owner_reads(2000, Some(1200)));
+        assert!(!layers.owner_reads(2000, Some(1800)));
+        assert!(layers.owner_reads(2000, None));
+        assert!(layers.owner_reads(3500, Some(3000)));
+        assert!(layers.owner_reads(3500, Some(1200)));
+    }
+
+    #[test]
     fn a_lookup_keeps_a_keyframe_only_far_from_the_one_it_restored() {
         // worth_keeping() over lists of keyframe steps: a step more than
         // KEEP_AFTER past the nearest earlier keyframe is worth one, a
@@ -582,6 +692,47 @@ mod tests {
         assert!(worth_keeping(&[], 5060));
         assert!(worth_keeping(&[9000], 5060));
         assert!(!worth_keeping(&[], KEEP_AFTER));
+    }
+
+    #[test]
+    fn a_long_look_keeps_keyframes_along_the_way() {
+        // Pace over made-up stretches of a replay that takes 100 us a
+        // step: it stops about every STOP_EVERY of replay on the way,
+        // keeps a keyframe once KEEP_EVERY of replay has passed since the
+        // last, and keeps none within KEEP_AFTER of the step it goes to,
+        // where the look keeps its own.
+        let per_step = Duration::from_micros(100);
+        let every = (KEEP_EVERY.as_micros() / per_step.as_micros()) as u64;
+        let stride = (STOP_EVERY.as_micros() / per_step.as_micros()) as u64;
+        let to = 50 * every;
+        let mut pace = Pace::default();
+        let mut at = 0;
+        let mut kept = Vec::new();
+        while at < to {
+            let stop = pace.next_stop(at, to);
+            assert!(stop > at && stop <= to);
+            pace.ran(stop - at, per_step * (stop - at) as u32);
+            at = stop;
+            if pace.keep_at(at, to) {
+                kept.push(at);
+                pace.kept();
+            }
+        }
+        assert!(kept.len() as u64 >= to / every - 2, "{kept:?}");
+        for (before, after) in std::iter::once(&0).chain(&kept).zip(&kept) {
+            let apart = after - before;
+            assert!(apart >= every && apart <= every + stride, "{kept:?}");
+        }
+        assert!(to - kept.last().unwrap() > KEEP_AFTER);
+
+        // After the first stretch the stops are STOP_EVERY of replay apart.
+        assert_eq!(pace.next_stop(0, to), stride);
+
+        // A look a few hundred steps past its keyframe keeps none on the
+        // way, however slow the replay.
+        let mut short = Pace::default();
+        short.ran(KEEP_AFTER, KEEP_EVERY * 2);
+        assert!(!short.keep_at(KEEP_AFTER, KEEP_AFTER * 2));
     }
 
     #[test]

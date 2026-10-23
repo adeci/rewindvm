@@ -498,12 +498,14 @@ pub enum Keep {
     Nothing,
 }
 
-/// The keyframe a machine was restored from, the chain that rebuilt it,
-/// and the page store it was read from, kept open.
-struct Restored {
-    kf: u64,
-    chain: Vec<rewind_vmm::snapshot::Keyframe>,
-    store: rewind_store::Store,
+/// What the next keyframe a replay keeps is a delta from: the keyframe
+/// the machine was restored from or last kept, or boot when None; the
+/// memory that keyframe holds; and the page store, open from the restore
+/// or the first keyframe kept until the replay is done.
+struct Base {
+    step: Option<u64>,
+    memory: crate::keyframes::Memory,
+    store: Option<rewind_store::Store>,
 }
 
 /// A run on disk.
@@ -1055,8 +1057,10 @@ impl Run {
 
     /// A machine at `step` of this run: the latest keyframe at or before
     /// it, restored, and run forward to the step. Events on the way go to
-    /// `obs`. With `Keep::Keyframe`, a keyframe at the step is kept when
-    /// the one restored was far enough back (see
+    /// `obs`. With `Keep::Keyframe`, keyframes are kept on the way, each
+    /// after [`crate::keyframes::KEEP_EVERY`] of replay, so a later look
+    /// anywhere on the stretch replays little of it, and one at the step
+    /// when the last one is far enough back (see
     /// [`crate::keyframes::worth_keeping`]), so the next fork there
     /// restores it instead of replaying.
     pub fn machine_at(
@@ -1068,12 +1072,11 @@ impl Run {
     ) -> Result<Machine> {
         let config = self.manifest.spec.config()?;
         let keyframes = self.keyframes()?;
-        let steps = keyframes.steps();
-        let from = steps.iter().copied().rfind(|s| *s <= step);
+        let from = keyframes.steps().into_iter().rfind(|s| *s <= step);
 
         // The store stays open until a kept keyframe's pages are written
         // and the keyframe names them: `rewind gc` refuses while it is.
-        let (mut machine, restored) = match from {
+        let (mut machine, mut base) = match from {
             Some(kf) => {
                 let store = rewind_store::Store::open(&home.store())?;
                 let chain = keyframes.chain(kf)?;
@@ -1085,9 +1088,21 @@ impl Run {
                     &crate::keyframes::ReadPages(&store),
                     &records[..through],
                 )?;
-                (machine, Some(Restored { kf, chain, store }))
+                let base = Base {
+                    step: Some(kf),
+                    memory: crate::keyframes::Memory::of(&chain),
+                    store: Some(store),
+                };
+                (machine, base)
             }
-            None => (Machine::boot(&config)?, None),
+            None => {
+                let base = Base {
+                    step: None,
+                    memory: crate::keyframes::Memory::default(),
+                    store: None,
+                };
+                (Machine::boot(&config)?, base)
+            }
         };
 
         // On the way to the step, the replay must make the records the run
@@ -1101,48 +1116,64 @@ impl Run {
             .cloned()
             .collect();
         let mut checked = Checked::new(obs, made);
-        let outcome = machine.run(Some(step), &mut checked)?;
-        if let Some(differs) = checked.differs_at {
-            return Err(self.went_another_way(differs));
-        }
+
+        // To the step in stretches, keeping a keyframe at the end of one
+        // when enough replay has passed since the last, when asked to.
+        let mut pace = crate::keyframes::Pace::default();
+        let outcome = loop {
+            let at = machine.step();
+            let stop = pace.next_stop(at, step);
+            let started = Instant::now();
+            let outcome = machine.run(Some(stop), &mut checked)?;
+            pace.ran(machine.step() - at, started.elapsed());
+            if let Some(differs) = checked.differs_at {
+                return Err(self.went_another_way(differs));
+            }
+            let paused = matches!(outcome, Outcome::Paused) && machine.step() == stop;
+            if !paused || stop == step {
+                break outcome;
+            }
+            if keep == Keep::Keyframe
+                && pace.keep_at(stop, step)
+                && self.keep_keyframe(home, &mut machine, &mut base)?
+            {
+                pace.kept();
+            }
+        };
 
         // A keyframe at the step, when asked for, the machine got there,
-        // and the keyframe it started from, or boot, is far enough back.
+        // and the keyframe it started from or last kept, or boot, is far
+        // enough back.
         if keep == Keep::Nothing {
             return Ok(machine);
         }
         let reached = matches!(outcome, Outcome::Paused) && machine.step() == step;
-        if !reached || !crate::keyframes::worth_keeping(&steps, step) {
-            return Ok(machine);
-        }
-        match restored {
-            Some(mut restored) => {
-                let from = Some((restored.kf, restored.chain.as_slice()));
-                self.keep_keyframe(&mut machine, &mut restored.store, from)?;
-            }
-            None => {
-                let mut store = rewind_store::Store::open(&home.store())?;
-                self.keep_keyframe(&mut machine, &mut store, None)?;
-            }
+        let last = base.step.map_or(Vec::new(), |s| vec![s]);
+        if reached && crate::keyframes::worth_keeping(&last, step) {
+            self.keep_keyframe(home, &mut machine, &mut base)?;
         }
         Ok(machine)
     }
 
     /// Saves a keyframe of `machine`, at a step of this run it reached
-    /// from the keyframe `from` names, restored by the chain beside it, or
-    /// from boot when `from` is None, in the directory of the run that
-    /// owns the step, where every fork made there finds it (see
-    /// [`crate::keyframes::Layers::owner`]). Its pages are the ones
+    /// from the keyframe `base` names, or from boot, in the directory of
+    /// the run that owns the step, where every fork made there finds it
+    /// (see [`crate::keyframes::Layers::owner`]). Its pages are the ones
     /// written since that keyframe, or from boot every non-zero page, put
-    /// in `store`.
+    /// in the page store, which `base` opens if it has not yet. True when
+    /// the keyframe was kept, and `base` then names it.
     ///
     /// The owner's executing lock is held meanwhile, so `rewind gc`, which
     /// refuses while a run is executing, does not collect the pages
     /// between their writing and the keyframe that names them, and two
     /// forks at nearby steps do not both keep one. Nothing is kept while
     /// another process holds the lock, executing the run or keeping a
-    /// keyframe of its own, or when a keyframe near the step appeared
-    /// since this fork chose where to start.
+    /// keyframe of its own, when a keyframe near the step appeared since
+    /// this fork chose where to start, or when the owner cannot read the
+    /// keyframe `base` names (see
+    /// [`crate::keyframes::Layers::owner_reads`]). The machine's dirty log
+    /// is read only for a keyframe that is kept, so the next delta from
+    /// `base` still holds every page written since.
     ///
     /// A keyframe added to a run changes no fork's restored state. A fork
     /// sees a run's keyframes only up to the last step the two share,
@@ -1151,31 +1182,31 @@ impl Run {
     /// resolve as before. Only the step a fork near the new keyframe
     /// replays from moves, as it does when an execution keeps the
     /// keyframe at the step where it parts from its parent.
-    fn keep_keyframe(
-        &self,
-        machine: &mut Machine,
-        store: &mut rewind_store::Store,
-        from: Option<(u64, &[rewind_vmm::snapshot::Keyframe])>,
-    ) -> Result<()> {
+    fn keep_keyframe(&self, home: &Home, machine: &mut Machine, base: &mut Base) -> Result<bool> {
         let step = machine.step();
         let layers = self.keyframes()?;
         let owner = layers.owner(step).to_path_buf();
         let Ok(_executing) = lock_executing(&owner) else {
-            return Ok(());
+            return Ok(false);
         };
-        if !crate::keyframes::worth_keeping(&self.keyframes()?.steps(), step) {
-            return Ok(());
+        if !crate::keyframes::worth_keeping(&layers.steps(), step)
+            || !layers.owner_reads(step, base.step)
+        {
+            return Ok(false);
         }
 
         // The pages first, durably, then the keyframe naming them.
-        let pages = &mut crate::keyframes::StorePages(store);
-        let mut kf = machine.keyframe(pages, from.map(|(step, _)| step))?;
-        if let Some((_, chain)) = from {
-            crate::keyframes::Memory::of(chain).trim(kf.parent, &mut kf.pages);
-        }
+        let store = match &mut base.store {
+            Some(store) => store,
+            None => base.store.insert(rewind_store::Store::open(&home.store())?),
+        };
+        let mut kf = machine.keyframe(&mut crate::keyframes::StorePages(store), base.step)?;
+        base.memory.trim(kf.parent, &mut kf.pages);
         store.sync()?;
         crate::keyframes::save(&owner, &kf)
-            .with_context(|| format!("keeping a keyframe at step {step} in {}", owner.display()))
+            .with_context(|| format!("keeping a keyframe at step {step} in {}", owner.display()))?;
+        base.step = Some(step);
+        Ok(true)
     }
 
     /// The records the run made after `step`, with their steps: what a

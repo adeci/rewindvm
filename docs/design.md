@@ -540,6 +540,28 @@ that is not zero. In a run of 5947 steps that rewrites 64 MB of files, the
 first `rewind cat` at step 5000 took 3.6 s instead of 3.0 s, and each later
 one there took 0.5 s instead of 3.0 s.
 
+A long look keeps keyframes on the way too. It replays toward its step in
+stretches of about a quarter second, and after ten seconds of replay since
+the keyframe it started from or last kept, it keeps another, written the
+same way, so a later look anywhere on the way replays at most about ten
+seconds. Each holds the pages written since the last, which costs disk, so
+the interval is forty times recording's. A check run of a sagittarius build,
+296,484 steps recorded without keyframes, was read at step 290,000 and then
+at steps 100,000, 175,000, 250,000 and 289,000, in a page store holding its
+schedule 0's pages:
+
+| Kept on the way    | First read | Keyframes | .kf files | Pages added | Later reads      |
+| ------------------ | ---------- | --------- | --------- | ----------- | ---------------- |
+| none, only at step | 191 s      | 1         | 6.2 MB    | 183 MB      | 10, 75, 75, 38 s |
+| every 2 s          | 218 s      | 48        | 47 MB     | 829 MB      | 3.7 to 5.3 s     |
+| every 5 s          | 210 s      | 27        | 35 MB     | 645 MB      | 4.8 to 8.0 s     |
+| every 10 s         | 203 s      | 15        | 24 MB     | 470 MB      | 3.1 to 10.5 s    |
+
+The first read's own keyframe, every page of the machine, is most of the
+first row; each keyframe on the way added 14 to 21 MB of pages, however long
+its stretch. A keyframe whose step a fork's parent owns is kept there only
+when the parent reads the keyframe it is a delta from.
+
 A delta lists the pages KVM's dirty log names, less the ones whose contents
 are what they were at the parent keyframe, often zero. About one entry in ten
 of the shared keyframe a fork takes (see [Forks](#forks)) is a page written
