@@ -22,7 +22,7 @@ run by the `sdk` property. Under 64 schedules, every run holds:
 ```console
 $ rewind check --epoch 1790985600 github:fzakaria/rewindvm#counter
 ...
-schedule  64: exited:0       5346 steps  e3f96e451c97  run 214ec43ef4e47c61  holds
+schedule  64: exited:0       5346 steps  e3f96e451c97  run 62d10c2c07d67fb3  holds
 every property held under all 65 schedules
 ```
 
@@ -67,9 +67,10 @@ that decides it:
 ```console
 $ rewind check --epoch 1790985600 .#counter | grep -E 'decides it|passing:|failing:|failing run violates sdk'
 rewind: packing 62 store paths for counter-0.1.0
+schedule 1 violates same-outcome, sdk; finding the step that decides it
 step 3237 decides it: a request to switch threads there makes the run violate same-outcome, sdk
-passing: run b8d95c7393fc72fc, schedule 0
-failing: run 51b8ba90ce0789b5, schedule 1 over steps 3237..3238
+passing: run c0268501f3156162, schedule 0
+failing: run 0dc0977e0438d698, schedule 1 over steps 3237..3238
 failing run violates sdk: step 3265: always "hits-add-up" failed: 10 hits, expected 20
 ```
 
@@ -81,13 +82,13 @@ thread held the CPU around the point, in the failing run and in the
 passing one it was forked from:
 
 ```console
-$ rewind threads 51b8ba90 --from 3235 --to 3239
+$ rewind threads 0dc0977e --from 3235 --to 3239
       3235       3238       139/140  counter
       3239       3239       139/141  counter
 ```
 
 ```console
-$ rewind threads b8d95c73 --from 3235 --to 3239
+$ rewind threads c0268501 --from 3235 --to 3239
       3235       3239       139/140  counter
 ```
 
@@ -97,7 +98,7 @@ passing one, at the point, with the thread lanes shown and zoomed in on
 the window around it:
 
 ```console
-$ rewind open 51b8ba90 3237 --compare b8d95c73
+$ rewind open 0dc0977e 3237 --compare c0268501
 ```
 
 ![The app at step 3237 of the failing counter run, compared with the passing one, with the Threads panel open: a lane per thread, the playhead at the point, and the other counter thread on the CPU from step 3239](../site/img/app-point.png)

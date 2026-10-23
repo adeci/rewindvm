@@ -52,7 +52,7 @@ Compare seed 0's run with seed 1's:
 $ rewind diff --outputs 8d29a01c c4bd9260
 2 of the 5 files the runs left behind differ:
   /build/tiles/tiles.pc: 22 of 227 bytes differ, first at byte 178
-  /nix/store/ihhhzc5qphjjz5vgss7swki10dwkicsb-tiles-0.2.0/lib/pkgconfig/tiles.pc: 22 of 227 bytes differ, first at byte 178
+  /nix/store/...-tiles-0.2.0/lib/pkgconfig/tiles.pc: 22 of 227 bytes differ, first at byte 178
 
 $ rewind diff --file /build/tiles/tiles.pc 8d29a01c c4bd9260
 tiles.pc differs, first at line 7.
@@ -185,12 +185,12 @@ under two keys:
 
 ```console
 $ rewind nix --epoch 1790985600 --quiet --kernel-args rewind.dirents=1 .#plugins
-rewind: run e4c221b26df20a9c exited:0 after 3885 steps, 0.097s virtual, 1.196s wall (poweroff)
+rewind: run e4c221b26df20a9c exited:0 after 3885 steps, 0.097s virtual, 1.168s wall (poweroff)
 /nix/store/b729hjnswi2l739nvpxzwmx4laf5ynlj-plugins-0.1.0 3d555b5412961f82  differs from your store
 ...
 
 $ rewind nix --epoch 1790985600 --quiet --kernel-args rewind.dirents=2 .#plugins
-rewind: run 593a9430de55e469 exited:0 after 3885 steps, 0.097s virtual, 1.160s wall (poweroff)
+rewind: run 593a9430de55e469 exited:0 after 3885 steps, 0.097s virtual, 1.165s wall (poweroff)
 /nix/store/b729hjnswi2l739nvpxzwmx4laf5ynlj-plugins-0.1.0 925dde4ef23a27e2  differs from your store
 ...
 ```
@@ -238,11 +238,11 @@ In `examples/plugins/gen-index.py`, sort the names:
 ```console
 $ rewind nix --epoch 1790985600 --quiet --kernel-args rewind.dirents=1 .#plugins
 ...
-rewind: run baa0f5b19a200665 exited:0 after 3885 steps, 0.097s virtual, 1.128s wall (poweroff)
+rewind: run baa0f5b19a200665 exited:0 after 3885 steps, 0.097s virtual, 1.136s wall (poweroff)
 /nix/store/qszqipypi46g5602vksnh8l6i9vqs2x5-plugins-0.1.0 164f7a685a087fd4  not in your store or 6 caches
 
 $ rewind nix --epoch 1790985600 --quiet --kernel-args rewind.dirents=2 .#plugins
-rewind: run 66cd95f7f45800ae exited:0 after 3885 steps, 0.097s virtual, 1.143s wall (poweroff)
+rewind: run 66cd95f7f45800ae exited:0 after 3885 steps, 0.097s virtual, 1.140s wall (poweroff)
 /nix/store/qszqipypi46g5602vksnh8l6i9vqs2x5-plugins-0.1.0 164f7a685a087fd4  not in your store or 6 caches
 ```
 

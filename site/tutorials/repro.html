@@ -117,7 +117,7 @@ seed  7 schedule   0: exited:0       4035 steps  b4501793e383  run b5268e20063c5
         ><code><span class="cmd"><span class="prompt">$</span> rewind diff --outputs 8d29a01c c4bd9260</span>
 2 of the 5 files the runs left behind differ:
   /build/tiles/tiles.pc: 22 of 227 bytes differ, first at byte 178
-  /nix/store/ihhhzc5qphjjz5vgss7swki10dwkicsb-tiles-0.2.0/lib/pkgconfig/tiles.pc: 22 of 227 bytes differ, first at byte 178
+  /nix/store/...-tiles-0.2.0/lib/pkgconfig/tiles.pc: 22 of 227 bytes differ, first at byte 178
 
 <span class="cmd"><span class="prompt">$</span> rewind diff --file /build/tiles/tiles.pc 8d29a01c c4bd9260</span>
 tiles.pc differs, first at line 7.
@@ -356,12 +356,12 @@ same result under all 8 runs</code></pre>
         <pre
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind nix --epoch 1790985600 --quiet --kernel-args rewind.dirents=1 .#plugins</span>
-rewind: run e4c221b26df20a9c exited:0 after 3885 steps, 0.097s virtual, 1.196s wall (poweroff)
+rewind: run e4c221b26df20a9c exited:0 after 3885 steps, 0.097s virtual, 1.168s wall (poweroff)
 /nix/store/b729hjnswi2l739nvpxzwmx4laf5ynlj-plugins-0.1.0 3d555b5412961f82  differs from your store
 ...
 
 <span class="cmd"><span class="prompt">$</span> rewind nix --epoch 1790985600 --quiet --kernel-args rewind.dirents=2 .#plugins</span>
-rewind: run 593a9430de55e469 exited:0 after 3885 steps, 0.097s virtual, 1.160s wall (poweroff)
+rewind: run 593a9430de55e469 exited:0 after 3885 steps, 0.097s virtual, 1.165s wall (poweroff)
 /nix/store/b729hjnswi2l739nvpxzwmx4laf5ynlj-plugins-0.1.0 925dde4ef23a27e2  differs from your store
 ...</code></pre>
         <p>
@@ -621,11 +621,11 @@ Lines marked - are only in the left run. Lines marked + are only in the right ru
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind nix --epoch 1790985600 --quiet --kernel-args rewind.dirents=1 .#plugins</span>
 ...
-rewind: run baa0f5b19a200665 exited:0 after 3885 steps, 0.097s virtual, 1.128s wall (poweroff)
+rewind: run baa0f5b19a200665 exited:0 after 3885 steps, 0.097s virtual, 1.136s wall (poweroff)
 /nix/store/qszqipypi46g5602vksnh8l6i9vqs2x5-plugins-0.1.0 164f7a685a087fd4  not in your store or 6 caches
 
 <span class="cmd"><span class="prompt">$</span> rewind nix --epoch 1790985600 --quiet --kernel-args rewind.dirents=2 .#plugins</span>
-rewind: run 66cd95f7f45800ae exited:0 after 3885 steps, 0.097s virtual, 1.143s wall (poweroff)
+rewind: run 66cd95f7f45800ae exited:0 after 3885 steps, 0.097s virtual, 1.140s wall (poweroff)
 /nix/store/qszqipypi46g5602vksnh8l6i9vqs2x5-plugins-0.1.0 164f7a685a087fd4  not in your store or 6 caches</code></pre>
         <p>Both keys now build the same output, <code>164f7a685a087fd4</code>.</p>
       </section>
