@@ -17,8 +17,9 @@ use rewind_trace::writes::ByteWrite;
 
 use crate::compare::differing;
 use crate::describe::thousands;
+use crate::selection::Lines;
 use crate::sideways::widest_line;
-use crate::viewer::{FetchedAll, HEX_WIDTH, hex_line, hex_spans};
+use crate::viewer::{FetchedAll, HEX_WIDTH, expand_tabs, hex_line, hex_spans};
 
 /// What the view's summary calls the two runs.
 pub const SIDES: Sides<'static> = Sides {
@@ -203,7 +204,28 @@ pub enum Row {
     One(Cell),
 }
 
+/// A column of the rows, which selects and copies as one text: this run's
+/// side or the other run's when side by side, so a selection stays in one
+/// run's copy, or the one column when one under the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Column {
+    This,
+    Other,
+    One,
+}
+
 impl Row {
+    /// The row's cell in `column`; None where the row has nothing there,
+    /// as a copy that has no line in this place.
+    pub fn cell(&self, column: Column) -> Option<&Cell> {
+        match (self, column) {
+            (Row::Pair(here, _), Column::This) => here.as_ref(),
+            (Row::Pair(_, there), Column::Other) => there.as_ref(),
+            (Row::One(cell), Column::One) => Some(cell),
+            (Row::Pair(..), Column::One) | (Row::One(_), Column::This | Column::Other) => None,
+        }
+    }
+
     /// Whether the row shows something the copies do not share.
     pub fn differs(&self) -> bool {
         let differs = |cell: &Option<Cell>| cell.as_ref().is_some_and(|c| c.whose != Whose::Both);
@@ -224,6 +246,42 @@ pub struct Laid {
     /// The characters in the widest cell, tabs drawn as spaces, for
     /// scrolling sideways.
     pub widest: usize,
+}
+
+/// The lines of one column of the rows, as the selection reads them: line
+/// `i` is row `i`'s cell in the column, a line of the file or of a hex
+/// dump, without its line number. Tabs are drawn as spaces and copied as
+/// tabs, as the file viewer does; a row with no cell in the column has no
+/// line, which a copy leaves out.
+pub struct ColumnLines<'a> {
+    rows: &'a [Row],
+    column: Column,
+}
+
+impl<'a> ColumnLines<'a> {
+    pub fn new(rows: &'a [Row], column: Column) -> ColumnLines<'a> {
+        ColumnLines { rows, column }
+    }
+
+    /// The text of the cell on line `line`, as the file has it.
+    fn text(&self, line: usize) -> Option<&str> {
+        let cell = self.rows.get(line)?.cell(self.column)?;
+        Some(&cell.text)
+    }
+}
+
+impl Lines for ColumnLines<'_> {
+    fn line_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn shown(&self, line: usize) -> Option<String> {
+        self.text(line).map(|text| expand_tabs(text).shown)
+    }
+
+    fn copied(&self, line: usize, range: Range<usize>) -> Option<String> {
+        self.text(line).map(|text| expand_tabs(text).copy(range))
+    }
 }
 
 /// This run's copy `this` and the other run's `other`, compared as `diff`
@@ -552,8 +610,11 @@ pub fn unrecorded_note(this: Writes, other: Writes) -> Option<&'static str> {
 mod tests {
     // Small copies written out in each test, laid out both ways, and the
     // rows checked cell by cell: which run each cell is from, its number
-    // and what in it is marked.
+    // and what in it is marked; and the text each column of the rows
+    // copies, through the selection the other panels use.
     use super::*;
+    use crate::selection::{Pos, Selection, Surface, Unit};
+    use crate::viewer::View;
 
     /// The text of a cell, its number, whose it is and the marked text.
     fn seen(cell: &Cell) -> (String, Option<usize>, Whose, Vec<String>) {
@@ -924,6 +985,84 @@ mod tests {
             Some(
                 "Neither run recorded its file writes, so the step that wrote each byte is not known."
             )
+        );
+    }
+
+    /// The text of `column`'s whole line `line`, as Copy line copies it.
+    fn copied_line(lines: &ColumnLines, line: usize) -> Option<String> {
+        let shown = lines.shown(line)?;
+        lines.copied(line, 0..shown.len())
+    }
+
+    /// A tabbed line changed and a line put in, side by side: Select All
+    /// in this run's column copies this run's lines alone, with the tab as
+    /// a tab and no line numbers, leaving out the row only the other run
+    /// has; the other run's column copies the other run's lines; and a
+    /// drag across the gap copies past it.
+    #[test]
+    fn a_side_by_side_column_copies_its_own_run_s_lines() {
+        let this = b"CC = cc\n\tCFLAGS = -O1\nall: pool\n";
+        let other = b"CC = cc\n\tCFLAGS = -O2\nclean:\nall: pool\n";
+        let diff = file_diff::compare(this, other);
+        let laid = lay_out(this, other, &diff, Layout::SideBySide);
+        let here = ColumnLines::new(&laid.rows, Column::This);
+        let there = ColumnLines::new(&laid.rows, Column::Other);
+        let all = |lines: &ColumnLines| Selection::all(Surface::Log, lines).text(lines);
+        assert_eq!(all(&here), "CC = cc\n\tCFLAGS = -O1\nall: pool");
+        assert_eq!(all(&there), "CC = cc\n\tCFLAGS = -O2\nclean:\nall: pool");
+
+        // The changed line shows its tab as spaces, which offsets index,
+        // and copies it as a tab.
+        assert_eq!(here.shown(1).as_deref(), Some("    CFLAGS = -O1"));
+        assert_eq!(copied_line(&here, 1).as_deref(), Some("\tCFLAGS = -O1"));
+        assert_eq!(here.shown(2), None);
+        let mut drag = Selection::press(Surface::Log, Pos::new(1, 4), Unit::Char, &here);
+        drag.extend_to(Pos::new(3, 3));
+        assert_eq!(drag.text(&here), "CFLAGS = -O1\nall");
+    }
+
+    /// The same copies one under the other: the one column copies the
+    /// lines as they are shown, this run's then the other run's where
+    /// they differ, and the side-by-side columns have no lines.
+    #[test]
+    fn an_interleaved_column_copies_the_lines_as_shown() {
+        let this = b"CC = cc\n\tCFLAGS = -O1\nall: pool\n";
+        let other = b"CC = cc\n\tCFLAGS = -O2\nclean:\nall: pool\n";
+        let diff = file_diff::compare(this, other);
+        let laid = lay_out(this, other, &diff, Layout::Interleaved);
+        let one = ColumnLines::new(&laid.rows, Column::One);
+        assert_eq!(
+            Selection::all(Surface::Log, &one).text(&one),
+            "CC = cc\n\tCFLAGS = -O1\n\tCFLAGS = -O2\nclean:\nall: pool"
+        );
+        let here = ColumnLines::new(&laid.rows, Column::This);
+        assert_eq!(Selection::all(Surface::Log, &here).text(&here), "");
+    }
+
+    /// Two binary copies that differ at bytes 9 and 10, side by side: a
+    /// copied hex dump line is the line the file viewer shows and copies
+    /// for the same bytes, offset, hex pairs and characters, in each run's
+    /// column.
+    #[test]
+    fn a_hex_dump_line_copies_as_the_file_viewer_s() {
+        let this: Vec<u8> = (0u8..20).collect();
+        let mut other = this.clone();
+        other[9] = b'A';
+        other[10] = b'B';
+        let diff = file_diff::compare(&this, &other);
+        let laid = lay_out(&this, &other, &diff, Layout::SideBySide);
+        for (column, bytes) in [(Column::This, &this), (Column::Other, &other)] {
+            let lines = ColumnLines::new(&laid.rows, column);
+            let viewer = View::new(bytes, FetchedAll::Yes);
+            let copied: Vec<String> = (0..lines.line_count())
+                .filter_map(|line| copied_line(&lines, line))
+                .collect();
+            assert_eq!(copied, viewer.lines);
+        }
+        let there = ColumnLines::new(&laid.rows, Column::Other);
+        assert_eq!(
+            copied_line(&there, 1).as_deref(),
+            Some("00000008  08 41 42 0b  0c 0d 0e 0f  .AB.....")
         );
     }
 

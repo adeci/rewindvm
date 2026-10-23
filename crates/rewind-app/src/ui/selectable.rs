@@ -13,12 +13,14 @@ use std::rc::Rc;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, DispatchPhase, Element, ElementId, GlobalElementId,
-    HighlightStyle, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollStrategy, SharedString, StyledText,
-    TextLayout, Window, anchored, canvas, div, fill, point, prelude::*, px, rgb, rgba,
+    HighlightStyle, Hitbox, InspectorElementId, InteractiveText, IntoElement, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollStrategy,
+    SharedString, StyledText, TextLayout, Window, anchored, canvas, div, fill, point, prelude::*,
+    px, rgb, rgba,
 };
 
 use crate::describe::short_store_paths_mapped;
+use crate::diff_view::ColumnLines;
 use crate::family::{Folds, RowKind};
 use crate::selection::{DrawnText, Lines, Mapped, Pos, Selection, Surface, Unit, nearest_line};
 use crate::theme::{self, size};
@@ -201,7 +203,30 @@ pub struct SelectableText {
     text: SharedString,
     selected: Option<Range<usize>>,
     registry: Registry,
-    styled: StyledText,
+    drawing: Drawing,
+}
+
+/// What draws a selectable line's text.
+enum Drawing {
+    /// GPUI's styled text.
+    Styled(StyledText),
+    /// The styled text made interactive, for parts that name something on
+    /// hover and act on a click. `layout` is the styled text's, which the
+    /// interactive text lays out and the selection reads.
+    Interactive {
+        text: InteractiveText,
+        layout: TextLayout,
+    },
+}
+
+impl Drawing {
+    /// The text layout GPUI makes for the line.
+    fn layout(&self) -> &TextLayout {
+        match self {
+            Drawing::Styled(styled) => styled.layout(),
+            Drawing::Interactive { layout, .. } => layout,
+        }
+    }
 }
 
 /// The line `line` of `surface`, showing `text`, with `selected` of it
@@ -217,7 +242,7 @@ pub fn selectable(
     SelectableText {
         surface,
         line,
-        styled: StyledText::new(text.clone()),
+        drawing: Drawing::Styled(StyledText::new(text.clone())),
         text,
         selected,
         registry: registry.clone(),
@@ -225,22 +250,78 @@ pub fn selectable(
 }
 
 impl SelectableText {
-    /// Colors and weights for parts of the line.
+    /// Colors and weights for parts of the line, before `interactive`.
     pub fn with_highlights(
         mut self,
         highlights: impl IntoIterator<Item = (Range<usize>, HighlightStyle)>,
     ) -> Self {
-        self.styled = StyledText::new(self.text.clone()).with_highlights(highlights);
+        let styled = StyledText::new(self.text.clone()).with_highlights(highlights);
+        self.drawing = Drawing::Styled(styled);
         self
+    }
+
+    /// The line's styled text handed to `make` as GPUI's interactive text
+    /// with id `id`, for parts that name something on hover and act on a
+    /// click, as a hex dump's differing bytes name the write that set
+    /// them. The line still selects, and paints its selection, as before.
+    pub fn interactive(
+        mut self,
+        id: impl Into<ElementId>,
+        make: impl FnOnce(InteractiveText) -> InteractiveText,
+    ) -> Self {
+        let placeholder = Drawing::Styled(StyledText::new(self.text.clone()));
+        self.drawing = match std::mem::replace(&mut self.drawing, placeholder) {
+            Drawing::Styled(styled) => {
+                let layout = styled.layout().clone();
+                Drawing::Interactive {
+                    text: make(InteractiveText::new(id, styled)),
+                    layout,
+                }
+            }
+            interactive @ Drawing::Interactive { .. } => interactive,
+        };
+        self
+    }
+}
+
+/// The `selected` part of a line whose text is `text`, as GPUI laid it
+/// out in `layout` within `bounds`.
+fn paint_selection(
+    text: &str,
+    selected: Option<&Range<usize>>,
+    layout: &TextLayout,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+) {
+    let Some(selected) = selected else {
+        return;
+    };
+    let map = DrawnText::new(text, &layout.text(), ELLIPSIS);
+    let range = map.drawn_offset(selected.start)..map.drawn_offset(selected.end);
+    let mut rects = highlight_rects(layout, bounds, range.clone());
+
+    // A line selected through its end shows a sliver for the line break,
+    // so a selected empty line is visible.
+    if selected.end >= text.len()
+        && let Some(last) = rects.last_mut()
+    {
+        last.size.width += px(size::SELECTION_LINE_END);
+    }
+    for rect in rects {
+        window.paint_quad(fill(rect, rgba(theme::SELECTION_A)));
     }
 }
 
 impl Element for SelectableText {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    /// The interactive text's hitbox, when the line is interactive.
+    type PrepaintState = Option<Hitbox>;
 
     fn id(&self) -> Option<ElementId> {
-        None
+        match &self.drawing {
+            Drawing::Styled(_) => None,
+            Drawing::Interactive { text, .. } => text.id(),
+        }
     }
 
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
@@ -254,7 +335,10 @@ impl Element for SelectableText {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        self.styled.request_layout(id, inspector_id, window, cx)
+        match &mut self.drawing {
+            Drawing::Styled(styled) => styled.request_layout(id, inspector_id, window, cx),
+            Drawing::Interactive { text, .. } => text.request_layout(id, inspector_id, window, cx),
+        }
     }
 
     fn prepaint(
@@ -265,48 +349,54 @@ impl Element for SelectableText {
         state: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) {
-        self.styled
-            .prepaint(id, inspector_id, bounds, state, window, cx);
+    ) -> Option<Hitbox> {
+        let hitbox = match &mut self.drawing {
+            Drawing::Styled(styled) => {
+                styled.prepaint(id, inspector_id, bounds, state, window, cx);
+                None
+            }
+            Drawing::Interactive { text, .. } => {
+                Some(text.prepaint(id, inspector_id, bounds, state, window, cx))
+            }
+        };
         self.registry.push(Drawn {
             surface: self.surface,
             line: self.line,
             text: self.text.clone(),
-            layout: self.styled.layout().clone(),
+            layout: self.drawing.layout().clone(),
             bounds,
         });
+        hitbox
     }
 
     fn paint(
         &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
+        state: &mut (),
+        hitbox: &mut Option<Hitbox>,
         window: &mut Window,
         cx: &mut App,
     ) {
-        // Run backgrounds, then the selection, then the glyphs over both.
-        let layout = self.styled.layout().clone();
-        let _ = layout.paint_background(window, cx);
-        if let Some(selected) = &self.selected {
-            let map = DrawnText::new(&self.text, &layout.text(), ELLIPSIS);
-            let range = map.drawn_offset(selected.start)..map.drawn_offset(selected.end);
-            let mut rects = highlight_rects(&layout, bounds, range.clone());
-
-            // A line selected through its end shows a sliver for the line
-            // break, so a selected empty line is visible.
-            if selected.end >= self.text.len()
-                && let Some(last) = rects.last_mut()
-            {
-                last.size.width += px(size::SELECTION_LINE_END);
+        let layout = self.drawing.layout().clone();
+        let selected = self.selected.as_ref();
+        match (&mut self.drawing, hitbox) {
+            // Interactive text paints its backgrounds and glyphs together,
+            // so the selection goes under both.
+            (Drawing::Interactive { text, .. }, Some(hitbox)) => {
+                paint_selection(&self.text, selected, &layout, bounds, window);
+                text.paint(id, inspector_id, bounds, state, hitbox, window, cx);
             }
-            for rect in rects {
-                window.paint_quad(fill(rect, rgba(theme::SELECTION_A)));
+
+            // Plain text: run backgrounds, then the selection, then the
+            // glyphs over both.
+            _ => {
+                let _ = layout.paint_background(window, cx);
+                paint_selection(&self.text, selected, &layout, bounds, window);
+                let _ = layout.paint_foreground(window, cx);
             }
         }
-        let _ = layout.paint_foreground(window, cx);
     }
 }
 
@@ -442,6 +532,10 @@ impl Scrubber {
                 Some(session) => Box::new(session),
                 None => empty,
             },
+            Surface::FileDiff(column) => match self.file_diff_rows() {
+                Some(rows) => Box::new(ColumnLines::new(rows, column)),
+                None => empty,
+            },
             other => Box::new(self.card_lines(other)),
         }
     }
@@ -468,7 +562,11 @@ impl Scrubber {
             Surface::Runs => self.runs_lines(),
             Surface::Compare => self.compare_lines(),
             Surface::Lanes => self.lanes_lines(),
-            Surface::Log | Surface::Viewer | Surface::Source | Surface::Terminal => Vec::new(),
+            Surface::Log
+            | Surface::Viewer
+            | Surface::Source
+            | Surface::Terminal
+            | Surface::FileDiff(_) => Vec::new(),
         }
     }
 
@@ -564,6 +662,7 @@ impl Scrubber {
             Surface::Viewer => self.scroll_viewer_to(target),
             Surface::Source => self.scroll_source_to(target),
             Surface::Terminal => self.scroll_terminal_toward(at.y < top),
+            Surface::FileDiff(_) => self.scroll_file_diff_to(target),
             _ => {}
         }
     }

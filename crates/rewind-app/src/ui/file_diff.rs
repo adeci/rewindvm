@@ -17,31 +17,36 @@
 //! run's playhead moves to the step, and the other run is shown in this
 //! one's place at its step. The summary offers the same for the first
 //! difference.
+//!
+//! The rows' text selects and copies as the file viewer's does: a drag
+//! selects lines, Copy and Copy line copy them without their numbers, and
+//! side by side a selection stays in the run's side it started in.
 
 use std::ops::Range;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, Context, Div, FontWeight, HighlightStyle, InteractiveText, MouseButton, Role,
-    ScrollStrategy, SharedString, StyledText, UniformListScrollHandle, WeakEntity, div, prelude::*,
-    px, relative, rgb, uniform_list,
+    AnyElement, Context, CursorStyle, Div, FontWeight, HighlightStyle, MouseButton, Role,
+    ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, div, prelude::*, px,
+    relative, rgb, uniform_list,
 };
 
 use crate::answers::FileKey;
 use crate::describe::{clip, short_store_paths, thousands};
 use crate::diff_view::{
-    self, Cell, Compared, Copy, Ends, Laid, Layout, Parted, Place, Row, Side, Whose, Writes,
-    first_offset, other_step, unrecorded_note, write_note,
+    self, Cell, Column, Compared, Copy, Ends, Laid, Layout, Parted, Place, Row, Side, Whose,
+    Writes, first_offset, other_step, unrecorded_note, write_note,
 };
 use crate::engine::{Cancel, EngineResult, FileAtStep, Outputs};
 use crate::request::Request;
 use crate::run::Run;
-use crate::selection::Mapped;
+use crate::selection::{Mapped, Pos, Surface, part_of_line};
 use crate::sideways::{Sideways, line_width, text_column};
 use crate::theme::{self, layout, size};
 use crate::ui::bookmarks::link;
 use crate::ui::icons::Icon;
 use crate::ui::scrubber::{READING_A_FILE, Scrubber};
+use crate::ui::selectable::{Registry, selectable, selects};
 use crate::ui::sideways::{shifted, sideways_layer};
 use crate::ui::tabs::RightTab;
 use crate::ui::viewer::{explain, unavailable, unavailable_run};
@@ -84,6 +89,16 @@ const INTERLEAVED_LEGEND: &str = "Amber lines are this run's. Blue lines are the
 /// The summary's action that goes to the write that set the first byte
 /// that differs.
 const GO_TO_WRITE: &str = "Go to the write";
+
+/// The columns of the rows, each a text that selects on its own.
+const COLUMNS: [Column; 3] = [Column::This, Column::Other, Column::One];
+
+/// The selection surfaces of the rows, one a column.
+const ROW_SURFACES: [Surface; 3] = [
+    Surface::FileDiff(Column::This),
+    Surface::FileDiff(Column::Other),
+    Surface::FileDiff(Column::One),
+];
 
 /// Which steps of the two runs the view compares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -254,6 +269,7 @@ impl Scrubber {
             None => (Layout::SideBySide, None, None, None),
         };
         drop(kept);
+        self.clear_selection_in(&ROW_SURFACES);
         let reading_list = path.is_none() && outputs.is_none() && unavailable.is_none();
         self.right_tab = RightTab::FileDiff;
         self.file_diff = Some(FileDiffPanel {
@@ -283,6 +299,7 @@ impl Scrubber {
 
     pub(super) fn close_file_diff(&mut self, cx: &mut Context<Self>) {
         self.file_diff = None;
+        self.clear_selection_in(&ROW_SURFACES);
         if self.right_tab == RightTab::FileDiff {
             self.right_tab = RightTab::AtStep;
         }
@@ -541,10 +558,34 @@ impl Scrubber {
                 }
                 panel.shown = Some((compared, steps));
                 panel.loading = false;
+
+                // A selection in the rows this comparison replaces is gone
+                // with them.
+                this.clear_selection_in(&ROW_SURFACES);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// The rows of the comparison on screen, for the selection.
+    pub(super) fn file_diff_rows(&self) -> Option<&[Row]> {
+        match &self.file_diff.as_ref()?.shown {
+            Some((
+                Compared {
+                    laid: Some(laid), ..
+                },
+                _,
+            )) => Some(&laid.rows),
+            _ => None,
+        }
+    }
+
+    /// Scrolls the view so row `row` is at its top.
+    pub(super) fn scroll_file_diff_to(&self, row: usize) {
+        if let Some(panel) = &self.file_diff {
+            panel.scroll.scroll_to_item(row, ScrollStrategy::Top);
+        }
     }
 
     /// Asks the engine for the files that differ at the runs' ends.
@@ -979,6 +1020,7 @@ impl Scrubber {
                     .flex_grow(layout::FILL)
                     .min_h_0()
                     .opacity(dim)
+                    .cursor(CursorStyle::IBeam)
                     .text_size(px(size::TEXT_MONO))
                     .children(rows)
                     .when(has_rows, |area| {
@@ -1001,10 +1043,17 @@ impl Scrubber {
         );
         let digits = gutter_digits(laid);
         let scrubber = cx.entity().downgrade();
+
+        // The selection, in whichever column it is.
+        let registry = self.selecting.registry.clone();
+        let selected = COLUMNS.into_iter().find_map(|column| {
+            let range = self.selected_range(Surface::FileDiff(column))?;
+            Some((column, range))
+        });
         uniform_list(
             "file-diff-rows",
             laid.rows.len(),
-            cx.processor(move |this, range: Range<usize>, _, _| {
+            cx.processor(move |this, range: Range<usize>, _, cx| {
                 let Some(
                     panel @ FileDiffPanel {
                         shown:
@@ -1021,10 +1070,20 @@ impl Scrubber {
                     return Vec::new();
                 };
 
-                // Each cell, with where its differing parts lead.
-                let half = |i: usize, cell: Option<&Cell>| {
+                // Each cell, with where its differing parts lead and what of
+                // it is selected.
+                let half = |i: usize, column: Column, cx: &mut Context<Scrubber>| {
+                    let cell = laid.rows.get(i).and_then(|row| row.cell(column));
                     let jumps = cell.and_then(|c| jumps_of(panel, c, &scrubber));
-                    half(i, cell, digits, offset, jumps)
+                    let selecting = Selecting {
+                        column,
+                        range: selected
+                            .as_ref()
+                            .filter(|(at, _)| *at == column)
+                            .map(|(_, range)| range),
+                        registry: &registry,
+                    };
+                    half(i, cell, digits, offset, jumps, selecting, cx)
                 };
                 range
                     .filter_map(|i| {
@@ -1037,15 +1096,16 @@ impl Scrubber {
                             .items_center()
                             .whitespace_nowrap();
                         Some(match row {
-                            Row::Pair(here, there) => line
+                            Row::Pair(..) => line
                                 .px(px(size::PANEL_PAD_X / 2.0))
                                 .gap(px(size::CARD_GAP))
-                                .child(half(i, here.as_ref()))
+                                .child(half(i, Column::This, cx))
                                 .child(div().w(px(1.0)).h_full().bg(rgb(theme::LINE_SOFT)))
-                                .child(half(i, there.as_ref())),
-                            Row::One(cell) => line
-                                .px(px(size::PANEL_PAD_X / 2.0))
-                                .child(half(i, Some(cell))),
+                                .child(half(i, Column::Other, cx)),
+                            Row::One(_) => {
+                                line.px(px(size::PANEL_PAD_X / 2.0))
+                                    .child(half(i, Column::One, cx))
+                            }
                         })
                     })
                     .collect::<Vec<_>>()
@@ -1138,19 +1198,33 @@ fn cell_id(row: usize, side: Side) -> SharedString {
     SharedString::from(format!("file-diff-cell-{row}-{side}"))
 }
 
+/// How a cell's text takes part in the selection: the column it is in,
+/// the selected range when the selection is in that column, and the
+/// registry its line is drawn into.
+struct Selecting<'a> {
+    column: Column,
+    range: Option<&'a Range<Pos>>,
+    registry: &'a Registry,
+}
+
 /// One cell of row `row`, or the empty place of a copy that has nothing
 /// there: its number in the gutter, then its text moved `offset` pixels
 /// left, tinted when it differs and with what differs marked in its run's
-/// color. A cell with `jumps` names the write behind each part that
-/// differs on hover, and goes to it on a click: a hex dump byte by byte,
-/// a line as a whole.
+/// color. The text is line `row` of its column's selectable text, and a
+/// press anywhere in the cell selects in that column. A cell with `jumps`
+/// names the write behind each part that differs on hover, and goes to it
+/// on a click that selects nothing: a hex dump byte by byte, a line as a
+/// whole.
 fn half(
     row: usize,
     cell: Option<&Cell>,
     digits: usize,
     offset: f32,
     jumps: Option<Jumps>,
+    selecting: Selecting,
+    cx: &mut Context<Scrubber>,
 ) -> AnyElement {
+    let surface = Surface::FileDiff(selecting.column);
     let place = div()
         .flex()
         .items_center()
@@ -1160,6 +1234,7 @@ fn half(
         .min_w_0()
         .px(px(size::PANEL_PAD_X / 2.0))
         .gap(px(size::LOG_COLUMN_GAP));
+    let place = selects(place, surface, cx);
     let Some(cell) = cell else {
         return place.bg(rgb(theme::BG)).into_any_element();
     };
@@ -1190,7 +1265,12 @@ fn half(
                     .child(number),
             )
         });
-    let text = styled(cell, mark, mark_bg);
+    let (shown, highlights) = styled(cell, mark, mark_bg);
+    let part = selecting
+        .range
+        .and_then(|range| part_of_line(range, row, shown.len()));
+    let text =
+        selectable(surface, row, shown, part, selecting.registry).with_highlights(highlights);
     let Some(Jumps {
         side,
         parts,
@@ -1214,8 +1294,12 @@ fn half(
             .id(id)
             .tooltip(tooltip(note))
             .when_some(step, |d, step| {
-                d.cursor_pointer().on_click(move |_, _, cx| {
-                    let _ = scrubber.update(cx, |this, cx| this.jump_to_write(side, step, cx));
+                d.cursor_pointer().on_click(move |e, _, cx| {
+                    let _ = scrubber.update(cx, |this, cx| {
+                        if this.plain_click(e) {
+                            this.jump_to_write(side, step, cx);
+                        }
+                    });
                 })
             })
             .child(shifted(offset, text).text_color(rgb(theme::SOFT)))
@@ -1233,25 +1317,38 @@ fn half(
         .map(|(range, note, _)| (range, note))
         .collect();
     let clickable = steps.iter().map(|(range, _)| range.clone()).collect();
-    let interactive = InteractiveText::new(id, text)
-        .on_click(clickable, move |i, _, cx| {
+    let interactive = text.interactive(id, move |text| {
+        text.on_click(clickable, move |i, _, cx| {
             let Some(&(_, step)) = steps.get(i) else {
                 return;
             };
-            let _ = scrubber.update(cx, |this, cx| this.jump_to_write(side, step, cx));
+
+            // A press that ends a drag selecting text is not a click on
+            // the byte.
+            let _ = scrubber.update(cx, |this, cx| {
+                if this.selected_text().is_none() {
+                    this.jump_to_write(side, step, cx);
+                }
+            });
         })
         .tooltip(move |at, window, cx| {
             let (_, note) = notes.iter().find(|(range, _)| range.contains(&at))?;
             Some(tooltip(note.clone())(window, cx))
-        });
+        })
+    });
     place
         .child(shifted(offset, interactive).text_color(rgb(theme::SOFT)))
         .into_any_element()
 }
 
-/// A cell's text, tabs drawn as spaces: a hex dump's bytes in their
-/// classes' colors, and what differs in `mark` over `mark_bg`.
-fn styled(cell: &Cell, mark: u32, mark_bg: Option<u32>) -> StyledText {
+/// A cell's text as shown, tabs drawn as spaces, and its highlights: a
+/// hex dump's bytes in their classes' colors, and what differs in `mark`
+/// over `mark_bg`.
+fn styled(
+    cell: &Cell,
+    mark: u32,
+    mark_bg: Option<u32>,
+) -> (String, Vec<(Range<usize>, HighlightStyle)>) {
     let mapped: Mapped = expand_tabs(&cell.text);
     let marked_style = HighlightStyle {
         color: Some(rgb(mark).into()),
@@ -1298,7 +1395,7 @@ fn styled(cell: &Cell, mark: u32, mark_bg: Option<u32>) -> StyledText {
         .filter(|(r, _)| !r.is_empty())
         .collect();
     highlights.sort_by_key(|(r, _)| r.start);
-    StyledText::new(mapped.shown).with_highlights(highlights)
+    (mapped.shown, highlights)
 }
 
 /// The digits of the line numbers in a gutter, or none for hex dumps.

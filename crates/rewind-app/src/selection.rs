@@ -1,6 +1,6 @@
 //! Text selection over the app's text surfaces: the build log, the file
-//! viewer, the process tree, the files list, the cards, the notices, the
-//! license dialog and the terminal.
+//! viewer, the two-run file view, the process tree, the files list, the
+//! cards, the notices, the license dialog and the terminal.
 //!
 //! A selection lives in a surface's own coordinates, a line index and a
 //! byte offset into that line's text, never in pixels. The lists draw only
@@ -16,6 +16,8 @@
 
 use std::cmp::Ordering;
 use std::ops::Range;
+
+use crate::diff_view::Column;
 
 /// A text surface: one panel, card or dialog whose lines select together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -42,6 +44,9 @@ pub enum Surface {
     Compare,
     /// The Threads tab's message or picked bar's card.
     Lanes,
+    /// A column of the two-run file view's rows: one run's side, so a
+    /// selection stays in one copy, or the one column.
+    FileDiff(Column),
 }
 
 /// A place in a surface's text: a line and a byte offset into it, always
@@ -358,11 +363,14 @@ impl Selection {
         part_of_line(&self.range(lines), line, len)
     }
 
-    /// The selected text, lines joined by newlines.
+    /// The selected text, lines joined by newlines. A line with no text,
+    /// as a side of the two-run file view has where only the other run
+    /// has a line, is left out, newline and all.
     pub fn text(&self, lines: &dyn Lines) -> String {
         let range = self.range(lines);
         let last = lines.line_count().saturating_sub(1);
         let mut out = String::new();
+        let mut copied_any = false;
         for line in range.start.line..=range.end.line.min(last) {
             let Some(shown) = lines.shown(line) else {
                 continue;
@@ -377,9 +385,11 @@ impl Selection {
             } else {
                 shown.len()
             };
-            if line > range.start.line {
+            // A newline before each line after the first one copied.
+            if copied_any {
                 out.push('\n');
             }
+            copied_any = true;
             if let Some(text) = lines.copied(line, start..end) {
                 out.push_str(&text);
             }
@@ -753,6 +763,29 @@ mod tests {
         let mut sel = Selection::press(Surface::Log, Pos::new(0, 0), Unit::Char, &text);
         sel.extend_to(Pos::new(1, 2));
         assert_eq!(sel.text(&text), "/nix/store/abcdef-x\nne");
+    }
+
+    /// Lines some of which have no text, as one side of the two-run file
+    /// view has none where only the other run has a line.
+    struct Gaps(Vec<Option<&'static str>>);
+
+    impl Lines for Gaps {
+        fn line_count(&self) -> usize {
+            self.0.len()
+        }
+        fn shown(&self, line: usize) -> Option<String> {
+            self.0.get(line).copied().flatten().map(str::to_string)
+        }
+    }
+
+    #[test]
+    fn lines_without_text_are_left_out_of_a_copy() {
+        // Select All over lines where the first, a middle and the last
+        // have no text: the copy holds the lines that do, one per line,
+        // with no empty line or newline for the ones that do not.
+        let text = Gaps(vec![None, Some("CC = cc"), None, Some("all: pool"), None]);
+        let sel = Selection::all(Surface::Log, &text);
+        assert_eq!(sel.text(&text), "CC = cc\nall: pool");
     }
 
     #[test]
