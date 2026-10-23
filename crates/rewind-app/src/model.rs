@@ -1126,11 +1126,13 @@ fn process_rows(trace: &Trace, procs: &[Process]) -> Vec<ProcRow> {
 
 /// A command line as a process label: the program by its file name, since
 /// argv[0] is often a long store path, then the arguments as they are.
+/// Control characters are escaped, so an `sh -c` script of several lines
+/// keeps its process tree row to one line.
 fn program_label(argv: &[String]) -> String {
     let program = argv[0].rsplit('/').next().unwrap_or(&argv[0]);
     let mut parts = vec![program];
     parts.extend(argv[1..].iter().map(String::as_str));
-    parts.join(" ")
+    crate::describe::escape_controls(&parts.join(" "))
 }
 
 /// The command name in a process label: the file name of its first word,
@@ -1839,6 +1841,17 @@ pub(crate) mod tests {
                 (30, "kernel thread"),
             ]
         );
+        assert_eq!(t.name_of(1), Some("sh"));
+    }
+
+    #[test]
+    fn a_command_line_with_newlines_stays_on_one_row() {
+        // An `sh -c` script of several lines is labelled with its newlines
+        // and tabs escaped, as the log shows them, so the process tree row
+        // holds one line and draws nothing over the rows below it.
+        let events = vec![exec(1, 1, &["/bin/sh", "-c", "cd src\n\tmake"])];
+        let t = Timeline::new(Trace { events }, None, None);
+        assert_eq!(t.rows[0].label, r"sh -c cd src\n\tmake");
         assert_eq!(t.name_of(1), Some("sh"));
     }
 

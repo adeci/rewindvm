@@ -216,16 +216,33 @@ fn quote_up_to(text: &str, max: usize) -> String {
             break;
         }
         match c {
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
             '"' => out.push_str("\\\""),
-            c if c.is_control() => out.push_str(&format!("\\x{:02x}", c as u32)),
-            c => out.push(c),
+            c => push_escaped(&mut out, c),
         }
     }
     out.push('"');
     out
+}
+
+/// Text with its control characters escaped, so a newline or a tab in it
+/// shows as `\n` or `\t` and the text stays on one line.
+pub fn escape_controls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        push_escaped(&mut out, c);
+    }
+    out
+}
+
+/// Pushes one character onto `out`, a control character as its escape.
+fn push_escaped(out: &mut String, c: char) {
+    match c {
+        '\n' => out.push_str("\\n"),
+        '\t' => out.push_str("\\t"),
+        '\r' => out.push_str("\\r"),
+        c if c.is_control() => out.push_str(&format!("\\x{:02x}", c as u32)),
+        c => out.push(c),
+    }
 }
 
 /// How long ago something happened, in the largest whole unit: "just
