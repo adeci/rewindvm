@@ -211,6 +211,26 @@ pub struct ByteWrite {
     pub program: String,
 }
 
+impl ByteWrite {
+    /// Who made `write`, among `processes`: the process its thread
+    /// belonged to at the step of the write, by the program that process
+    /// ran then. A process that opened a file and exec'd another program
+    /// before writing it is named by the program that wrote.
+    pub fn of(processes: &[Process], write: &FinalWrite) -> ByteWrite {
+        let pid = pid_among(processes, write.tid, write.step);
+        let program = processes
+            .iter()
+            .filter(|p| p.alive_at(write.step))
+            .find(|p| p.pid == pid)
+            .map_or_else(|| format!("pid {pid}"), |p| label(&p.as_of(write.step)));
+        ByteWrite {
+            step: write.step,
+            pid,
+            program,
+        }
+    }
+}
+
 /// Every write that made a file as it was at one step of a run, oldest
 /// first, each with who made it: the writes of its last writer, and of
 /// the writers before it back to one that emptied the file as it opened
@@ -260,17 +280,7 @@ impl FileWrites {
                 continue;
             };
             for write in writes_to(log, file, writer.open, writer.close.min(at)) {
-                let pid = pid_among(&processes, write.tid, write.step);
-                let program = processes
-                    .iter()
-                    .filter(|p| p.alive_at(write.step))
-                    .find(|p| p.pid == pid)
-                    .map_or_else(|| format!("pid {pid}"), |p| label(&p.as_of(write.step)));
-                let by = ByteWrite {
-                    step: write.step,
-                    pid,
-                    program,
-                };
+                let by = ByteWrite::of(&processes, &write);
                 writes.push((write, by));
             }
         }

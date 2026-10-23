@@ -39,8 +39,8 @@ use rewind_core::inspect::Inspection;
 use rewind_core::{Home, Run};
 use rewind_trace::io_records::{FileId, Io, IoLog, IoRecord};
 use rewind_trace::writes::{
-    FinalWrite, O_TRUNC, Writer, base_name, file_of, final_write, label, last_writer, pid_of,
-    thread_of,
+    ByteWrite, FinalWrite, O_TRUNC, Writer, base_name, file_of, final_write, label, last_writer,
+    pid_of, thread_of,
 };
 use rewind_trace::{EventKind, Process, Trace};
 
@@ -476,6 +476,20 @@ pub fn blame(home: &Home, args: BlameArgs) -> Result<ExitCode> {
         settled(&sides[1], &origins[1], first)?,
     ];
 
+    // Who wrote the byte, named by the program that wrote it, as the
+    // app's two-run file view names it. The origin's process may have
+    // exec'd another program between opening the file and writing it, so
+    // what made the byte is described as of the write: its command line,
+    // what it read and the likely cause.
+    let wrote = [
+        byte_writer(sides[0].trace, &origins[0], &settled[0]),
+        byte_writer(sides[1].trace, &origins[1], &settled[1]),
+    ];
+    let origins = [
+        at_write(&origins[0], &settled[0]),
+        at_write(&origins[1], &settled[1]),
+    ];
+
     // What the writers read that the build made, followed back to where
     // the difference starts.
     let followed = if both {
@@ -494,7 +508,7 @@ pub fn blame(home: &Home, args: BlameArgs) -> Result<ExitCode> {
         "{} differs at byte {}. {} wrote that byte at {} in run {} and at {} in run {}.",
         base_name(&path),
         grouped(first as u64),
-        who(x, y, &ids),
+        who(&wrote[0], &wrote[1], &ids),
         at(&settled[0]),
         ids[0],
         at(&settled[1]),
@@ -612,16 +626,66 @@ fn settled(side: &Side, writer: &Writer, offset: usize) -> Result<Settled> {
     })
 }
 
-/// A writer in both runs, by its program, with its pid when that is the
+/// A process as blame's sentences name it: its program and its pid.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Named {
+    program: String,
+    pid: u32,
+}
+
+impl Named {
+    /// A writer, by the program its process ran at the step the writer
+    /// was taken at: the open, or the write for one `at_write` made.
+    fn of(writer: &Writer) -> Named {
+        Named {
+            program: label(&writer.process),
+            pid: writer.process.pid,
+        }
+    }
+}
+
+/// Who gave the byte its value in one run, by the program at the step of
+/// the write: the process the write record names, looked up as the app's
+/// two-run file view looks it up, or without a record the writer, by the
+/// program it ran at the step bisection found.
+fn byte_writer(trace: &Trace, writer: &Writer, settled: &Settled) -> Named {
+    if let Some(write) = &settled.write {
+        let by = ByteWrite::of(&trace.processes(), write);
+        return Named {
+            program: by.program,
+            pid: by.pid,
+        };
+    }
+    let step = settled.step.unwrap_or(writer.open);
+    Named {
+        program: label(&writer.process.as_of(step)),
+        pid: writer.process.pid,
+    }
+}
+
+/// The writer with its process as it was when it gave the byte its value,
+/// for the lines about what made the byte; as it was at the open when
+/// that step is not known.
+fn at_write(writer: &Writer, settled: &Settled) -> Writer {
+    let Some(step) = settled.step else {
+        return writer.clone();
+    };
+    Writer {
+        process: writer.process.as_of(step),
+        ..writer.clone()
+    }
+}
+
+/// A process in both runs, by its program, with its pid when that is the
 /// same in both.
-fn who(x: &Writer, y: &Writer, ids: &[&str; 2]) -> String {
-    let name = label(&x.process);
-    if x.process.pid == y.process.pid {
-        return format!("{name} (pid {})", x.process.pid);
+fn who(x: &Named, y: &Named, ids: &[&str; 2]) -> String {
+    let name = &x.program;
+    if x.pid == y.pid {
+        return format!("{name} (pid {})", x.pid);
     }
     format!(
         "{name} (pid {} in run {}, {} in run {})",
-        x.process.pid, ids[0], y.process.pid, ids[1]
+        x.pid, ids[0], y.pid, ids[1]
     )
 }
 
@@ -785,7 +849,7 @@ fn print_followed((hops, stop): &(Vec<Hop>, Stop), ids: &[&str; 2]) {
         if let Some((l, r)) = &hop.via {
             println!(
                 "{} wrote {} at step {}.",
-                who(x, y, ids),
+                who(&Named::of(x), &Named::of(y), ids),
                 pair_paths(&(l.clone(), r.clone()), ids),
                 grouped(x.open)
             );
@@ -852,7 +916,7 @@ fn print_followed((hops, stop): &(Vec<Hop>, Stop), ids: &[&str; 2]) {
         return;
     };
     let [x, y] = &last.writers;
-    let name = who(x, y, ids);
+    let name = who(&Named::of(x), &Named::of(y), ids);
     match stop {
         Stop::SameInputs if x.process.argv == y.process.argv => println!(
             "Likely cause: something inside {name}, such as randomness or the order its threads \
@@ -1385,6 +1449,7 @@ mod tests {
     // logs made by hand.
     use super::*;
     use rewind_trace::Event;
+    use rewind_trace::writes::FileWrites;
 
     /// A neatvnc-sized run: 30,056 steps recorded in 15.1 s, with one
     /// keyframe where its job exited, as `rewind check` leaves one.
@@ -1688,6 +1753,127 @@ mod tests {
             }]
         );
         assert_eq!(others, 1);
+    }
+
+    /// A builder that bash starts as pid 34, opens /out/lib.so for its
+    /// redirection at step 10, then exec's python3 at step 12, which
+    /// writes the file at step 14: the trace, its records, and the
+    /// writer `last_writer` finds, as it was at the open.
+    fn redirected_then_execd() -> (Trace, IoLog, Writer) {
+        let event = |step, kind| Event {
+            step,
+            pid: 34,
+            tid: 34,
+            kind,
+        };
+        let exec = |step, argv: &[&str]| {
+            event(
+                step,
+                EventKind::Exec {
+                    filename: argv[0].into(),
+                    argv: argv.iter().map(|a| a.to_string()).collect(),
+                    old_pid: 34,
+                },
+            )
+        };
+        let trace = Trace {
+            events: vec![
+                exec(
+                    5,
+                    &["/nix/store/x-bash/bin/bash", "-c", "exec python3 gen.py"],
+                ),
+                event(
+                    10,
+                    EventKind::Open {
+                        path: "/out/lib.so".into(),
+                        flags: O_TRUNC,
+                    },
+                ),
+                exec(12, &["/nix/store/y-python3/bin/python3", "-c", "gen()"]),
+                event(
+                    20,
+                    EventKind::Close {
+                        path: "/out/lib.so".into(),
+                    },
+                ),
+            ],
+        };
+        let log = log(vec![
+            (
+                11,
+                Io::WriteOpen {
+                    tid: 34,
+                    file: 0,
+                    path: LIB_OUT,
+                },
+            ),
+            (
+                14,
+                Io::Write {
+                    tid: 34,
+                    file: 0,
+                    pos: 0,
+                    count: 23,
+                },
+            ),
+        ]);
+        let writer = last_writer(&trace, "/out/lib.so", 30).expect("pid 34 opened it");
+        (trace, log, writer)
+    }
+
+    #[test]
+    fn the_byte_s_writer_is_named_by_the_program_at_the_write() {
+        // bash opened the file and python3 wrote it in the same process:
+        // the opening line names bash, while the answer names python3,
+        // as the app's two-run file view does for the same write, with
+        // the write record and without it.
+        let (trace, log, writer) = redirected_then_execd();
+        assert_eq!(label(&writer.process), "bash");
+        let with_record = Settled {
+            step: Some(14),
+            write: final_write(&log, &writer, 6),
+        };
+        let bisected = Settled {
+            step: Some(14),
+            write: None,
+        };
+        let python3 = Named {
+            program: "python3".into(),
+            pid: 34,
+        };
+        let named = [
+            byte_writer(&trace, &writer, &with_record),
+            byte_writer(&trace, &writer, &bisected),
+        ];
+        assert_eq!(named, [python3.clone(), python3]);
+        assert_eq!(
+            who(&named[0], &named[1], &["afcd2ec2", "611f40ef"]),
+            "python3 (pid 34)"
+        );
+        let app = FileWrites::of(&trace, &log, "/out/lib.so", 30);
+        assert_eq!(app.byte(6).map(|b| b.program.as_str()), Some("python3"));
+    }
+
+    #[test]
+    fn the_origin_is_described_as_it_was_at_the_write() {
+        // The lines about what made the byte, the writer's command line,
+        // what it read and the likely cause, take the writer as it was
+        // at the write: python3's command line, not bash's. A writer
+        // whose step is not known stays as it was at the open.
+        let (_, _, writer) = redirected_then_execd();
+        let settled = Settled {
+            step: Some(14),
+            write: None,
+        };
+        let origin = at_write(&writer, &settled);
+        assert_eq!(label(&origin.process), "python3");
+        assert_eq!(origin.process.argv[1..], ["-c", "gen()"]);
+        assert_eq!((origin.open, origin.close), (writer.open, writer.close));
+        let unknown = Settled {
+            step: None,
+            write: None,
+        };
+        assert_eq!(label(&at_write(&writer, &unknown).process), "bash");
     }
 
     #[test]
