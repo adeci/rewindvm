@@ -33,6 +33,7 @@ LINK_MAP = {
     "docs/tutorial-container.md": "tutorials/container.html",
     "docs/tutorial-properties.md": "tutorials/properties.html",
     "docs/tutorial-points.md": "tutorials/points.html",
+    "docs/tutorial-repro.md": "tutorials/repro.html",
     "docs/tutorial-advanced.md": "tutorials/advanced.html",
     "docs/case-studies/nix-gc-closure-sigpipe.md": "case-studies/nix-gc-closure-sigpipe.html",
     "docs/case-studies/nix-schema-migration-hang.md": "case-studies/nix-schema-migration-hang.html",
@@ -156,6 +157,95 @@ POINTS_FIGURE = """<figure class="race">
 </figure>
 """
 
+# From a byte back to its cause, drawn: the copy blame looked past, the
+# program that wrote the differing bytes, and the one input that changed.
+# Shown in the repro tutorial after the paragraph that reads blame's
+# output.
+BLAME_FIGURE = """<figure class="drawing">
+  <svg viewBox="0 0 640 290" role="img" aria-label="install copied tiles.pc, which already differed. python3 gen-pc.py wrote the Requires.private line in another order under seed 0 and seed 1, with the same command line and the same input. The seed is the one input that changed.">
+    <rect x="1" y="1" width="638" height="62" rx="6" fill="var(--panel)" stroke="var(--line-2)" />
+    <text x="16" y="26" fill="var(--text)">install</text>
+    <text x="624" y="26" text-anchor="end" fill="var(--muted)">last writer</text>
+    <text x="16" y="48" fill="var(--muted)">copies /build/tiles/tiles.pc, which already differs</text>
+    <line x1="40" y1="64" x2="40" y2="90" stroke="var(--line-2)" stroke-width="2" stroke-dasharray="3 4" />
+    <rect x="1" y="91" width="638" height="106" rx="6" fill="var(--panel)" stroke="var(--amber)" />
+    <text x="16" y="116" fill="var(--amber)">python3 gen-pc.py</text>
+    <text x="624" y="116" text-anchor="end" fill="var(--muted)">first writer</text>
+    <text x="16" y="140" fill="var(--amber)">seed 0: Requires.private: pixman-1, libpng, zlib</text>
+    <text x="16" y="162" fill="var(--blue)">seed 1: Requires.private: zlib, pixman-1, libpng</text>
+    <text x="16" y="184" fill="var(--muted)">same command line, same gen-pc.py in both runs</text>
+    <line x1="40" y1="198" x2="40" y2="224" stroke="var(--line-2)" stroke-width="2" stroke-dasharray="3 4" />
+    <rect x="1" y="225" width="638" height="62" rx="6" fill="var(--panel)" stroke="var(--amber)" stroke-dasharray="5 4" />
+    <text x="16" y="250" fill="var(--amber)">the seed</text>
+    <text x="624" y="250" text-anchor="end" fill="var(--muted)">the cause</text>
+    <text x="16" y="272" fill="var(--muted)">the one input that changed: it decides Python's hash seed</text>
+  </svg>
+  <figcaption>
+    Blame looks past the copy to the program that wrote the bytes. That
+    program had the same inputs in both runs, so the cause is the seed.
+  </figcaption>
+</figure>
+"""
+
+# The order plugins.txt names the plugins in, drawn: the VM's own order,
+# newest first, two rewind.dirents keys, and the fix's sorted(). The repro
+# tutorial's template asserts the first three. Shown after the paragraph
+# that introduces the index under each key.
+DIRENTS_FIGURE = """<figure class="drawing">
+  <svg viewBox="0 0 640 184" role="img" aria-label="The order plugins.txt lists the five plugins in. stock order: sharpen rotate resize crop blur. rewind.dirents=1: sharpen crop blur rotate resize. rewind.dirents=2: sharpen resize crop rotate blur. sorted(): blur crop resize rotate sharpen">
+    <text x="0" y="28" fill="var(--muted)">stock order</text>
+    <rect x="168" y="8" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--line-2)" />
+    <text x="210" y="28" text-anchor="middle" fill="var(--soft)">sharpen</text>
+    <rect x="262" y="8" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--line-2)" />
+    <text x="304" y="28" text-anchor="middle" fill="var(--soft)">rotate</text>
+    <rect x="356" y="8" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--line-2)" />
+    <text x="398" y="28" text-anchor="middle" fill="var(--soft)">resize</text>
+    <rect x="450" y="8" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--line-2)" />
+    <text x="492" y="28" text-anchor="middle" fill="var(--soft)">crop</text>
+    <rect x="544" y="8" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--line-2)" />
+    <text x="586" y="28" text-anchor="middle" fill="var(--soft)">blur</text>
+    <text x="0" y="72" fill="var(--muted)">rewind.dirents=1</text>
+    <rect x="168" y="52" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--amber)" />
+    <text x="210" y="72" text-anchor="middle" fill="var(--amber)">sharpen</text>
+    <rect x="262" y="52" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--amber)" />
+    <text x="304" y="72" text-anchor="middle" fill="var(--amber)">crop</text>
+    <rect x="356" y="52" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--amber)" />
+    <text x="398" y="72" text-anchor="middle" fill="var(--amber)">blur</text>
+    <rect x="450" y="52" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--amber)" />
+    <text x="492" y="72" text-anchor="middle" fill="var(--amber)">rotate</text>
+    <rect x="544" y="52" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--amber)" />
+    <text x="586" y="72" text-anchor="middle" fill="var(--amber)">resize</text>
+    <text x="0" y="116" fill="var(--muted)">rewind.dirents=2</text>
+    <rect x="168" y="96" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--blue)" />
+    <text x="210" y="116" text-anchor="middle" fill="var(--blue)">sharpen</text>
+    <rect x="262" y="96" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--blue)" />
+    <text x="304" y="116" text-anchor="middle" fill="var(--blue)">resize</text>
+    <rect x="356" y="96" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--blue)" />
+    <text x="398" y="116" text-anchor="middle" fill="var(--blue)">crop</text>
+    <rect x="450" y="96" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--blue)" />
+    <text x="492" y="116" text-anchor="middle" fill="var(--blue)">rotate</text>
+    <rect x="544" y="96" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--blue)" />
+    <text x="586" y="116" text-anchor="middle" fill="var(--blue)">blur</text>
+    <text x="0" y="160" fill="var(--muted)">sorted()</text>
+    <rect x="168" y="140" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--line-2)" />
+    <text x="210" y="160" text-anchor="middle" fill="var(--text)">blur</text>
+    <rect x="262" y="140" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--line-2)" />
+    <text x="304" y="160" text-anchor="middle" fill="var(--text)">crop</text>
+    <rect x="356" y="140" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--line-2)" />
+    <text x="398" y="160" text-anchor="middle" fill="var(--text)">resize</text>
+    <rect x="450" y="140" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--line-2)" />
+    <text x="492" y="160" text-anchor="middle" fill="var(--text)">rotate</text>
+    <rect x="544" y="140" width="84" height="30" rx="5" fill="var(--panel)" stroke="var(--line-2)" />
+    <text x="586" y="160" text-anchor="middle" fill="var(--text)">sharpen</text>
+  </svg>
+  <figcaption>
+    The order the unpatched plugins build writes its index in: the VM's own
+    order, which lists the newest file first, then two keys. The plugins were
+    copied into /build in name order, the order sorted() gives back.
+  </figcaption>
+</figure>
+"""
+
 # The gc-closure case study's video on YouTube, shown after the page's
 # opening paragraph.
 GC_CLOSURE_VIDEO = """<figure class="shot video" id="video">
@@ -171,16 +261,16 @@ GC_CLOSURE_VIDEO = """<figure class="shot video" id="video">
 """
 
 # Each page: its source, where it goes, the line above its title, its meta
-# description, what its table of contents is called, an optional figure
-# with the section and the paragraph of that section it follows (None for
-# the paragraphs above the first section), and the card that closes it.
+# description, what its table of contents is called, its figures, each with
+# the section and the paragraph of that section it follows (None for the
+# paragraphs above the first section), and the card that closes it.
 PAGES = [
     dict(
         source="docs/tutorial-nix.md",
         eyebrow="Tutorial &middot; Nix",
         description="Install Rewind VM, find the thread interleaving that breaks a Nix derivation's tests, look at the crash step by step, fork it, and check the fix.",
         toc="Steps",
-        figure=("scrub-it-in-the-app", 1, NIX_FIGURE),
+        figures=[("scrub-it-in-the-app", 1, NIX_FIGURE)],
         next=(
             "tutorials/container.html",
             "Tutorial &middot; Container",
@@ -193,7 +283,7 @@ PAGES = [
         eyebrow="Tutorial &middot; Container",
         description="Install Rewind VM, find the thread interleaving that breaks a container image's tests, look at the crash step by step, fork it, and check the fix. No Nix needed.",
         toc="Steps",
-        figure=("scrub-it-in-the-app", 1, CONTAINER_FIGURE),
+        figures=[("scrub-it-in-the-app", 1, CONTAINER_FIGURE)],
         next=(
             "tutorials/properties.html",
             "Tutorial &middot; Properties",
@@ -206,7 +296,7 @@ PAGES = [
         eyebrow="Tutorial &middot; Properties",
         description="Property-based testing with rewind check: properties every run must have, assertions a program makes with the Rewind SDK, and seeds that vary a program's randomness as well as its schedule.",
         toc="Steps",
-        figure=None,
+        figures=[],
         next=(
             "tutorials/points.html",
             "Tutorial &middot; Points",
@@ -219,7 +309,23 @@ PAGES = [
         eyebrow="Tutorial &middot; Points",
         description="Schedule points with the Rewind SDK: one line that lets rewind check switch threads between a read and a store, reaching a race that no schedule reaches at system calls alone.",
         toc="Steps",
-        figure=("mark-the-place", 3, POINTS_FIGURE),
+        figures=[("mark-the-place", 3, POINTS_FIGURE)],
+        next=(
+            "tutorials/repro.html",
+            "Tutorial &middot; Reproducible builds",
+            "Reproducible builds",
+            "A build whose output changes with its seed or its directory order, and the program that made it change.",
+        ),
+    ),
+    dict(
+        source="docs/tutorial-repro.md",
+        eyebrow="Tutorial &middot; Reproducible builds",
+        description="Reproducible builds with Rewind VM: build a derivation under several seeds and directory orders, see which files differ, find the program that wrote the differing bytes with rewind blame, and check the fix.",
+        toc="Steps",
+        figures=[
+            ("who-wrote-it", 2, BLAME_FIGURE),
+            ("directory-order", 4, DIRENTS_FIGURE),
+        ],
         next=(
             "tutorials/advanced.html",
             "Tutorial &middot; Advanced",
@@ -232,7 +338,7 @@ PAGES = [
         eyebrow="Tutorial &middot; Advanced",
         description="Short recipes on Rewind VM's other tools: watchpoints, kernel breakpoints, your own gdb, tools inside the VM, more CPUs, steering the perturbation, comparing and sharing runs.",
         toc="Recipes",
-        figure=None,
+        figures=[],
         next=(
             "case-studies/nix-gc-closure-sigpipe.html",
             "Case study",
@@ -245,7 +351,7 @@ PAGES = [
         eyebrow="Case study",
         description="Rewind VM's first run of Nix's functional tests hit a SIGPIPE in gc-closure.sh: a pipe into head -n1 under pipefail, and bash writing a two-line printf in two writes. Reported and fixed upstream.",
         toc="Sections",
-        figure=(None, 1, GC_CLOSURE_VIDEO),
+        figures=[(None, 1, GC_CLOSURE_VIDEO)],
         next=(
             "case-studies/nix-schema-migration-hang.html",
             "Case study",
@@ -258,7 +364,7 @@ PAGES = [
         eyebrow="Case study",
         description="A known hang in Nix's store schema migration, reproduced in Rewind VM and pinned to SQLITE_BUSY_SNAPSHOT with gdb inside the VM, with both upstream fixes checked.",
         toc="Sections",
-        figure=None,
+        figures=[],
         next=(
             "case-studies/devenv-task-output-race.html",
             "Case study",
@@ -271,7 +377,7 @@ PAGES = [
         eyebrow="Case study",
         description="A known devenv bug that dropped a task's last lines of output, reproduced in Rewind VM, traced with gdb to tokio::select! taking the child's exit before a buffered line, and the fix checked under every schedule.",
         toc="Sections",
-        figure=("where-the-third-line-went", 2, DEVENV_FIGURE),
+        figures=[("where-the-third-line-went", 2, DEVENV_FIGURE)],
         next=(
             "case-studies/nix-gc-closure-sigpipe.html",
             "Case study",
@@ -694,9 +800,10 @@ def convert(cfg):
             out.append(f"<p>{inline(payload, source, page)}</p>\n")
             paragraphs += 1
 
-            # The page's figure follows the paragraph its config names.
-            if cfg["figure"] and cfg["figure"][:2] == (in_section, paragraphs):
-                out.append(cfg["figure"][2])
+            # A figure of the page's follows the paragraph its config names.
+            for section, paragraph, drawing in cfg["figures"]:
+                if (section, paragraph) == (in_section, paragraphs):
+                    out.append(drawing)
             continue
         if kind == "figure":
             out.append(figure(*payload))

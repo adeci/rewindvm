@@ -122,3 +122,35 @@ fails under. Sorting the tags fixes it.
 $ make -C hash-order check                       # plain, on the host
 $ nix build github:fzakaria/rewindvm#hash-order  # as a derivation
 ```
+
+## tiles
+
+The pkg-config file of a small library, written by a Python script that
+collects the packages the library links against into a set. Python
+iterates a set of strings in an order drawn from its hash seed, so the
+`Requires.private` line comes out in another order from one build to the
+next. nixpkgs pins the hash seed in builds with Python as an input, so the
+derivation unsets it. `rewind check --seeds` builds different outputs, and
+`rewind blame` names python3 as the program that wrote the differing bytes.
+Sorting the packages fixes it.
+
+```console
+$ make -C tiles PREFIX=/tmp/tiles install   # plain, on the host
+$ nix build github:fzakaria/rewindvm#tiles  # as a derivation
+```
+
+## plugins
+
+An index of the plugins a package ships, written by a Python script in the
+order `os.listdir` returns them. In Rewind VM a directory lists in the same
+order in every run, so seeds do not change the output; the guest kernel's
+`rewind.dirents=N` key lists directories in another order, as ext4 on
+another machine would, and the index changes with it. Sorting the names
+fixes it.
+
+```console
+$ make -C plugins PREFIX=/tmp/plugins install  # plain, on the host
+$ nix build github:fzakaria/rewindvm#plugins   # as a derivation
+```
+
+The [reproducible builds tutorial](../docs/tutorial-repro.md) finds both.

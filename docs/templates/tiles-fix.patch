@@ -1,0 +1,9 @@
+--- a/examples/tiles/gen-pc.py
++++ b/examples/tiles/gen-pc.py
+@@ -27,5 +27,5 @@
+ print("Name: tiles")
+ print("Description: Tile a large image into small ones")
+ print(f"Version: {VERSION}")
+-print(f"Requires.private: {', '.join(requires)}")
++print(f"Requires.private: {', '.join(sorted(requires))}")
+ print("Libs: -L${libdir} -ltiles")

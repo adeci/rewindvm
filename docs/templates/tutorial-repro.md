@@ -1,0 +1,215 @@
+# Tutorial: reproducible builds
+
+<!-- let epoch = 1790985600 -->
+<!-- let repo = github:fzakaria/rewindvm -->
+
+A build is reproducible when the same inputs give the same bytes, so anyone
+can rebuild a package and check that it matches the one they were given.
+Rewind VM fixes every input of a build, down to its random numbers, the
+order its threads run in and the order its directories list in, so one
+build makes the same run every time. Change one of those inputs and build
+again: if the output changes, that input changed it, and both runs are kept
+to replay and compare.
+
+The examples are `tiles` and `plugins` from
+[examples](https://github.com/fzakaria/rewindvm/tree/main/examples), two
+small builds that each write one text file. Install Rewind as the
+[Nix tutorial](tutorial-nix.md) does.
+
+## Build it under eight seeds
+
+`tiles` writes the pkg-config file of a small library with a Python script.
+The script collects the packages the library links against into a set, and
+Python iterates a set of strings in an order drawn from its hash seed.
+nixpkgs sets `PYTHONHASHSEED=0` in any build that has Python as an input, so
+`tiles` unsets it, to stand for a build that runs Python some other way.
+
+A run's seed decides every random number the build draws, Python's hash seed
+among them. `check` builds `tiles` under eight seeds, each with the default
+schedule only:
+
+```console run name=seeds
+$ rewind check --epoch {{epoch}} --seeds 8 --schedules 0 --all --no-narrow {{repo}}#tiles
+```
+
+<!-- capture seed0: seed +0 schedule +0: .* run (\w+) -->
+<!-- capture seed1: seed +1 schedule +0: .* run (\w+) -->
+<!-- capture hash0: seed +0 schedule +0: \S+ +\d+ steps +(\w+) -->
+<!-- capture hash1: seed +1 schedule +0: \S+ +\d+ steps +(\w+) -->
+<!-- assert: test {{hash0}} != {{hash1}} -->
+<!-- set n_outputs: grep '^seed' {{out:seeds}} | awk '{print $8}' | sort -u | wc -l -->
+<!-- assert: test {{n_outputs}} -ge 2 -->
+
+The column before each run id is the start of the output's hash. Eight
+builds made {{n_outputs}} different outputs, so `tiles` is not
+reproducible.
+
+## What differs
+
+Compare seed 0's run with seed 1's:
+
+```console run name=outputs elide
+$ rewind diff --outputs {{seed0|short}} {{seed1|short}}
+$ rewind diff --file /build/tiles/tiles.pc {{seed0|short}} {{seed1|short}}
+```
+
+<!-- assert: grep -q '^- Requires.private: pixman-1, libpng, zlib$' {{out:outputs}} -->
+<!-- assert: grep -q '^+ Requires.private: zlib, pixman-1, libpng$' {{out:outputs}} -->
+
+`--outputs` lists the files the runs left behind whose bytes differ: the
+installed `tiles.pc`, and the copy in the build directory it was installed
+from. `--file` shows the lines: the same three packages in another order.
+
+## Who wrote it
+
+<!-- set pc: echo $(nix eval --raw {{repo}}#tiles.outPath 2>/dev/null)/lib/pkgconfig/tiles.pc -->
+
+`rewind blame` takes two runs and a file, and names the program that wrote
+the first byte that differs:
+
+```console run name=blame elide
+$ rewind blame {{seed0|short}} {{seed1|short}} {{pc}}
+```
+
+<!-- capture writer: differs at byte \d+\. (\S+) \(pid -->
+<!-- capture pid: differs at byte \d+\. \S+ \(pid (\d+)\) -->
+<!-- capture write_step: wrote that byte at step ([\d,]+) in run -->
+<!-- assert: test {{writer}} = python3 -->
+<!-- assert: grep -q '^  install (pid [0-9]*) copied it from /build/tiles/tiles.pc' {{out:blame}} -->
+<!-- assert: grep -q '^Likely cause: something inside python3' {{out:blame}} -->
+
+The first line is the answer: {{writer}}, pid {{pid}}, wrote that byte at
+step {{write_step}}. The lines after it show how blame got there. `install`
+only copied a file that already differed. Before that, pid {{pid}} opened
+`/build/tiles/tiles.pc` while it was still `bash`, for the `>` redirect,
+then became python3. python3 had the same command line and read the same
+`gen-pc.py` in both runs, so the cause is inside it, and the seed is the one
+input that changed.
+
+Blame works from records the guest kernel keeps in every run: each write to
+a file, and each file a program opens. It finds the write that set the byte
+without replaying either run.
+
+## In the app
+
+Open the two runs side by side:
+
+```console
+$ rewind open {{seed0|short}} --compare {{seed1|short}}
+```
+
+The Compare tab's Files that differ link lists what `diff --outputs` does:
+
+<!-- screenshot site/img/app-repro-files: {{home}}/runs/{{seed0}} --compare {{home}}/runs/{{seed1}} ;; click 1153 221 ;; click 1239 259 ;; wait 8 -->
+
+![The app on seed 0's tiles run, compared with seed 1's, with the Files that differ tab listing both copies of tiles.pc](../site/img/app-repro-files.png)
+
+A click on a file opens it from both runs. One under the other puts each
+run's copy of a changed line together, this run's in amber and the other's
+in blue. Go to the write moves the playhead to the step whose write set the
+first byte that differs. For `/build/tiles/tiles.pc` that is step
+{{write_step}}, with `python3 gen-pc.py` in the process tree:
+
+<!-- screenshot site/img/app-repro-write: {{home}}/runs/{{seed0}} --compare {{home}}/runs/{{seed1}} ;; click 1153 221 ;; click 1239 259 ;; wait 8 ;; click 1000 366 ;; wait 10 ;; click 1263 394 ;; click 1123 325 ;; wait 10 -->
+
+![The app at step {{write_step}}, where python3 writes tiles.pc, with the file from both runs one under the other and the Requires.private line in amber and blue](../site/img/app-repro-write.png)
+
+## Fix it
+
+Clone the repository to edit `tiles`:
+
+```console run hide
+$ git clone https://github.com/fzakaria/rewindvm
+$ cd rewindvm
+```
+
+In `examples/tiles/gen-pc.py`, sort the packages before writing them:
+
+<!-- diff: tiles-fix.patch -->
+<!-- run: patch -p1 < {{dir}}/tiles-fix.patch -->
+
+```console run name=fixed show=-2:
+$ rewind check --epoch {{epoch}} --seeds 8 --schedules 0 --all --no-narrow .#tiles
+```
+
+<!-- assert: grep -q '^0 of 7 other runs ended differently$' {{out:fixed}} -->
+
+Every seed now builds the same `tiles.pc`.
+
+## Directory order
+
+`plugins` writes an index of the plugins it ships, in the order
+`os.listdir` returns them. Under eight seeds it reproduces:
+
+```console run name=plugins_seeds show=-2:
+$ rewind check --epoch {{epoch}} --seeds 8 --schedules 0 --all --no-narrow .#plugins
+```
+
+<!-- capture stock: seed +0 schedule +0: .* run (\w+) -->
+<!-- capture stock_steps: seed +0 schedule +0: \S+ +(\d+) steps -->
+<!-- assert: grep -q '^0 of 7 other runs ended differently$' {{out:plugins_seeds}} -->
+
+A directory lists in the order its filesystem keeps it. In the VM that order
+is the same in every run: `/build` lists its newest file first. On a real
+machine, ext4 lists a directory by a hash of each name, keyed by a seed
+chosen when the disk was formatted, so two machines can list one directory
+in two orders. The guest kernel does the same when its command line has
+`rewind.dirents=N`: every directory lists in an order keyed by N. Build
+under two keys:
+
+```console run name=keys show=-3:-1
+$ rewind nix --epoch {{epoch}} --quiet --kernel-args rewind.dirents=1 .#plugins
+$ rewind nix --epoch {{epoch}} --quiet --kernel-args rewind.dirents=2 .#plugins
+```
+
+<!-- set key1: grep -m1 -o 'run [0-9a-f]* exited' {{out:keys}} | awk '{print $2}' -->
+<!-- set key2: grep -o 'run [0-9a-f]* exited' {{out:keys}} | sed -n 2p | awk '{print $2}' -->
+<!-- set keyhash1: grep -m1 'plugins-0.1.0 ' {{out:keys}} | awk '{print $2}' -->
+<!-- set keyhash2: grep 'plugins-0.1.0 ' {{out:keys}} | sed -n 2p | awk '{print $2}' -->
+<!-- set key1_steps: grep -m1 -o 'exited:0 after [0-9]* steps' {{out:keys}} | awk '{print $3}' -->
+<!-- set key2_steps: grep -o 'exited:0 after [0-9]* steps' {{out:keys}} | sed -n 2p | awk '{print $3}' -->
+<!-- assert: test {{keyhash1}} != {{keyhash2}} -->
+
+The hash after each store path is the output's, and the two keys give two
+outputs. The index is the file that changed:
+
+```console run name=index
+$ rewind diff --file /build/plugins/plugins.txt {{key1|short}} {{key2|short}}
+```
+
+<!-- assert: rewind cat {{stock}} {{stock_steps}} /build/plugins/plugins.txt | tail -n +2 | tr '\n' ' ' | grep -qx 'sharpen rotate resize crop blur ' -->
+<!-- assert: rewind cat {{key1}} {{key1_steps}} /build/plugins/plugins.txt | tail -n +2 | tr '\n' ' ' | grep -qx 'sharpen crop blur rotate resize ' -->
+<!-- assert: rewind cat {{key2}} {{key2_steps}} /build/plugins/plugins.txt | tail -n +2 | tr '\n' ' ' | grep -qx 'sharpen resize crop rotate blur ' -->
+
+Under each key the index names the same five plugins in another order.
+
+The key is one of the run's inputs, so each order replays. `check` does not
+vary the key yet, and there is no `--dirents` option: give it with
+`--kernel-args`.
+
+In `examples/plugins/gen-index.py`, sort the names:
+
+<!-- diff: plugins-fix.patch -->
+<!-- run: patch -p1 < {{dir}}/plugins-fix.patch -->
+
+```console run name=sorted show=-2:
+$ rewind nix --epoch {{epoch}} --quiet --kernel-args rewind.dirents=1 .#plugins
+$ rewind nix --epoch {{epoch}} --quiet --kernel-args rewind.dirents=2 .#plugins
+```
+
+<!-- assert: test $(grep 'plugins-0.1.0 ' {{out:sorted}} | awk '{print $2}' | sort -u | wc -l) -eq 1 -->
+<!-- set sorted_hash: grep -m1 'plugins-0.1.0 ' {{out:sorted}} | awk '{print $2}' -->
+
+Both keys now build the same output, `{{sorted_hash}}`.
+
+## What to read next
+
+Real packages do this too: neatvnc 0.7.1's pkg-config file, which meson
+writes, differs between seeds, and setuptools 80.9.0 in nixpkgs builds a
+wheel with another version under another directory order.
+
+- [Directory order](design.md#directory-order) in the design notes: how
+  the `rewind.dirents` key works.
+- [Read and write records](design.md#read-and-write-records) in the
+  design notes: what blame reads.
+- [The properties tutorial](tutorial-properties.md): seeds in tests.

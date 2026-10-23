@@ -10,7 +10,11 @@
 # system's randomness, so it fails only under some seeds. bank-java is bank
 # as a JUnit 5 suite marked with the Rewind SDK's extension. counter loses
 # a hit to two threads racing with no system call between read and store,
-# which only a schedule point reaches.
+# which only a schedule point reaches. tiles writes its pkg-config file's
+# Requires line from a Python set, in an order drawn from the hash seed,
+# so its output differs between seeds. plugins writes an index of its
+# plugins in the order the directory lists them, so its output differs
+# between directory orders. The reproducible builds tutorial finds both.
 { pkgs }:
 {
   mylib = pkgs.stdenv.mkDerivation {
@@ -88,5 +92,27 @@
     makeFlags = [ "PREFIX=$(out)" ];
     doCheck = true;
     meta.description = "A parent waiting with pause, sleeping through its wakeup under some interleavings";
+  };
+
+  tiles = pkgs.stdenv.mkDerivation {
+    pname = "tiles";
+    version = "0.2.0";
+    src = ../examples/tiles;
+    nativeBuildInputs = [ pkgs.python3 ];
+    makeFlags = [ "PREFIX=$(out)" ];
+    # nixpkgs' Python setup hook exports PYTHONHASHSEED=0 in any build
+    # with Python as an input. A build that runs Python without that hook
+    # draws a new hash seed every time, which this unset stands for.
+    preBuild = "unset PYTHONHASHSEED";
+    meta.description = "A pkg-config file written from a Python set, differing between seeds";
+  };
+
+  plugins = pkgs.stdenv.mkDerivation {
+    pname = "plugins";
+    version = "0.1.0";
+    src = ../examples/plugins;
+    nativeBuildInputs = [ pkgs.python3 ];
+    makeFlags = [ "PREFIX=$(out)" ];
+    meta.description = "An index written in directory order, differing between directory orders";
   };
 }

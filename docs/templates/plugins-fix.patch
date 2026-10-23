@@ -1,0 +1,11 @@
+--- a/examples/plugins/gen-index.py
++++ b/examples/plugins/gen-index.py
+@@ -12,7 +12,7 @@
+ 
+ directory = sys.argv[1]
+ print("# The plugins this package ships, one a line.")
+-for name in os.listdir(directory):
++for name in sorted(os.listdir(directory)):
+     # Only the plugins' own files are plugins.
+     if not name.endswith(SUFFIX):
+         continue

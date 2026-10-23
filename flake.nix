@@ -205,6 +205,14 @@
           # a test that expects a HashSet's order, decided by the seed
           # (nix/examples.nix)
           hash-order = p.examples.hash-order;
+
+          # a pkg-config file whose Requires order is decided by Python's
+          # hash seed (nix/examples.nix)
+          tiles = p.examples.tiles;
+
+          # a plugin index in the order its directory lists, decided by
+          # the directory order (nix/examples.nix)
+          plugins = p.examples.plugins;
         }
       );
 

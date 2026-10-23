@@ -9,10 +9,13 @@
    assertions from inside the program with the Rewind SDK, and seeds.
 4. [Tutorial: schedule points](tutorial-points.md): one line that puts a
    thread switch where no system call is.
-5. [Tutorial: advanced features](tutorial-advanced.md): the rest of the tools,
+5. [Tutorial: reproducible builds](tutorial-repro.md): build under several
+   seeds and directory orders, see what differs, and find the program that
+   wrote it.
+6. [Tutorial: advanced features](tutorial-advanced.md): the rest of the tools,
    recipe by recipe.
-6. [Time inside the VM](pmu.md): exit time and counter time, and the one
+7. [Time inside the VM](pmu.md): exit time and counter time, and the one
    setting AMD machines need.
-7. [Design](design.md): how the machine is made deterministic, what a run is
+8. [Design](design.md): how the machine is made deterministic, what a run is
    on disk, keyframes and the page store, exploring interleavings, limits,
    and the product.

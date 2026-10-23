@@ -1131,23 +1131,28 @@ a:focus-visible {
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
 }
 
-/* The two-thread drawing in the points tutorial: scaled to the column, and
+/* The tutorials' drawings, the points tutorial's two threads and the repro
+   tutorial's blame chain and directory orders: scaled to the column, and
    scrolling sideways rather than shrinking under 560px. */
-.race {
+.race,
+.drawing {
   margin: 28px 0 0;
   overflow-x: auto;
 }
-.race svg {
+.race svg,
+.drawing svg {
   display: block;
   width: 100%;
   min-width: 560px;
   height: auto;
 }
-.race text {
+.race text,
+.drawing text {
   font-family: var(--mono);
   font-size: 13px;
 }
-.race figcaption {
+.race figcaption,
+.drawing figcaption {
   color: var(--muted);
   font-size: 0.9rem;
   margin-top: 10px;
