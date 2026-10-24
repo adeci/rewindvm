@@ -1,0 +1,72 @@
+# Fuzz targets for the readers of what a run writes and what a guest
+# answers: traces, keyframes, manifests, the guest's map of a process and
+# the ELF files it maps. A workspace of its own, outside the engine's, so
+# its dependencies and builds stay out of the engine's (see README.md).
+[package]
+name = "rewind-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rewind-core = { path = "../crates/rewind-core" }
+rewind-trace = { path = "../crates/rewind-trace" }
+
+# As the engine's workspace patches it (../Cargo.toml).
+[patch.crates-io]
+nix-derivation = { git = "https://github.com/cachix/nix-derivation", rev = "e02e776cce1dc1e6d432b8cb3460026e7c76def4" }
+
+[[bin]]
+name = "trace"
+path = "fuzz_targets/trace.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "record"
+path = "fuzz_targets/record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "keyframe"
+path = "fuzz_targets/keyframe.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest"
+path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "maps"
+path = "fuzz_targets/maps.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "elf"
+path = "fuzz_targets/elf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "file_diff"
+path = "fuzz_targets/file_diff.rs"
+test = false
+doc = false
+bench = false

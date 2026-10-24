@@ -49,6 +49,21 @@
     ];
   };
 
+  # `nix develop .#fuzz`: cargo-fuzz, for the fuzz targets in fuzz/ (see
+  # fuzz/README.md). cargo-fuzz passes rustc unstable flags, which
+  # nixpkgs' stable rustc takes only with RUSTC_BOOTSTRAP, so that is set
+  # here and in no other shell.
+  fuzz = pkgs.mkShell {
+    packages = [
+      pkgs.cargo
+      pkgs.rustc
+      pkgs.rustfmt
+      pkgs.cargo-fuzz
+    ];
+
+    RUSTC_BOOTSTRAP = "1";
+  };
+
   # `nix develop .#app`: the desktop app's toolchain and libraries, for
   # `cargo run` and `cargo test` in crates/rewind-app. A cargo build is not
   # patched like the packaged one, so the libraries wgpu and Wayland open
