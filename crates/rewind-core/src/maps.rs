@@ -439,10 +439,21 @@ const SCRIPT_PYTHON_FILE: u8 = 1;
 /// The most bytes of .debug_gdb_scripts read; a real one is a few names.
 const MAX_GDB_SCRIPTS: u64 = 1 << 16;
 
+/// `len` bytes of `file` from `offset`, or None when it ends before them.
+/// The bytes are read before they are held, so a length from a corrupt
+/// header costs no more memory than the file has.
+fn read_at(file: &mut (impl Read + Seek), offset: u64, len: u64) -> Option<Vec<u8>> {
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let mut bytes = Vec::new();
+    Read::take(&mut *file, len).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 == len).then_some(bytes)
+}
+
 /// How far an ELF file's addresses moved when it was loaded with its
 /// start at `base`: the first loadable segment says which address the
 /// file's start was linked at. 0 for a program that is not position
-/// independent. None when the file is not a 64-bit ELF file.
+/// independent. None when the file is not a 64-bit ELF file, or its first
+/// segment is linked below where it is in the file.
 pub fn load_offset(file: &mut (impl Read + Seek), base: u64) -> Option<u64> {
     let mut header = [0u8; ELF_HEADER_LEN];
     file.read_exact(&mut header).ok()?;
@@ -461,13 +472,11 @@ pub fn load_offset(file: &mut (impl Read + Seek), base: u64) -> Option<u64> {
 
     // Program headers list loadable segments in address order, so the
     // first is the one the file's start belongs to.
-    let mut phdrs = vec![0u8; phentsize * phnum];
-    file.seek(SeekFrom::Start(phoff)).ok()?;
-    file.read_exact(&mut phdrs).ok()?;
+    let phdrs = read_at(file, phoff, (phentsize * phnum) as u64)?;
     let first = phdrs
         .chunks_exact(phentsize)
         .find(|p| u32::from_le_bytes(p[..4].try_into().expect("four bytes")) == PT_LOAD)?;
-    let linked = (u64_at(first, P_VADDR) - u64_at(first, P_OFFSET)) & PAGE_MASK;
+    let linked = u64_at(first, P_VADDR).checked_sub(u64_at(first, P_OFFSET))? & PAGE_MASK;
     Some(base.wrapping_sub(linked))
 }
 
@@ -489,9 +498,7 @@ pub fn dynamic_vaddr(file: &mut (impl Read + Seek)) -> Option<u64> {
     if phentsize < PHDR_LEN {
         return None;
     }
-    let mut phdrs = vec![0u8; phentsize * phnum];
-    file.seek(SeekFrom::Start(u64_at(&header, E_PHOFF))).ok()?;
-    file.read_exact(&mut phdrs).ok()?;
+    let phdrs = read_at(file, u64_at(&header, E_PHOFF), (phentsize * phnum) as u64)?;
     let dynamic = phdrs
         .chunks_exact(phentsize)
         .find(|p| u32::from_le_bytes(p[..4].try_into().expect("four bytes")) == PT_DYNAMIC)?;
@@ -539,9 +546,7 @@ fn section(file: &mut (impl Read + Seek), name: &[u8]) -> Option<Vec<u8>> {
     if shentsize < SHDR_LEN {
         return None;
     }
-    let mut shdrs = vec![0u8; shentsize * shnum];
-    file.seek(SeekFrom::Start(u64_at(&header, E_SHOFF))).ok()?;
-    file.read_exact(&mut shdrs).ok()?;
+    let shdrs = read_at(file, u64_at(&header, E_SHOFF), (shentsize * shnum) as u64)?;
     let headers: Vec<&[u8]> = shdrs.chunks_exact(shentsize).collect();
 
     // The section names, then the section whose name is `name`.
@@ -550,10 +555,7 @@ fn section(file: &mut (impl Read + Seek), name: &[u8]) -> Option<Vec<u8>> {
         if size > limit {
             return None;
         }
-        let mut bytes = vec![0u8; usize::try_from(size).ok()?];
-        file.seek(SeekFrom::Start(u64_at(shdr, SH_OFFSET))).ok()?;
-        file.read_exact(&mut bytes).ok()?;
-        Some(bytes)
+        read_at(file, u64_at(shdr, SH_OFFSET), size)
     };
     let names = read(
         headers.get(u16_at(&header, E_SHSTRNDX))?,
@@ -588,9 +590,7 @@ pub fn build_id(file: &mut (impl Read + Seek)) -> Option<String> {
     if phentsize < PHDR_LEN {
         return None;
     }
-    let mut phdrs = vec![0u8; phentsize * phnum];
-    file.seek(SeekFrom::Start(u64_at(&header, E_PHOFF))).ok()?;
-    file.read_exact(&mut phdrs).ok()?;
+    let phdrs = read_at(file, u64_at(&header, E_PHOFF), (phentsize * phnum) as u64)?;
 
     // Each note segment holds notes one after another: sizes and a type,
     // then the name and description, each padded to four bytes.
@@ -599,9 +599,7 @@ pub fn build_id(file: &mut (impl Read + Seek)) -> Option<String> {
         if u32_at(phdr, 0) != PT_NOTE {
             continue;
         }
-        let mut notes = vec![0u8; usize::try_from(u64_at(phdr, P_FILESZ)).ok()?];
-        file.seek(SeekFrom::Start(u64_at(phdr, P_OFFSET))).ok()?;
-        file.read_exact(&mut notes).ok()?;
+        let notes = read_at(file, u64_at(phdr, P_OFFSET), u64_at(phdr, P_FILESZ))?;
 
         let mut at = 0;
         while at + NOTE_HEADER_LEN <= notes.len() {
@@ -957,6 +955,28 @@ mod tests {
     fn a_file_that_is_not_elf_has_no_offset() {
         let mut file = Cursor::new(b"#!/bin/sh\necho hello\n".repeat(8));
         assert_eq!(load_offset(&mut file, 0x400000), None);
+    }
+
+    #[test]
+    fn a_segment_linked_below_its_offset_has_no_offset() {
+        // A corrupt first segment linked at 0 but read from 0x1000 has no
+        // address its file's start could be at (found by fuzz/elf).
+        let mut b = elf(0);
+        let p = ELF_HEADER_LEN;
+        b[p + P_OFFSET..p + P_OFFSET + 8].copy_from_slice(&0x1000u64.to_le_bytes());
+        assert_eq!(load_offset(&mut Cursor::new(b), 0x400000), None);
+    }
+
+    #[test]
+    fn a_note_segment_longer_than_the_file_has_no_build_id() {
+        // A corrupt note segment's size is no allocation to make before
+        // reading: the file ends long before it, so there is no build ID
+        // (found by fuzz/elf).
+        let mut b = elf(0);
+        let p = ELF_HEADER_LEN;
+        b[p..p + 4].copy_from_slice(&PT_NOTE.to_le_bytes());
+        b[p + P_FILESZ..p + P_FILESZ + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert_eq!(build_id(&mut Cursor::new(b)), None);
     }
 
     /// A 64-bit ELF file whose one program header is a note segment
