@@ -141,6 +141,8 @@ pub enum IoError {
         "read and write records at step {step} are in format {format}; this build reads {FORMAT}"
     )]
     Format { step: u64, format: u32 },
+    #[error("read and write records at step {step} hold a {what} too large for its field")]
+    OutOfRange { step: u64, what: &'static str },
 }
 
 /// Whether a trace record holds read and write records.
@@ -426,14 +428,20 @@ impl Tables {
         let first = r.byte()?;
         let kind = first & KIND_MASK;
         if kind == kind::LOST {
-            let count = r.varint()? as u32;
+            let count = r.u32("count")?;
             return Ok(Io::Lost { count });
         }
 
         // The thread, when it changed.
         if first & SAME_THREAD == 0 {
             let delta = unzigzag(r.varint()?);
-            self.tid = (i64::from(self.tid) + delta) as u32;
+            self.tid = i64::from(self.tid)
+                .checked_add(delta)
+                .and_then(|tid| u32::try_from(tid).ok())
+                .ok_or(IoError::OutOfRange {
+                    step: r.step,
+                    what: "thread",
+                })?;
         }
         let tid = self.tid;
 
@@ -442,7 +450,7 @@ impl Tables {
             kind::WRITE => {
                 let file = self.get_file(r)?;
                 let delta = unzigzag(r.varint()?);
-                let count = r.varint()? as u32;
+                let count = r.u32("count")?;
                 let end = &mut self.ends[file as usize];
                 let pos = end.wrapping_add(delta as u64);
                 *end = pos.wrapping_add(u64::from(count));
@@ -483,7 +491,7 @@ impl Tables {
                 id,
             });
         }
-        let dev = r.varint()? as u32;
+        let dev = r.u32("device")?;
         let ino = r.varint()?;
         Ok(self.define_file(dev, ino))
     }
@@ -552,6 +560,16 @@ impl<'a> Reader<'a> {
             }
             shift += VARINT_BITS;
         }
+    }
+
+    /// A varint that holds a u32, `what` it is naming the field when it
+    /// holds more.
+    fn u32(&mut self, what: &'static str) -> Result<u32, IoError> {
+        let value = self.varint()?;
+        u32::try_from(value).map_err(|_| IoError::OutOfRange {
+            step: self.step,
+            what,
+        })
     }
 }
 
@@ -823,5 +841,49 @@ mod tests {
         console.extend_from_slice(b"ok");
         assert!(!is_io(&console));
         assert_eq!(decode(&[(1, console)]).unwrap(), IoLog::default());
+    }
+
+    /// A read open by a thread `delta` from the last, of a new path "a".
+    fn read_open_entry(payload: &mut Vec<u8>, delta: i64) {
+        payload.push(kind::READ_OPEN);
+        put(payload, zigzag(delta));
+        // Path 0, new: nothing shared with the last path, one byte more.
+        put(payload, 0);
+        put(payload, 0);
+        put(payload, 1);
+        payload.push(b'a');
+    }
+
+    #[test]
+    fn a_thread_out_of_range_is_an_error() {
+        // A corrupt record moves the thread past what a u32 holds; decoding
+        // refuses it rather than overflowing (found by fuzz/trace).
+        let mut payload = Vec::new();
+        read_open_entry(&mut payload, 1);
+        read_open_entry(&mut payload, i64::MAX);
+        let err = decode(&[(4, record(&payload))]).unwrap_err();
+        assert_eq!(
+            err,
+            IoError::OutOfRange {
+                step: 4,
+                what: "thread"
+            }
+        );
+    }
+
+    #[test]
+    fn a_count_out_of_range_is_an_error() {
+        // Lost and written byte counts are u32s; a corrupt one past that is
+        // refused rather than cut to its low bits.
+        let mut payload = vec![kind::LOST];
+        put(&mut payload, u64::from(u32::MAX) + 1);
+        let err = decode(&[(4, record(&payload))]).unwrap_err();
+        assert_eq!(
+            err,
+            IoError::OutOfRange {
+                step: 4,
+                what: "count"
+            }
+        );
     }
 }
