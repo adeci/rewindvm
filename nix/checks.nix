@@ -3,6 +3,7 @@
   pkgs,
   rewind,
   kernel,
+  guest,
   gdb,
   module,
 }:
@@ -473,6 +474,9 @@ in
     cmp ${../sdk/java/dev/rewindvm/sdk/RewindExtension.java} ${../examples/bank-java/dev/rewindvm/sdk/RewindExtension.java}
     touch $out
   '';
+
+  # The guest's init passes the engine's lints (nix/guest.nix).
+  init-clippy = guest.clippy;
 
   # House style, checked rather than remembered: no em dashes and none of
   # the vocabulary that marks machine written prose, in docs, site copy and

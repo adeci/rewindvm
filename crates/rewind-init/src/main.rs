@@ -377,7 +377,9 @@ fn selftest() {
                 for i in 0..SELFTEST_ADDS {
                     total.fetch_add(i & 7, Ordering::SeqCst);
                     if i % 4096 == 0 {
-                        *handoff.lock().unwrap() += 1;
+                        *handoff
+                            .lock()
+                            .expect("no thread panics holding the handoff") += 1;
                     }
                 }
             })
@@ -985,7 +987,7 @@ fn enter(root: &str, cwd: &str) -> Result<()> {
     // The working directory is opened before the chroot, which would hide
     // it, and entered after.
     let dir = File::open(cwd).map_err(|e| format!("opening {cwd}: {e}"))?;
-    let root_c = CString::new(root).unwrap();
+    let root_c = CString::new(root).map_err(|e| format!("chroot {root}: {e}"))?;
     // SAFETY: a valid path and a valid descriptor.
     unsafe {
         if libc::chroot(root_c.as_ptr()) != 0 {
@@ -1116,7 +1118,7 @@ fn reported_cpus() -> Result<usize> {
     // SAFETY: an all-zero cpu_set_t is a valid empty set.
     let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
     // SAFETY: the kernel writes at most the size it is given into `set`.
-    let rc = unsafe { libc::sched_getaffinity(0, std::mem::size_of_val(&set), &mut set) };
+    let rc = unsafe { libc::sched_getaffinity(0, size_of_val(&set), &mut set) };
     if rc != 0 {
         return Err(format!(
             "sched_getaffinity: {}",
@@ -1231,8 +1233,8 @@ fn loopback_up() -> Result<()> {
 }
 
 fn mount(source: &str, target: &str, fstype: &str, flags: libc::c_ulong, data: &str) -> Result<()> {
-    let c = |s: &str| CString::new(s).unwrap();
-    let (source_c, target_c, fstype_c, data_c) = (c(source), c(target), c(fstype), c(data));
+    let c = |s: &str| CString::new(s).map_err(|e| format!("mounting {source} on {target}: {e}"));
+    let (source_c, target_c, fstype_c, data_c) = (c(source)?, c(target)?, c(fstype)?, c(data)?);
     // SAFETY: valid NUL-terminated strings for the duration of the call.
     let rc = unsafe {
         libc::mount(

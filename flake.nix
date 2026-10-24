@@ -258,6 +258,7 @@
             pkgs
             rewind
             kernel
+            guest
             gdb
             ;
           module = self.nixosModules.default;

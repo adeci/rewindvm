@@ -35,6 +35,32 @@ let
     meta.mainProgram = "rewind-init";
   };
 
+  # The init's lints (its Cargo.toml's [lints]), checked in a build of
+  # its own for the host: clippy-driver in the init's build would make a
+  # new initramfs, and every recording's guest with it, whenever clippy
+  # changed. The init and its four dependencies compile in seconds.
+  clippy = pkgs.rustPlatform.buildRustPackage {
+    pname = "rewind-init-clippy";
+    version = "0.1.0";
+    inherit src;
+    cargoLock.lockFile = ../crates/rewind-init/Cargo.lock;
+    nativeBuildInputs = [ pkgs.clippy ];
+
+    # The engine's clippy.toml, which lets tests unwrap.
+    CLIPPY_CONF_DIR = lib.fileset.toSource {
+      root = ../.;
+      fileset = ../clippy.toml;
+    };
+    CARGO_BUILD_WARNINGS = "deny";
+    buildPhase = ''
+      runHook preBuild
+      cargo clippy --all-targets --offline --locked
+      runHook postBuild
+    '';
+    doCheck = false;
+    installPhase = "touch $out";
+  };
+
   # The shell Nix bind-mounts at /bin/sh in its sandbox, so builders see
   # the same one here. The static binary is copied in rather than linked
   # to its store path, so a run needs nothing from the store beyond the
@@ -87,5 +113,5 @@ let
       '';
 in
 {
-  inherit init initrd;
+  inherit init initrd clippy;
 }

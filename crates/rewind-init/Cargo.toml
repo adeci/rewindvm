@@ -8,6 +8,22 @@ license = "MIT"
 # Built on its own, static against musl, by nix/guest.nix.
 [workspace]
 
+# The engine's lints (the root Cargo.toml's [workspace.lints], which a
+# workspace of its own cannot inherit), checked by checks.init-clippy.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+undocumented_unsafe_blocks = "deny"
+allow_attributes_without_reason = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
 [[bin]]
 name = "rewind-init"
 path = "src/main.rs"
