@@ -339,9 +339,10 @@ pub fn sections(mut answer: &[u8]) -> Option<Vec<(String, &[u8])>> {
         let header = std::str::from_utf8(&answer[..line_end]).ok()?;
         let (len, name) = header.split_once(' ')?;
         let len: usize = len.parse().ok()?;
-        let body = answer.get(line_end + 1..line_end + 1 + len)?;
+        let end = (line_end + 1).checked_add(len)?;
+        let body = answer.get(line_end + 1..end)?;
         found.push((name.to_string(), body));
-        answer = &answer[line_end + 1 + len..];
+        answer = &answer[end..];
     }
     Some(found)
 }
@@ -487,6 +488,15 @@ mod tests {
         assert_eq!(parse(&["shell", "0", "80"]), None);
         assert_eq!(parse(&["shell", "0", "80", "24", "--without"]), None);
         assert_eq!(parse(&["format", "/"]), None);
+    }
+
+    #[test]
+    fn a_section_longer_than_memory_has_no_sections() {
+        // A corrupt length near usize::MAX would wrap the end of its body
+        // around to a small number; the answer is cut short instead
+        // (found by fuzz/maps).
+        let answer = format!("{} pid\n42", usize::MAX - 1);
+        assert_eq!(sections(answer.as_bytes()), None);
     }
 
     #[test]
