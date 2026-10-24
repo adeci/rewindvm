@@ -20,7 +20,7 @@ const SKIPPED: &str = "skipped";
 
 /// Every test case in a report, by `classname.name`, with how it ended.
 /// A name a report repeats keeps its last result.
-pub fn results(xml: &str) -> Result<BTreeMap<String, TestResult>> {
+pub(crate) fn results(xml: &str) -> Result<BTreeMap<String, TestResult>> {
     let doc = roxmltree::Document::parse(xml).context("parsing a JUnit XML report")?;
     let mut found = BTreeMap::new();
     for case in doc.descendants().filter(|n| n.has_tag_name(TESTCASE)) {

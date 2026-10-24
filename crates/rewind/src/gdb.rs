@@ -39,7 +39,7 @@ use crate::locate::Pick;
 
 /// The address `rewind gdb` serves on when it starts gdb itself: any free
 /// port on the loopback interface.
-pub const GDB_LOCAL: &str = "127.0.0.1:0";
+pub(crate) const GDB_LOCAL: &str = "127.0.0.1:0";
 
 /// Where Nix keeps store paths, and the program that fetches them.
 const NIX_STORE: &str = "/nix/store";
@@ -101,7 +101,7 @@ const LISTEN_FD: i32 = 3;
 /// Where gdb starts on a fork: in thread `tid` of process `pid`, or when
 /// both are None the thread `rewind where` would look at, and in frame
 /// `frame` of it, else its innermost.
-pub struct Start {
+pub(crate) struct Start {
     pub pid: Option<u32>,
     pub tid: Option<u32>,
     pub frame: Option<u32>,
@@ -112,7 +112,7 @@ pub struct Start {
 /// gdb started against it, with `extra` after the arguments this makes.
 /// Ctrl-C belongs to gdb, which turns it into an interrupt for the fork,
 /// so this process ignores it meanwhile.
-pub fn gdb(
+pub(crate) fn gdb(
     home: &Home,
     run: &Run,
     step: u64,
@@ -203,7 +203,7 @@ pub fn gdb(
 /// while a question about a process's own code needs only the process's,
 /// and the kernel's DWARF is slow to load and may need fetching first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kernel {
+pub(crate) enum Kernel {
     Load,
     Skip,
 }
@@ -212,7 +212,7 @@ pub enum Kernel {
 /// starting gdb, or not, when the symbols only name an address in another
 /// message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Say {
+pub(crate) enum Say {
     Aloud,
     Nothing,
 }
@@ -227,7 +227,7 @@ impl Say {
 }
 
 /// What a fork for gdb needs of the run's kernel.
-pub enum Needs {
+pub(crate) enum Needs {
     /// Nothing more than any kernel gives.
     Nothing,
     /// Its task list, without which the thing named cannot be done:
@@ -237,7 +237,7 @@ pub enum Needs {
 
 /// A fork of `run` at `step` for gdb, refused when the run's kernel lacks
 /// what `needs` names.
-pub fn fork(home: &Home, run: &Run, step: u64, needs: Needs) -> Result<rewind_vmm::Machine> {
+pub(crate) fn fork(home: &Home, run: &Run, step: u64, needs: Needs) -> Result<rewind_vmm::Machine> {
     let machine = run.machine_at(
         home,
         step,
@@ -257,7 +257,7 @@ pub fn fork(home: &Home, run: &Run, step: u64, needs: Needs) -> Result<rewind_vm
 
 /// gdb's view of `machine`, a fork of `run` at `step`, seeing `scope`'s
 /// threads.
-pub fn debuggee(
+pub(crate) fn debuggee(
     run: &Run,
     step: u64,
     machine: rewind_vmm::Machine,
@@ -269,7 +269,7 @@ pub fn debuggee(
 
 /// What the CPU ran at the fork's step, or None from a kernel that does
 /// not say where its tasks are.
-pub fn on_the_cpu(machine: &rewind_vmm::Machine) -> Result<Option<OnTheCpu>> {
+pub(crate) fn on_the_cpu(machine: &rewind_vmm::Machine) -> Result<Option<OnTheCpu>> {
     let Some(layout) = machine.task_layout()? else {
         return Ok(None);
     };
@@ -278,7 +278,7 @@ pub fn on_the_cpu(machine: &rewind_vmm::Machine) -> Result<Option<OnTheCpu>> {
 
 /// Where gdb's output goes: to the terminal, or back to the caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Output<'a> {
+pub(crate) enum Output<'a> {
     Terminal,
     Captured,
     /// Back to the caller, with each download gdb's debuginfod client
@@ -289,7 +289,7 @@ pub enum Output<'a> {
 
 /// What gdb printed when its output was captured.
 #[derive(Default)]
-pub struct Printed {
+pub(crate) struct Printed {
     pub stdout: String,
     pub stderr: String,
 }
@@ -297,7 +297,7 @@ pub struct Printed {
 /// Runs the host's gdb with `args` and waits for it, serving `fork` to it
 /// from this thread when given, on the listener its arguments connect to.
 /// Returns how gdb exited and, when captured, what it printed.
-pub fn run_gdb(
+pub(crate) fn run_gdb(
     args: &[String],
     fork: Option<(&mut rewind_core::debug::Debuggee, &TcpListener)>,
     output: Output,
@@ -375,10 +375,10 @@ const ENV_GDB: &str = "REWIND_GDB";
 /// The first gdb version that finds thread-local variables, such as
 /// errno, itself, from the FS base and the shared library list the stub
 /// gives it: earlier ones ask the stub, which cannot say.
-pub const GDB_THREAD_LOCALS: u32 = 17;
+pub(crate) const GDB_THREAD_LOCALS: u32 = 17;
 
 /// The gdb `rewind gdb` starts.
-pub fn gdb_program() -> std::ffi::OsString {
+pub(crate) fn gdb_program() -> std::ffi::OsString {
     std::env::var_os(ENV_GDB)
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| GDB_PROGRAM.into())
@@ -386,7 +386,7 @@ pub fn gdb_program() -> std::ffi::OsString {
 
 /// gdb's major version, from the last word of `banner`, the first line
 /// `gdb --version` prints, such as "GNU gdb (GDB) 17.2".
-pub fn major_version(banner: &str) -> Option<u32> {
+pub(crate) fn major_version(banner: &str) -> Option<u32> {
     banner
         .split_whitespace()
         .last()?
@@ -398,7 +398,7 @@ pub fn major_version(banner: &str) -> Option<u32> {
 
 /// What a gdb older than [`GDB_THREAD_LOCALS`] cannot do, said by
 /// `rewind gdb` and `rewind doctor`.
-pub fn too_old(major: u32) -> String {
+pub(crate) fn too_old(major: u32) -> String {
     format!(
         "gdb {major} cannot read thread-local variables, such as errno, at a step; \
          gdb {GDB_THREAD_LOCALS} or later can"
@@ -470,7 +470,7 @@ const DOWNLOADS_ONLY: &str =
 /// process's programs and libraries with their sources, and a debuginfod
 /// server for their DWARF, with the session directory the files only the
 /// VM had are written to.
-pub struct Symbols {
+pub(crate) struct Symbols {
     session: Session,
     kernel: KernelSymbols,
     process: Process,
@@ -481,7 +481,7 @@ impl Symbols {
     /// The symbols for process `pid` at `step` of `run`, or when None the
     /// process running there, with the kernel's when `kernel` says so,
     /// saying what they are as `say` says.
-    pub fn load(
+    pub(crate) fn load(
         home: &Home,
         run: &Run,
         step: u64,
@@ -510,7 +510,7 @@ impl Symbols {
     /// can neither name a frame in it nor unwind past one. A vDSO that does
     /// not read is said, and left out, as is one the process has not
     /// called into yet, which no frame can be in.
-    pub fn add_vdso(&mut self, debuggee: &rewind_core::debug::Debuggee, say: Say) {
+    pub(crate) fn add_vdso(&mut self, debuggee: &rewind_core::debug::Debuggee, say: Say) {
         let Some(range) = self.process.vdso.clone() else {
             return;
         };
@@ -544,7 +544,7 @@ impl Symbols {
     /// program, a process whose loader has not run yet, or a list whose
     /// main program is not among the files leaves every file loaded one by
     /// one, as before.
-    pub fn add_libraries(&mut self, debuggee: &mut rewind_core::debug::Debuggee, say: Say) {
+    pub(crate) fn add_libraries(&mut self, debuggee: &mut rewind_core::debug::Debuggee, say: Say) {
         // Where each file's dynamic section is in the process. The vDSO,
         // which no file here holds, stays loaded on its own.
         let dynamics: Vec<Option<u64>> = self
@@ -596,14 +596,14 @@ impl Symbols {
 
     /// The directory the session's files are written to, which goes when
     /// the symbols do.
-    pub fn dir(&self) -> &Path {
+    pub(crate) fn dir(&self) -> &Path {
         &self.session.dir
     }
 
     /// The process's programs and libraries by their build IDs, which the
     /// debuginfod client asks for them by. A file with no build ID is left
     /// out.
-    pub fn file_names(&self) -> FileNames {
+    pub(crate) fn file_names(&self) -> FileNames {
         let mut names = FileNames::new();
         for file in &self.process.files {
             let Ok(mut opened) = std::fs::File::open(&file.path) else {
@@ -623,7 +623,7 @@ impl Symbols {
     /// gdb's arguments for these symbols, connecting to `target` when
     /// given. The session's debuginfod server is asked first, then any the
     /// person already uses.
-    pub fn arguments(&self, target: Option<std::net::SocketAddr>) -> Vec<String> {
+    pub(crate) fn arguments(&self, target: Option<std::net::SocketAddr>) -> Vec<String> {
         let others = std::env::var(ENV_DEBUGINFOD_URLS).unwrap_or_default();
         let urls: Vec<&str> = self
             .debuginfod
@@ -1503,7 +1503,7 @@ fn sources_outside_store(files: &[SymbolFile]) -> Vec<Vec<String>> {
 /// The path a symbol file had in the VM: its path under `dir` when it was
 /// written there, else its own path. The vDSO is no file in the VM, and
 /// keeps the name the VM's map gives it.
-pub fn path_in_vm(file: &Path, dir: &Path) -> PathBuf {
+pub(crate) fn path_in_vm(file: &Path, dir: &Path) -> PathBuf {
     match file.strip_prefix(dir) {
         Ok(inside) if inside == Path::new(rewind_core::maps::VDSO) => inside.to_path_buf(),
         Ok(inside) => Path::new("/").join(inside),

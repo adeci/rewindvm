@@ -253,42 +253,42 @@ enum RunKind {
 mod v3 {
     // OSXSAVE (bit 27) is left out: KVM sets it itself from the guest's
     // CR4.
-    pub const LEAF1_ECX: u32 = bits(&[0, 1, 9, 12, 13, 19, 20, 22, 23, 25, 26, 28, 29]);
-    pub const LEAF1_EDX: u32 = bits(&[
+    pub(super) const LEAF1_ECX: u32 = bits(&[0, 1, 9, 12, 13, 19, 20, 22, 23, 25, 26, 28, 29]);
+    pub(super) const LEAF1_EDX: u32 = bits(&[
         0, 1, 2, 3, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 19, 23, 24, 25, 26,
     ]);
-    pub const LEAF7_EBX: u32 = bits(&[0, 3, 5, 7, 8, 9, 10]);
-    pub const EXT1_ECX: u32 = bits(&[0, 5, 8]);
-    pub const EXT1_EDX: u32 = bits(&[11, 20, 26, 29]);
+    pub(super) const LEAF7_EBX: u32 = bits(&[0, 3, 5, 7, 8, 9, 10]);
+    pub(super) const EXT1_ECX: u32 = bits(&[0, 5, 8]);
+    pub(super) const EXT1_EDX: u32 = bits(&[11, 20, 26, 29]);
 
     /// XSAVE components: x87, SSE and AVX.
-    pub const XCR0: u32 = 0b111;
+    pub(super) const XCR0: u32 = 0b111;
     /// The standard XSAVE area with those three: 512 legacy bytes, a 64
     /// byte header, and 256 bytes of AVX upper halves.
-    pub const XSAVE_SIZE: u32 = 832;
+    pub(super) const XSAVE_SIZE: u32 = 832;
     /// XSAVEOPT only: compacted formats would change the kernel's layout.
-    pub const XSAVE_LEAF1_EAX: u32 = 1;
+    pub(super) const XSAVE_LEAF1_EAX: u32 = 1;
 
     /// The highest basic and extended leaves the baseline describes.
-    pub const MAX_BASIC: u32 = 0xd;
-    pub const MAX_EXTENDED: u32 = 0x8000_0008;
+    pub(super) const MAX_BASIC: u32 = 0xd;
+    pub(super) const MAX_EXTENDED: u32 = 0x8000_0008;
 
     /// 39 physical and 48 virtual address bits, which every v3 CPU covers.
-    pub const ADDRESS_BITS: u32 = (48 << 8) | 39;
+    pub(super) const ADDRESS_BITS: u32 = (48 << 8) | 39;
 
     /// Family, model and stepping, per vendor: Zen 2 and Haswell, the
     /// first v3 cores of each.
-    pub const SIGNATURE_AMD: u32 = 0x0083_0f10;
-    pub const SIGNATURE_INTEL: u32 = 0x0003_06c3;
+    pub(super) const SIGNATURE_AMD: u32 = 0x0083_0f10;
+    pub(super) const SIGNATURE_INTEL: u32 = 0x0003_06c3;
 
     /// Cache sizes, in AMD's leaf 0x80000005 and 0x80000006 formats, which
     /// glibc reads to size its copy strategies: 32 KiB 8-way L1s, a 512
     /// KiB 8-way L2 and a 16 MiB L3, all with 64 byte lines.
-    pub const L1: u32 = (32 << 24) | (8 << 16) | (1 << 8) | 64;
-    pub const L2: u32 = (512 << 16) | (0x6 << 12) | (1 << 8) | 64;
-    pub const L3: u32 = (32 << 18) | (0x8 << 12) | (1 << 8) | 64;
+    pub(super) const L1: u32 = (32 << 24) | (8 << 16) | (1 << 8) | 64;
+    pub(super) const L2: u32 = (512 << 16) | (0x6 << 12) | (1 << 8) | 64;
+    pub(super) const L3: u32 = (32 << 18) | (0x8 << 12) | (1 << 8) | 64;
 
-    pub const BRAND: &[u8; 48] =
+    pub(super) const BRAND: &[u8; 48] =
         b"Rewind VM x86-64-v3 virtual CPU\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
     const fn bits(list: &[u32]) -> u32 {
@@ -311,7 +311,8 @@ mod v3_compat {
     /// a v3-compat run already differs from a v3 run by ERMS. "x86-64-v3"
     /// stays in the name because the model is still x86-64-v3, a level
     /// that does not include ERMS.
-    pub const BRAND: &[u8; 48] = b"Rewind VM x86-64-v3-compat virtual CPU\0\0\0\0\0\0\0\0\0\0";
+    pub(super) const BRAND: &[u8; 48] =
+        b"Rewind VM x86-64-v3-compat virtual CPU\0\0\0\0\0\0\0\0\0\0";
 }
 
 /// ERMS, fast REP MOVSB and STOSB: leaf 7 EBX bit 9. glibc and the kernel

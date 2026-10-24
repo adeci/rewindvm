@@ -57,7 +57,7 @@ const ENV_END: &str = "REWIND_END";
 
 /// A property of a finished run.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Property {
+pub(crate) enum Property {
     /// The run ends as the unperturbed run did: the same wait status and
     /// every output with the same hash.
     SameOutcome,
@@ -161,7 +161,7 @@ impl Property {
     /// The short name a report calls the property by: a script by its
     /// file name without its extension, and a property that takes an
     /// argument without it.
-    pub fn name(&self) -> String {
+    pub(crate) fn name(&self) -> String {
         match self {
             Property::Script(path) => path.file_stem().map_or_else(
                 || path.display().to_string(),
@@ -178,7 +178,7 @@ impl Property {
     /// The properties a file lists, one a line, without blank lines and
     /// lines starting with `#`. A script's path is taken from the file's
     /// directory, so a repository's file can name the scripts beside it.
-    pub fn read_file(path: &Path) -> Result<Vec<Property>> {
+    pub(crate) fn read_file(path: &Path) -> Result<Vec<Property>> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading properties from {}", path.display()))?;
         // A file named without a directory is in the current one, and a
@@ -210,7 +210,7 @@ impl Property {
 /// Why a run violates a property: the property, the step to look at when
 /// there is one, and what went wrong.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Violation {
+pub(crate) struct Violation {
     pub property: String,
     pub step: Option<u64>,
     pub why: String,
@@ -227,7 +227,7 @@ impl fmt::Display for Violation {
 
 /// The properties of one search, and the unperturbed run they compare
 /// with.
-pub struct Judge<'a> {
+pub(crate) struct Judge<'a> {
     home: &'a Home,
     base_id: String,
     base_key: OutcomeKey,
@@ -243,7 +243,7 @@ pub struct Judge<'a> {
 impl<'a> Judge<'a> {
     /// A judge of `properties`, or of the same outcome as `base` when
     /// there are none.
-    pub fn new(home: &'a Home, base: &Run, properties: Vec<Property>) -> Result<Judge<'a>> {
+    pub(crate) fn new(home: &'a Home, base: &Run, properties: Vec<Property>) -> Result<Judge<'a>> {
         let properties = if properties.is_empty() {
             vec![Property::SameOutcome]
         } else {
@@ -289,31 +289,31 @@ impl<'a> Judge<'a> {
 
     /// Whether the search asks only for the same outcome as the
     /// unperturbed run, as check did before properties.
-    pub fn same_outcome_only(&self) -> bool {
+    pub(crate) fn same_outcome_only(&self) -> bool {
         self.properties == [Property::SameOutcome]
     }
 
     /// Whether a property reads a run's files where its job exited: junit
     /// reads its reports there, and a script is given that step.
-    pub fn reads_files_at_exit(&self) -> bool {
+    pub(crate) fn reads_files_at_exit(&self) -> bool {
         self.properties
             .iter()
             .any(|p| matches!(p, Property::Junit(_) | Property::Script(_)))
     }
 
     /// The properties, as the command line names them.
-    pub fn properties(&self) -> &[Property] {
+    pub(crate) fn properties(&self) -> &[Property] {
         &self.properties
     }
 
     /// The unperturbed run's outcome, which `same-outcome` compares with.
-    pub fn base_key(&self) -> &OutcomeKey {
+    pub(crate) fn base_key(&self) -> &OutcomeKey {
         &self.base_key
     }
 
     /// Every property `run` violates, in the order given; none when all
     /// hold.
-    pub fn violations(&self, run: &Run) -> Result<Vec<Violation>> {
+    pub(crate) fn violations(&self, run: &Run) -> Result<Vec<Violation>> {
         let mut found = Vec::new();
         for property in &self.properties {
             if let Some(v) = self.judge(property, run)? {
@@ -536,7 +536,7 @@ fn said(what: &str, message: &str) -> String {
 /// How many of a search's runs checked one `sometimes` condition, and how
 /// many of those made it true.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Reach {
+pub(crate) struct Reach {
     pub runs: u64,
     pub hits: u64,
 }
@@ -544,13 +544,13 @@ pub struct Reach {
 /// The `sometimes` conditions of a search: each id any run checked, and
 /// how many runs reached it and made it true.
 #[derive(Default)]
-pub struct Coverage {
+pub(crate) struct Coverage {
     sometimes: BTreeMap<String, Reach>,
 }
 
 impl Coverage {
     /// Adds the `sometimes` checks `run` made.
-    pub fn add(&mut self, run: &Run) -> Result<()> {
+    pub(crate) fn add(&mut self, run: &Run) -> Result<()> {
         self.add_marks(run.trace()?.sdk_marks().map(|(_, mark)| mark));
         Ok(())
     }
@@ -576,7 +576,7 @@ impl Coverage {
     }
 
     /// The ids no run made true, in order.
-    pub fn never(&self) -> Vec<&str> {
+    pub(crate) fn never(&self) -> Vec<&str> {
         self.sometimes
             .iter()
             .filter(|(_, reach)| reach.hits == 0)
@@ -585,7 +585,7 @@ impl Coverage {
     }
 
     /// The ids some run made true, in order, with how often.
-    pub fn reached(&self) -> Vec<(&str, Reach)> {
+    pub(crate) fn reached(&self) -> Vec<(&str, Reach)> {
         self.sometimes
             .iter()
             .filter(|(_, reach)| reach.hits > 0)
@@ -595,7 +595,7 @@ impl Coverage {
 }
 
 /// Whether `run` wrote any SDK mark, so the search judges them.
-pub fn writes_sdk_marks(run: &Run) -> Result<bool> {
+pub(crate) fn writes_sdk_marks(run: &Run) -> Result<bool> {
     Ok(run.trace()?.sdk_marks().next().is_some())
 }
 

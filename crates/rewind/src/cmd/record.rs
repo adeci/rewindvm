@@ -26,7 +26,7 @@ use crate::{
 
 /// The arguments of `rewind run`.
 #[derive(clap::Args)]
-pub struct RunArgs {
+pub(crate) struct RunArgs {
     #[command(flatten)]
     pub(crate) image: ImageArgs,
     /// Print the run as one JSON object on standard output once it
@@ -38,7 +38,7 @@ pub struct RunArgs {
     pub(crate) machine: MachineArgs,
 }
 
-pub fn run_command(home: &Home, args: RunArgs) -> Result<ExitCode> {
+pub(crate) fn run_command(home: &Home, args: RunArgs) -> Result<ExitCode> {
     let RunArgs {
         image,
         json,
@@ -55,7 +55,7 @@ pub fn run_command(home: &Home, args: RunArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind nix`.
 #[derive(clap::Args)]
-pub struct NixArgs {
+pub(crate) struct NixArgs {
     /// A .drv path or an installable such as `nixpkgs#hello`.
     pub(crate) installable: String,
     /// Also compare the outputs with this binary cache's builds of them,
@@ -77,7 +77,7 @@ pub struct NixArgs {
     pub(crate) machine: MachineArgs,
 }
 
-pub fn nix(home: &Home, args: NixArgs) -> Result<ExitCode> {
+pub(crate) fn nix(home: &Home, args: NixArgs) -> Result<ExitCode> {
     let NixArgs {
         installable,
         compare_with,
@@ -122,7 +122,7 @@ pub fn nix(home: &Home, args: NixArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind check`.
 #[derive(clap::Args)]
-pub struct CheckArgs {
+pub(crate) struct CheckArgs {
     /// A .drv or installable; leave it out and give --root and a
     /// command to check a command instead.
     pub(crate) installable: Option<String>,
@@ -416,7 +416,7 @@ fn fork_window(
     )
 }
 
-pub fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
+pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     let CheckArgs {
         installable,
         image,
@@ -1376,7 +1376,7 @@ fn thread_json(
 
 /// The arguments of `rewind fork`.
 #[derive(clap::Args)]
-pub struct ForkArgs {
+pub(crate) struct ForkArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) run: String,
     #[arg(help = STEP_HELP, long_help = STEP_LONG_HELP)]
@@ -1413,7 +1413,7 @@ pub struct ForkArgs {
     pub(crate) timeout: Option<u64>,
 }
 
-pub fn fork(home: &Home, args: ForkArgs) -> Result<ExitCode> {
+pub(crate) fn fork(home: &Home, args: ForkArgs) -> Result<ExitCode> {
     let ForkArgs {
         run,
         step,

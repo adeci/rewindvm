@@ -42,7 +42,7 @@ const JSON_LIMITS: Limits = Limits {
 
 /// How `rewind where` answers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Format {
+pub(crate) enum Format {
     Text,
     Json,
 }
@@ -57,7 +57,7 @@ struct Walked {
 /// Prints where thread `tid` of process `pid` was at `step` of `run`:
 /// by default the thread of the step's own event. `callers` is how many
 /// frames that called the chosen one the text lists.
-pub fn locate(
+pub(crate) fn locate(
     home: &Home,
     run: &Run,
     step: u64,
@@ -99,7 +99,7 @@ pub fn locate(
 /// Where thread `tid` of process `pid` was at `step` of `run`, by default
 /// the thread of the step's own event, else the one on the CPU: its frames,
 /// the one in the program's own code, and their source.
-pub fn located(
+pub(crate) fn located(
     home: &Home,
     run: &Run,
     step: u64,
@@ -143,7 +143,7 @@ pub fn located(
 
 /// Which thread of a failure `rewind check --where` names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Involved {
+pub(crate) enum Involved {
     /// The thread on the CPU at the step that decides how the run ends.
     AtTheDecidingStep,
     /// The thread of the failing run's first event that differs.
@@ -153,7 +153,7 @@ pub enum Involved {
 /// A line of `rewind check --where`: the thread `answer` describes, by the
 /// frame in the program's own code it was in, else its innermost one, and
 /// why it is named.
-pub fn thread_line(answer: &Located, involved: Involved) -> String {
+pub(crate) fn thread_line(answer: &Located, involved: Involved) -> String {
     let frame = answer
         .chosen
         .or((!answer.frames.is_empty()).then_some(0))
@@ -292,7 +292,7 @@ enum Certainty {
 /// instruction named by its function, offset and source line, and the
 /// process it was in. None when the run did not stop that way or the
 /// instruction has no symbol, and the run's own words stand.
-pub fn describe_stall(home: &Home, run: &Run) -> Option<String> {
+pub(crate) fn describe_stall(home: &Home, run: &Run) -> Option<String> {
     let timeout = run.manifest.outcome.as_ref()?.stop.timeout()?;
     let rewind_trace::stop::Doing::User { rip, thread } = &timeout.doing else {
         return None;
@@ -387,7 +387,7 @@ fn script_answer<T: serde::de::DeserializeOwned>(printed: &gdb::Printed) -> Resu
 
 /// The thread a question about a step is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Pick {
+pub(crate) enum Pick {
     Thread {
         pid: u32,
         tid: u32,
@@ -403,7 +403,12 @@ pub enum Pick {
 /// in its main thread; a thread given alone is in the process the trace
 /// saw it in. At a step with no event, or with the kernel's own, such as a
 /// console line, it is the thread on the CPU.
-pub fn thread_at(trace: &Trace, step: u64, pid: Option<u32>, tid: Option<u32>) -> Result<Pick> {
+pub(crate) fn thread_at(
+    trace: &Trace,
+    step: u64,
+    pid: Option<u32>,
+    tid: Option<u32>,
+) -> Result<Pick> {
     let event = trace.events.iter().find(|e| e.step == step);
     match (pid, tid) {
         (Some(pid), Some(tid)) => Ok(Pick::Thread { pid, tid }),
@@ -551,7 +556,7 @@ impl Choice for Frame {
 
 /// The innermost frame in the program's own code, else the innermost in
 /// user space with a name.
-pub fn chosen(frames: &[Frame]) -> Option<usize> {
+pub(crate) fn chosen(frames: &[Frame]) -> Option<usize> {
     frames.iter().position(Frame::own_code).or_else(|| {
         frames
             .iter()
@@ -656,14 +661,14 @@ impl Carry for SourceFile {
 
 /// Lines of a source file around one, as the text answer shows them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Source {
+pub(crate) struct Source {
     /// The number of the first line.
     pub first: u32,
     pub lines: Vec<String>,
 }
 
 /// Whose stack it was, for the header line.
-pub struct Whose<'a> {
+pub(crate) struct Whose<'a> {
     pub pid: u32,
     pub process: &'a str,
     pub tid: u32,
@@ -672,7 +677,7 @@ pub struct Whose<'a> {
 
 /// `rewind where`'s answer in words: a header, the chosen frame with its
 /// source, and up to `callers` frames it was called from.
-pub fn render(
+pub(crate) fn render(
     whose: &Whose,
     frames: &[Frame],
     chosen: Option<usize>,

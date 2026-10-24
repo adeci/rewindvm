@@ -13,7 +13,7 @@ use crate::{RUN_HELP, RUN_LONG_HELP, STEP_HELP, STEP_LONG_HELP, gdb, locate, ter
 
 /// The arguments of `rewind cat`.
 #[derive(clap::Args)]
-pub struct CatArgs {
+pub(crate) struct CatArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) run: String,
     #[arg(help = STEP_HELP, long_help = STEP_LONG_HELP)]
@@ -29,7 +29,7 @@ pub struct CatArgs {
     pub(crate) pid: Option<u32>,
 }
 
-pub fn cat(home: &Home, args: CatArgs) -> Result<ExitCode> {
+pub(crate) fn cat(home: &Home, args: CatArgs) -> Result<ExitCode> {
     let CatArgs {
         run,
         step,
@@ -54,7 +54,7 @@ pub fn cat(home: &Home, args: CatArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind shell`.
 #[derive(clap::Args)]
-pub struct ShellArgs {
+pub(crate) struct ShellArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) run: String,
     #[arg(help = STEP_HELP, long_help = STEP_LONG_HELP)]
@@ -73,7 +73,7 @@ pub struct ShellArgs {
     pub(crate) with: Vec<String>,
 }
 
-pub fn shell(home: &Home, args: ShellArgs) -> Result<ExitCode> {
+pub(crate) fn shell(home: &Home, args: ShellArgs) -> Result<ExitCode> {
     let ShellArgs {
         run,
         step,
@@ -145,7 +145,7 @@ pub fn shell(home: &Home, args: ShellArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind gdb`.
 #[derive(clap::Args)]
-pub struct GdbArgs {
+pub(crate) struct GdbArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) run: String,
     #[arg(help = STEP_HELP, long_help = STEP_LONG_HELP)]
@@ -172,7 +172,7 @@ pub struct GdbArgs {
     pub(crate) gdb_args: Vec<String>,
 }
 
-pub fn gdb(home: &Home, args: GdbArgs) -> Result<ExitCode> {
+pub(crate) fn gdb(home: &Home, args: GdbArgs) -> Result<ExitCode> {
     let GdbArgs {
         run,
         step,
@@ -190,7 +190,7 @@ pub fn gdb(home: &Home, args: GdbArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind where`.
 #[derive(clap::Args)]
-pub struct WhereArgs {
+pub(crate) struct WhereArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) run: String,
     #[arg(help = STEP_HELP, long_help = STEP_LONG_HELP)]
@@ -213,7 +213,7 @@ pub struct WhereArgs {
     pub(crate) json: bool,
 }
 
-pub fn r#where(home: &Home, args: WhereArgs) -> Result<ExitCode> {
+pub(crate) fn r#where(home: &Home, args: WhereArgs) -> Result<ExitCode> {
     let WhereArgs {
         run,
         step,
@@ -242,7 +242,7 @@ const DEFAULT_CALLERS: usize = 2;
 
 /// The arguments of `rewind threads`.
 #[derive(clap::Args)]
-pub struct ThreadsArgs {
+pub(crate) struct ThreadsArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) run: String,
     /// The first step to look at; by default the step the job started on.
@@ -258,7 +258,7 @@ pub struct ThreadsArgs {
     pub(crate) json: bool,
 }
 
-pub fn threads(home: &Home, args: ThreadsArgs) -> Result<ExitCode> {
+pub(crate) fn threads(home: &Home, args: ThreadsArgs) -> Result<ExitCode> {
     let ThreadsArgs {
         run,
         from,

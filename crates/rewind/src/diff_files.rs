@@ -15,7 +15,7 @@ use crate::property::end_step;
 
 /// What the summaries call the two runs, as the rest of `rewind diff`
 /// does.
-pub const SIDES: Sides<'static> = Sides {
+pub(crate) const SIDES: Sides<'static> = Sides {
     a: "the left run",
     b: "the right run",
 };
@@ -33,7 +33,7 @@ const MARK_LEFT: &str = "- ";
 const MARK_RIGHT: &str = "+ ";
 
 /// The line before a text excerpt that says what its marks mean.
-pub const TEXT_LEGEND: &str =
+pub(crate) const TEXT_LEGEND: &str =
     "Lines marked - are only in the left run. Lines marked + are only in the right run.";
 
 /// Bytes per line of a byte excerpt, and per group within a line.
@@ -45,7 +45,7 @@ const BYTES_PER_GROUP: usize = 8;
 const EXCERPT_BYTE_LINES: usize = 4;
 
 /// The line before a byte excerpt that says what its marks mean.
-pub const BYTES_LEGEND: &str = "Bytes marked ^^ differ.";
+pub(crate) const BYTES_LEGEND: &str = "Bytes marked ^^ differ.";
 
 /// The first byte that `characters` shows as itself, and the last.
 const PRINTABLE: std::ops::RangeInclusive<u8> = 0x20..=0x7e;
@@ -53,7 +53,7 @@ const PRINTABLE: std::ops::RangeInclusive<u8> = 0x20..=0x7e;
 /// The lines around the first difference of two text copies, `a` the
 /// left run's lines and `b` the right run's, each marked by which runs
 /// have it.
-pub fn text_excerpt(a: &[String], b: &[String], diff: &LineDiff) -> Vec<String> {
+pub(crate) fn text_excerpt(a: &[String], b: &[String], diff: &LineDiff) -> Vec<String> {
     let first = diff.lines.iter().position(changed).unwrap_or(0);
     diff.lines
         .iter()
@@ -69,7 +69,7 @@ pub fn text_excerpt(a: &[String], b: &[String], diff: &LineDiff) -> Vec<String> 
 
 /// The lines of bytes from the first difference of two binary copies:
 /// each run's bytes, then a line marking the bytes that differ.
-pub fn byte_excerpt(a: &[u8], b: &[u8], diff: &ByteDiff) -> Vec<String> {
+pub(crate) fn byte_excerpt(a: &[u8], b: &[u8], diff: &ByteDiff) -> Vec<String> {
     /// What each run's line starts with, padded to one width.
     const LEFT: &str = "left   ";
     const RIGHT: &str = "right  ";
@@ -142,7 +142,7 @@ fn hex_line(offset: usize, chunk: &[u8]) -> String {
 
 /// How one file the jobs wrote differs between the runs.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct OutputDiff {
+pub(crate) struct OutputDiff {
     pub path: String,
     /// The file's size in each run, or None where it was not there.
     pub left_size: Option<usize>,
@@ -155,7 +155,7 @@ pub struct OutputDiff {
 /// The files of `paths` whose bytes differ between `left` and `right`,
 /// each run's files by path, in the order of `paths`; and how many of
 /// `paths` were the same in both. A path neither run has is left out.
-pub fn differing_outputs(
+pub(crate) fn differing_outputs(
     paths: &[String],
     left: &[(String, &[u8])],
     right: &[(String, &[u8])],
@@ -196,7 +196,7 @@ pub fn differing_outputs(
 }
 
 /// How a file differs, after its path in a list.
-pub fn output_note(output: &OutputDiff) -> String {
+pub(crate) fn output_note(output: &OutputDiff) -> String {
     match (output.left_size, output.right_size) {
         (Some(_), None) => format!("only in {}", SIDES.a),
         (None, Some(_)) => format!("only in {}", SIDES.b),
@@ -211,7 +211,7 @@ pub fn output_note(output: &OutputDiff) -> String {
 
 /// The summary and excerpt `rewind diff --file` prints for `name`, the
 /// left run's copy `a` and the right run's `b`.
-pub fn file_report(name: &str, a: &[u8], b: &[u8]) -> Vec<String> {
+pub(crate) fn file_report(name: &str, a: &[u8], b: &[u8]) -> Vec<String> {
     let diff = file_diff::compare(a, b);
     let mut report = file_diff::summary(name, a, b, &diff, SIDES);
     match &diff {
@@ -236,7 +236,7 @@ pub fn file_report(name: &str, a: &[u8], b: &[u8]) -> Vec<String> {
 
 /// `rewind diff --file`: file `path` as each run had it when its job
 /// exited, compared.
-pub fn diff_file(
+pub(crate) fn diff_file(
     home: &Home,
     left: &Run,
     right: &Run,
@@ -314,7 +314,12 @@ fn read_file(home: &Home, run: &Run, step: u64, path: &str) -> Result<Option<Vec
 /// `rewind diff --outputs`: the files either run's job wrote and left
 /// behind, as each run had them when its job exited, and those that
 /// differ.
-pub fn diff_outputs(home: &Home, left: &Run, right: &Run, format: Format) -> Result<ExitCode> {
+pub(crate) fn diff_outputs(
+    home: &Home,
+    left: &Run,
+    right: &Run,
+    format: Format,
+) -> Result<ExitCode> {
     // Every file either job left behind, the left run's in the order it
     // wrote them, then the ones only the right run wrote.
     let every = Glob::new("**");
@@ -379,7 +384,7 @@ fn sections<'a>(answer: &'a [u8], run: &Run) -> Result<Vec<(String, &'a [u8])>> 
 
 /// What `rewind diff --outputs` prints: how many files differ, then one
 /// line for each.
-pub fn outputs_report(differ: &[OutputDiff], same: usize) -> Vec<String> {
+pub(crate) fn outputs_report(differ: &[OutputDiff], same: usize) -> Vec<String> {
     let total = differ.len() + same;
     if differ.is_empty() {
         return vec![format!(

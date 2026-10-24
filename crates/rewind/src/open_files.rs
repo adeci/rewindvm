@@ -20,7 +20,7 @@ const UNLIMITED_CAP: rlim_t = 1 << 20;
 /// `UNLIMITED_CAP`, whichever is lower. The soft limit is never lowered
 /// and the hard limit never changes. Failing to read or set the limit is
 /// no reason to fail the command, so then the limit stays as it was.
-pub fn raise_limit() {
+pub(crate) fn raise_limit() {
     // The current soft and hard limits.
     let mut limit = libc::rlimit {
         rlim_cur: 0,

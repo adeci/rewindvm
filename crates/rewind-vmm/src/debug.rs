@@ -266,12 +266,6 @@ impl Machine {
         self.apply_guest_debug()
     }
 
-    /// Turns debugging off. int3s still written keep their #BPs trapped.
-    pub fn clear_debug(&mut self) -> Result<()> {
-        self.debugging = None;
-        self.apply_guest_debug()
-    }
-
     /// Tells KVM what to trap for the debugger, the monitor's steps toward
     /// a preemption point and the int3s together, after any of them
     /// changes.

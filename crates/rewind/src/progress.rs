@@ -14,7 +14,7 @@ use crate::Terminal;
 
 /// How replays say how far they got, on standard error.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
-pub enum Format {
+pub(crate) enum Format {
     /// A status line, when standard error is a terminal.
     #[default]
     Auto,
@@ -26,7 +26,7 @@ pub enum Format {
 
 /// Whether a command says how far its replays got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Says {
+pub(crate) enum Says {
     /// It brings a run back to a step to look inside it, and says.
     Replays,
     /// It executes runs, or replays none, and says nothing of replays.
@@ -34,7 +34,7 @@ pub enum Says {
 }
 
 /// Has every replay this process makes say how far it got, in `format`.
-pub fn listen(format: Format) {
+pub(crate) fn listen(format: Format) {
     match format {
         Format::Off => {}
         Format::Json => {
@@ -63,7 +63,7 @@ pub fn listen(format: Format) {
 
 /// The status line for a replay: where it goes and, once its speed is
 /// known, where it is and the time `left`.
-pub fn line(r: &Replaying, left: Option<Duration>) -> String {
+pub(crate) fn line(r: &Replaying, left: Option<Duration>) -> String {
     let going = format!(
         "rewind: replaying run {} from step {} to step {}",
         r.run, r.from, r.to

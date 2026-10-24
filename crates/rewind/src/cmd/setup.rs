@@ -10,7 +10,7 @@ use rewind_core::{Guest, Home};
 
 use crate::{Cli, Generate, PmuAction, doctor};
 
-pub fn doctor(home: &Home) -> Result<ExitCode> {
+pub(crate) fn doctor(home: &Home) -> Result<ExitCode> {
     println!("rewind {}", rewind_core::VERSION);
     let found = doctor::findings(home);
     for finding in &found {
@@ -26,12 +26,12 @@ pub fn doctor(home: &Home) -> Result<ExitCode> {
 
 /// The arguments of `rewind pmu`.
 #[derive(clap::Args)]
-pub struct PmuArgs {
+pub(crate) struct PmuArgs {
     #[command(subcommand)]
     pub(crate) action: PmuAction,
 }
 
-pub fn pmu(home: &Home, args: PmuArgs) -> Result<ExitCode> {
+pub(crate) fn pmu(home: &Home, args: PmuArgs) -> Result<ExitCode> {
     let PmuArgs { action } = args;
     let vendor = rewind_core::pmu::Vendor::detect()?;
     match action {
@@ -93,12 +93,12 @@ pub fn pmu(home: &Home, args: PmuArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind generate`.
 #[derive(clap::Args)]
-pub struct GenerateArgs {
+pub(crate) struct GenerateArgs {
     #[command(subcommand)]
     pub(crate) what: Generate,
 }
 
-pub fn generate(args: GenerateArgs) -> Result<ExitCode> {
+pub(crate) fn generate(args: GenerateArgs) -> Result<ExitCode> {
     let GenerateArgs { what } = args;
     write_generated(what)
 }
@@ -124,7 +124,7 @@ fn completions(shell: clap_complete::Shell, out: &mut dyn std::io::Write) {
 
 /// `rewind pmu enable`: sets the AMD branch counter workaround on every
 /// CPU, until reboot, where the CPU needs it.
-pub fn pmu_enable() -> Result<ExitCode> {
+pub(crate) fn pmu_enable() -> Result<ExitCode> {
     let vendor = rewind_core::pmu::Vendor::detect()?;
     if !vendor.needs_workaround() {
         println!("{vendor}: no workaround needed");

@@ -14,18 +14,18 @@ pub const RECORD_MAX: usize = 8192;
 
 /// Record kinds, as numbered by the guest.
 mod kind {
-    pub const CONSOLE: u16 = 1;
-    pub const OUTPUT: u16 = 2;
-    pub const EXEC: u16 = 3;
-    pub const FORK: u16 = 4;
-    pub const EXIT: u16 = 5;
-    pub const SIGNAL: u16 = 6;
-    pub const OPEN: u16 = 7;
-    pub const UNLINK: u16 = 8;
-    pub const RENAME: u16 = 9;
-    pub const MARK: u16 = 10;
-    pub const READ_OPEN: u16 = 11;
-    pub const CLOSE: u16 = 12;
+    pub(super) const CONSOLE: u16 = 1;
+    pub(super) const OUTPUT: u16 = 2;
+    pub(super) const EXEC: u16 = 3;
+    pub(super) const FORK: u16 = 4;
+    pub(super) const EXIT: u16 = 5;
+    pub(super) const SIGNAL: u16 = 6;
+    pub(super) const OPEN: u16 = 7;
+    pub(super) const UNLINK: u16 = 8;
+    pub(super) const RENAME: u16 = 9;
+    pub(super) const MARK: u16 = 10;
+    pub(super) const READ_OPEN: u16 = 11;
+    pub(super) const CLOSE: u16 = 12;
 }
 
 /// The flag on fork and exit records that marks a thread rather than a

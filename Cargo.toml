@@ -24,6 +24,10 @@ repository = "https://github.com/fzakaria/rewindvm"
 # (nix/rewind.nix); a local `cargo build` only warns.
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+# An item marked pub that nothing outside its crate can reach. rustc
+# treats every pub item as used, so pub(crate) is what lets dead_code
+# report one that nothing calls.
+unreachable_pub = "warn"
 missing_debug_implementations = "warn"
 unused_qualifications = "warn"
 

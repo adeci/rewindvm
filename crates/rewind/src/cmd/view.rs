@@ -12,7 +12,7 @@ use crate::{RUN_HELP, RUN_LONG_HELP, json, list, reproduce, show};
 
 /// The arguments of `rewind open`.
 #[derive(clap::Args)]
-pub struct OpenArgs {
+pub(crate) struct OpenArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) run: String,
     /// The step the playhead starts at; by default the app's choice.
@@ -23,7 +23,7 @@ pub struct OpenArgs {
     pub(crate) compare: Option<String>,
 }
 
-pub fn open(home: &Home, args: OpenArgs) -> Result<ExitCode> {
+pub(crate) fn open(home: &Home, args: OpenArgs) -> Result<ExitCode> {
     let OpenArgs { run, step, compare } = args;
     use std::os::unix::process::CommandExt;
     let run = Run::find(home, &run)?;
@@ -46,7 +46,7 @@ pub fn open(home: &Home, args: OpenArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind ls`.
 #[derive(clap::Args)]
-pub struct LsArgs {
+pub(crate) struct LsArgs {
     /// List only the newest N of the runs the other options pick.
     #[arg(short = 'n', long = "limit", value_name = "N")]
     pub(crate) limit: Option<usize>,
@@ -70,7 +70,7 @@ pub struct LsArgs {
     pub(crate) json: bool,
 }
 
-pub fn ls(home: &Home, args: LsArgs) -> Result<ExitCode> {
+pub(crate) fn ls(home: &Home, args: LsArgs) -> Result<ExitCode> {
     let LsArgs {
         limit,
         name,
@@ -126,7 +126,7 @@ pub fn ls(home: &Home, args: LsArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind show`.
 #[derive(clap::Args)]
-pub struct ShowArgs {
+pub(crate) struct ShowArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) run: String,
     /// Print one JSON object on standard output, for programs: the
@@ -137,7 +137,7 @@ pub struct ShowArgs {
     pub(crate) json: bool,
 }
 
-pub fn show(home: &Home, args: ShowArgs) -> Result<ExitCode> {
+pub(crate) fn show(home: &Home, args: ShowArgs) -> Result<ExitCode> {
     let ShowArgs { run, json } = args;
     let run = Run::find(home, &run)?;
 
@@ -222,7 +222,7 @@ pub fn show(home: &Home, args: ShowArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind log`.
 #[derive(clap::Args)]
-pub struct LogArgs {
+pub(crate) struct LogArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) run: String,
     /// The step to print up to; by default the run's end.
@@ -232,7 +232,7 @@ pub struct LogArgs {
     pub(crate) steps: bool,
 }
 
-pub fn log(home: &Home, args: LogArgs) -> Result<ExitCode> {
+pub(crate) fn log(home: &Home, args: LogArgs) -> Result<ExitCode> {
     let LogArgs { run, step, steps } = args;
     let run = Run::find(home, &run)?;
     let until = step.map(|s| run.check_step(s)).transpose()?;
@@ -249,7 +249,7 @@ pub fn log(home: &Home, args: LogArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind ps`.
 #[derive(clap::Args)]
-pub struct PsArgs {
+pub(crate) struct PsArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) run: String,
     /// The step; by default the run's end.
@@ -264,7 +264,7 @@ pub struct PsArgs {
     pub(crate) json: bool,
 }
 
-pub fn ps(home: &Home, args: PsArgs) -> Result<ExitCode> {
+pub(crate) fn ps(home: &Home, args: PsArgs) -> Result<ExitCode> {
     let PsArgs {
         run,
         step,
@@ -290,7 +290,7 @@ pub fn ps(home: &Home, args: PsArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind events`.
 #[derive(clap::Args)]
-pub struct EventsArgs {
+pub(crate) struct EventsArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) run: String,
     /// The first step whose events to print; by default 0.
@@ -304,7 +304,7 @@ pub struct EventsArgs {
     pub(crate) json: bool,
 }
 
-pub fn events(home: &Home, args: EventsArgs) -> Result<ExitCode> {
+pub(crate) fn events(home: &Home, args: EventsArgs) -> Result<ExitCode> {
     let EventsArgs {
         run,
         from,
@@ -332,7 +332,7 @@ pub fn events(home: &Home, args: EventsArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind replay`.
 #[derive(clap::Args)]
-pub struct ReplayArgs {
+pub(crate) struct ReplayArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) run: String,
     /// Start from the keyframe at or before this step instead of boot.
@@ -345,7 +345,7 @@ pub struct ReplayArgs {
     pub(crate) json: bool,
 }
 
-pub fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
+pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
     match args {
         ReplayArgs {
             run,
@@ -459,7 +459,7 @@ pub fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind diff`.
 #[derive(clap::Args)]
-pub struct DiffArgs {
+pub(crate) struct DiffArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) left: String,
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
@@ -495,7 +495,7 @@ impl DiffArgs {
     }
 }
 
-pub fn diff(home: &Home, args: DiffArgs) -> Result<ExitCode> {
+pub(crate) fn diff(home: &Home, args: DiffArgs) -> Result<ExitCode> {
     let DiffArgs {
         left,
         right,
@@ -535,7 +535,7 @@ pub fn diff(home: &Home, args: DiffArgs) -> Result<ExitCode> {
 
 /// How `rewind diff` prints what it found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Format {
+pub(crate) enum Format {
     /// Lines for a person.
     Text,
     /// One JSON object, for programs.

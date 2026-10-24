@@ -11,7 +11,7 @@ use crate::{RUN_HELP, RUN_LONG_HELP, show};
 
 /// The arguments of `rewind export`.
 #[derive(clap::Args)]
-pub struct ExportArgs {
+pub(crate) struct ExportArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) run: String,
     /// Where to write it; <id>.rwd by default.
@@ -24,7 +24,7 @@ pub struct ExportArgs {
     pub(crate) replayable: bool,
 }
 
-pub fn export(home: &Home, args: ExportArgs) -> Result<ExitCode> {
+pub(crate) fn export(home: &Home, args: ExportArgs) -> Result<ExitCode> {
     let ExportArgs {
         run,
         output,
@@ -45,7 +45,7 @@ pub fn export(home: &Home, args: ExportArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind import`.
 #[derive(clap::Args)]
-pub struct ImportArgs {
+pub(crate) struct ImportArgs {
     /// A .rwd file, or an http or https URL of one, which is unpacked
     /// as it downloads.
     pub(crate) file: String,
@@ -56,7 +56,7 @@ pub struct ImportArgs {
     pub(crate) json: bool,
 }
 
-pub fn import(home: &Home, args: ImportArgs) -> Result<ExitCode> {
+pub(crate) fn import(home: &Home, args: ImportArgs) -> Result<ExitCode> {
     let ImportArgs { file, json } = args;
     let run = if export::is_url(&file) {
         eprintln!("rewind: downloading {file}");

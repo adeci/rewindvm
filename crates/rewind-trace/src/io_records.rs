@@ -55,11 +55,11 @@ pub type PathId = u32;
 
 /// Record kinds, as numbered in the guest's buffer and in the trace.
 mod kind {
-    pub const WRITE: u8 = 1;
-    pub const READ_OPEN: u8 = 2;
-    pub const WRITE_OPEN: u8 = 3;
+    pub(super) const WRITE: u8 = 1;
+    pub(super) const READ_OPEN: u8 = 2;
+    pub(super) const WRITE_OPEN: u8 = 3;
     /// The trace's alone: records the guest had no room for.
-    pub const LOST: u8 = 4;
+    pub(super) const LOST: u8 = 4;
 }
 
 /// The bits of an encoded record's first byte: its kind, and whether its

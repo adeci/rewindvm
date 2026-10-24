@@ -9,7 +9,7 @@ use rewind_trace::ending::Ending;
 
 /// How a run stands, as `rewind ls --status` picks runs by.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Status {
+pub(crate) enum Status {
     /// The job exited 0.
     Passed,
     /// It ended any other way, timed out included.
@@ -26,7 +26,7 @@ pub enum Status {
 
 /// Whether a process is executing a run now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Executing {
+pub(crate) enum Executing {
     Yes,
     No,
 }
@@ -35,7 +35,7 @@ impl Status {
     /// How a run that ended as `outcome` says, or has not ended, stands.
     /// A run that timed out is `TimedOut`, which [`Status::takes`] counts
     /// as failed too.
-    pub fn of(outcome: Option<&RunOutcome>, executing: Executing) -> Status {
+    pub(crate) fn of(outcome: Option<&RunOutcome>, executing: Executing) -> Status {
         match (outcome, executing) {
             (Some(o), _) => match Ending::of(&o.stop, o.status, &[]) {
                 Ending::TimedOut => Status::TimedOut,
@@ -48,12 +48,12 @@ impl Status {
     }
 
     /// Whether a run that stands as `have` is one this status asks for.
-    pub fn takes(self, have: Status) -> bool {
+    pub(crate) fn takes(self, have: Status) -> bool {
         self == have || (self == Status::Failed && have == Status::TimedOut)
     }
 
     /// The word `--status` takes it by and `--json` says it with.
-    pub fn word(self) -> &'static str {
+    pub(crate) fn word(self) -> &'static str {
         match self {
             Status::Passed => "passed",
             Status::Failed => "failed",
@@ -67,7 +67,7 @@ impl Status {
 
 /// What `rewind ls` keeps or leaves out a run by.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Entry {
+pub(crate) struct Entry {
     pub id: String,
     /// None for a run whose manifest does not read.
     pub name: Option<String>,
@@ -79,7 +79,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub fn of(run: &Run) -> Entry {
+    pub(crate) fn of(run: &Run) -> Entry {
         let m = &run.manifest;
         let executing = if m.outcome.is_none() && run.executing() {
             Executing::Yes
@@ -95,7 +95,7 @@ impl Entry {
         }
     }
 
-    pub fn unreadable(run: &Unreadable) -> Entry {
+    pub(crate) fn unreadable(run: &Unreadable) -> Entry {
         Entry {
             id: run.id.clone(),
             name: None,
@@ -108,7 +108,7 @@ impl Entry {
 
 /// Which runs `rewind ls` lists.
 #[derive(Default)]
-pub struct Filter {
+pub(crate) struct Filter {
     /// Only runs whose name contains this.
     pub name: Option<String>,
     pub status: Option<Status>,
@@ -121,7 +121,7 @@ pub struct Filter {
 impl Filter {
     /// Whether `entry` is listed. A run whose manifest does not read has
     /// no name or parent to match.
-    pub fn keeps(&self, entry: &Entry) -> bool {
+    pub(crate) fn keeps(&self, entry: &Entry) -> bool {
         let named = self.name.as_ref().is_none_or(|want| {
             entry
                 .name
@@ -139,14 +139,14 @@ impl Filter {
 }
 
 /// A run as `rewind ls` lists it.
-pub enum Row<'a> {
+pub(crate) enum Row<'a> {
     Run(&'a Run),
     Unreadable(&'a Unreadable),
 }
 
 /// A run's line: its summary, or for one whose manifest does not read,
 /// why.
-pub fn line(row: &Row) -> String {
+pub(crate) fn line(row: &Row) -> String {
     match row {
         Row::Run(run) => crate::show::summary(run),
         Row::Unreadable(u) => format!("{}  unreadable  {}", u.id, u.reason),
@@ -154,7 +154,7 @@ pub fn line(row: &Row) -> String {
 }
 
 /// A run as one JSON object, for `--json`.
-pub fn json(entry: &Entry, row: &Row) -> serde_json::Value {
+pub(crate) fn json(entry: &Entry, row: &Row) -> serde_json::Value {
     let run = match row {
         Row::Run(run) => run,
         Row::Unreadable(u) => {
@@ -182,7 +182,7 @@ pub fn json(entry: &Entry, row: &Row) -> serde_json::Value {
 }
 
 /// The runs forked from `root` among `entries`, and forks of those, by id.
-pub fn forks_of(entries: &[Entry], root: &str) -> BTreeSet<String> {
+pub(crate) fn forks_of(entries: &[Entry], root: &str) -> BTreeSet<String> {
     let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for e in entries {
         if let Some(parent) = &e.parent {
@@ -204,7 +204,7 @@ pub fn forks_of(entries: &[Entry], root: &str) -> BTreeSet<String> {
 /// The time `--since` names, in seconds since the Unix epoch, given the
 /// time now: an amount ago, such as 30m, 2h, 7d or 2w, or a day, such as
 /// 2026-10-01, from its start in UTC.
-pub fn since(text: &str, now: u64) -> Result<u64> {
+pub(crate) fn since(text: &str, now: u64) -> Result<u64> {
     if let Some(day) = day_start(text) {
         return day;
     }

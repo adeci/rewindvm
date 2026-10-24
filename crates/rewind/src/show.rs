@@ -9,7 +9,7 @@ use rewind_trace::ending::{Ending, ExitStatus};
 use rewind_trace::{Divergence, Event, EventKind, Trace, signal_name};
 
 /// A one-line summary for `rewind ls`.
-pub fn summary(run: &Run) -> String {
+pub(crate) fn summary(run: &Run) -> String {
     let m = &run.manifest;
     let outcome = match &m.outcome {
         Some(o) => format!(
@@ -25,7 +25,7 @@ pub fn summary(run: &Run) -> String {
 
 /// The line printed when a run finishes, with how it stopped in the
 /// words `stop` gives, else the stop's own.
-pub fn finished(run: &Run, stop: Option<&str>) -> String {
+pub(crate) fn finished(run: &Run, stop: Option<&str>) -> String {
     let m = &run.manifest;
     let Some(o) = &m.outcome else {
         return format!("rewind: run {} did not finish", m.id);
@@ -43,7 +43,7 @@ pub fn finished(run: &Run, stop: Option<&str>) -> String {
 
 /// How a run ended, as something two runs can be compared by.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OutcomeKey {
+pub(crate) struct OutcomeKey {
     /// The job's wait status.
     pub status: Option<i32>,
     /// Each output init hashed, by path, with its hash.
@@ -51,7 +51,7 @@ pub struct OutcomeKey {
 }
 
 /// How `run` ended: its exit status and the hash of every output.
-pub fn outcome_key(run: &Run) -> anyhow::Result<OutcomeKey> {
+pub(crate) fn outcome_key(run: &Run) -> anyhow::Result<OutcomeKey> {
     Ok(OutcomeKey {
         status: run.manifest.outcome.as_ref().and_then(|o| o.status),
         outputs: run.trace()?.outputs(),
@@ -60,13 +60,13 @@ pub fn outcome_key(run: &Run) -> anyhow::Result<OutcomeKey> {
 
 /// The step the job started on, from init's start mark; 0 if there is
 /// none.
-pub fn start_step(trace: &Trace) -> u64 {
+pub(crate) fn start_step(trace: &Trace) -> u64 {
     trace.job_start().unwrap_or(0)
 }
 
 /// A file size the way people read one: bytes, KB or MB, in decimal
 /// units.
-pub fn size(bytes: u64) -> String {
+pub(crate) fn size(bytes: u64) -> String {
     const KB: f64 = 1e3;
     const MB: f64 = 1e6;
     const GB: f64 = 1e9;
@@ -84,7 +84,7 @@ pub fn size(bytes: u64) -> String {
 /// events when the comparison is about one, else every event. `this` is
 /// the run the comparison was made from, `other` the run it was compared
 /// with, each with the word its lines start with.
-pub fn comparison(
+pub(crate) fn comparison(
     (this, this_name): (&Trace, &str),
     (other, other_name): (&Trace, &str),
     c: &rewind_trace::compare::Comparison,
@@ -127,7 +127,7 @@ pub fn comparison(
 /// paths and hashes of [`outcome_key`]. Init hashes outputs only after
 /// the job exits 0, so for such a job these are the outputs it did not
 /// create.
-pub fn missing_outputs(expected: &[String], hashed: &[(String, String)]) -> Vec<String> {
+pub(crate) fn missing_outputs(expected: &[String], hashed: &[(String, String)]) -> Vec<String> {
     expected
         .iter()
         .filter(|path| !hashed.iter().any(|(p, _)| p == *path))
@@ -137,7 +137,7 @@ pub fn missing_outputs(expected: &[String], hashed: &[(String, String)]) -> Vec<
 
 /// One line for an output of a Nix run: its path, the start of its NAR
 /// hash, and what this machine's store and the caches said about it.
-pub fn verdict_line(path: &str, hash: &str, comparisons: &[Comparison]) -> String {
+pub(crate) fn verdict_line(path: &str, hash: &str, comparisons: &[Comparison]) -> String {
     let named = |verdict: &dyn Fn(&Verdict) -> bool| -> Vec<String> {
         comparisons
             .iter()
@@ -205,12 +205,12 @@ fn source_name(source: &Source) -> String {
 
 /// Printed once under the verdict lines when some build of an output
 /// differs from the run's.
-pub const DIFFERS_NOTE: &str = "rewind: a store path names a build's inputs, not its contents, so \
+pub(crate) const DIFFERS_NOTE: &str = "rewind: a store path names a build's inputs, not its contents, so \
      another build of it can differ in bytes: the package may not be bit-reproducible, or the \
      VM's CPU model, kernel or --cores reached its output";
 
 /// One line per run for `rewind check`.
-pub fn outcome_line(run: &Run) -> anyhow::Result<String> {
+pub(crate) fn outcome_line(run: &Run) -> anyhow::Result<String> {
     let OutcomeKey {
         status: status_,
         outputs,
@@ -239,7 +239,7 @@ pub fn outcome_line(run: &Run) -> anyhow::Result<String> {
 
 /// A run's schedule for `rewind check`'s report: schedule 0, or a seed
 /// and the steps it perturbs, and its longest stall when not the default.
-pub fn schedule_words(spec: &rewind_core::Spec) -> String {
+pub(crate) fn schedule_words(spec: &rewind_core::Spec) -> String {
     let words = match (spec.schedule, spec.window()) {
         (0, _) => return "schedule 0".into(),
         (seed, Some((from, until))) => format!("schedule {seed} over steps {from}..{until}"),
@@ -254,13 +254,13 @@ pub fn schedule_words(spec: &rewind_core::Spec) -> String {
 
 /// The seed a run's randomness came from: its own from boot, or for a
 /// fork reseeded since, the last reseed's.
-pub fn seed_of(spec: &rewind_core::Spec) -> u64 {
+pub(crate) fn seed_of(spec: &rewind_core::Spec) -> u64 {
     spec.reseeds.last().map_or(spec.seed, |r| r.seed)
 }
 
 /// The seed a run's randomness came from, in words: its own from boot, or
 /// for a fork reseeded since, the last reseed and the step it was made at.
-pub fn seed_words(spec: &rewind_core::Spec) -> String {
+pub(crate) fn seed_words(spec: &rewind_core::Spec) -> String {
     match spec.reseeds.last() {
         Some(r) => format!("seed {} from step {}", r.seed, r.step),
         None => format!("seed {}", spec.seed),
@@ -268,7 +268,7 @@ pub fn seed_words(spec: &rewind_core::Spec) -> String {
 }
 
 /// One event, in the syscall-ish notation the scrubber uses.
-pub fn event(e: &Event) -> String {
+pub(crate) fn event(e: &Event) -> String {
     let what = match &e.kind {
         EventKind::Console { text } => format!("console {:?}", text.trim_end()),
         EventKind::Output { fd, bytes } => {
@@ -311,7 +311,7 @@ pub fn event(e: &Event) -> String {
 
 /// An argument as a shell would need it typed: as it is when every
 /// character is one no shell treats specially, else in single quotes.
-pub fn quote(arg: &str) -> String {
+pub(crate) fn quote(arg: &str) -> String {
     let plain = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
     if !arg.is_empty() && arg.chars().all(plain) {
         return arg.to_string();
@@ -321,7 +321,7 @@ pub fn quote(arg: &str) -> String {
 
 /// Whether `rewind ps` lists the kernel's own threads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KernelThreads {
+pub(crate) enum KernelThreads {
     Show,
     Hide,
 }
@@ -331,7 +331,7 @@ const KTHREADD: u32 = 2;
 
 /// The processes alive at a step, as they were then, the kernel's own
 /// threads only when `kernel` says so.
-pub fn alive(trace: &Trace, step: u64, kernel: KernelThreads) -> Vec<rewind_trace::Process> {
+pub(crate) fn alive(trace: &Trace, step: u64, kernel: KernelThreads) -> Vec<rewind_trace::Process> {
     trace
         .processes()
         .into_iter()
@@ -342,7 +342,7 @@ pub fn alive(trace: &Trace, step: u64, kernel: KernelThreads) -> Vec<rewind_trac
 }
 
 /// The process tree alive at a step, indented by parent.
-pub fn process_tree(trace: &Trace, step: u64, kernel: KernelThreads) -> String {
+pub(crate) fn process_tree(trace: &Trace, step: u64, kernel: KernelThreads) -> String {
     let procs = alive(trace, step, kernel);
     let alive: Vec<_> = procs.iter().collect();
     let mut out = String::new();
@@ -381,7 +381,7 @@ fn tree(alive: &[&rewind_trace::Process], pid: u32, depth: usize, step: u64, out
 /// Where a replay's read and write records first differ from the
 /// recording's, when their events are the same: the recording is the left
 /// side and the replay the right.
-pub fn io_divergence(d: &Divergence) -> String {
+pub(crate) fn io_divergence(d: &Divergence) -> String {
     format!(
         "the read and write records first differ at step {} (record {}, step {} replayed)",
         d.left_step, d.index, d.right_step
@@ -389,7 +389,7 @@ pub fn io_divergence(d: &Divergence) -> String {
 }
 
 /// Where two runs first differ, with the events on each side.
-pub fn divergence(left: &Trace, right: &Trace) -> String {
+pub(crate) fn divergence(left: &Trace, right: &Trace) -> String {
     let Some(d) = left.divergence(right) else {
         return "identical\n".into();
     };

@@ -10,7 +10,7 @@ use crate::{RUN_HELP, RUN_LONG_HELP, show};
 
 /// The arguments of `rewind prune`.
 #[derive(clap::Args)]
-pub struct PruneArgs {
+pub(crate) struct PruneArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) run: String,
     /// Remove forks whose trace is the same as an older fork's in the
@@ -26,7 +26,7 @@ pub struct PruneArgs {
     pub(crate) json: bool,
 }
 
-pub fn prune(home: &Home, args: PruneArgs) -> Result<ExitCode> {
+pub(crate) fn prune(home: &Home, args: PruneArgs) -> Result<ExitCode> {
     let PruneArgs {
         run,
         identical,
@@ -62,7 +62,7 @@ pub fn prune(home: &Home, args: PruneArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind remove`.
 #[derive(clap::Args)]
-pub struct RemoveArgs {
+pub(crate) struct RemoveArgs {
     #[arg(value_name = "RUN", required = true, help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) runs: Vec<String>,
     /// Show what would be removed and remove nothing.
@@ -74,7 +74,7 @@ pub struct RemoveArgs {
     pub(crate) json: bool,
 }
 
-pub fn remove(home: &Home, args: RemoveArgs) -> Result<ExitCode> {
+pub(crate) fn remove(home: &Home, args: RemoveArgs) -> Result<ExitCode> {
     let RemoveArgs {
         runs,
         dry_run,
@@ -111,7 +111,7 @@ pub fn remove(home: &Home, args: RemoveArgs) -> Result<ExitCode> {
 
 /// The arguments of `rewind gc`.
 #[derive(clap::Args)]
-pub struct GcArgs {
+pub(crate) struct GcArgs {
     /// Show what would be removed and remove nothing.
     #[arg(long)]
     pub(crate) dry_run: bool,
@@ -123,7 +123,7 @@ pub struct GcArgs {
     pub(crate) json: bool,
 }
 
-pub fn gc(home: &Home, args: GcArgs) -> Result<ExitCode> {
+pub(crate) fn gc(home: &Home, args: GcArgs) -> Result<ExitCode> {
     let GcArgs { dry_run, json } = args;
     let act = if dry_run {
         rewind_core::gc::Act::DryRun

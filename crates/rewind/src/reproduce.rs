@@ -13,7 +13,7 @@ use rewind_init::Output;
 /// The arguments after `rewind` that make the run `m` describes again: a
 /// fork of its parent, or a run or Nix build from boot. Inputs no
 /// command line sets, such as the quantum, are named in `Unset`.
-pub fn command(m: &Manifest) -> Result<Vec<String>, Unset> {
+pub(crate) fn command(m: &Manifest) -> Result<Vec<String>, Unset> {
     let spec = &m.spec;
     let mut args: Vec<String> = Vec::new();
 
@@ -167,7 +167,7 @@ fn timed_out_after(m: &Manifest) -> Option<u64> {
 
 /// An input of a run that no command line of this rewind sets.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Unset(pub String);
+pub(crate) struct Unset(pub String);
 
 #[cfg(test)]
 pub(crate) mod tests {

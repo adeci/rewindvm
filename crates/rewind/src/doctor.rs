@@ -14,7 +14,7 @@ use crate::show;
 
 /// How a finding stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Level {
+pub(crate) enum Level {
     Ok,
     /// Something works less well, or one command will not.
     Warn,
@@ -34,7 +34,7 @@ impl Level {
 
 /// One thing doctor looked at, and what it found.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Finding {
+pub(crate) struct Finding {
     pub level: Level,
     pub topic: &'static str,
     pub text: String,
@@ -51,7 +51,7 @@ impl Finding {
 
     /// The finding as a line: its level and topic in columns, then what
     /// was found.
-    pub fn line(&self) -> String {
+    pub(crate) fn line(&self) -> String {
         format!(
             "{:<LEVEL_WIDTH$}{:<TOPIC_WIDTH$}{}",
             self.level.word(),
@@ -66,7 +66,7 @@ const LEVEL_WIDTH: usize = 6;
 const TOPIC_WIDTH: usize = 12;
 
 /// Everything doctor looks at, in the order it says it.
-pub fn findings(home: &Home) -> Vec<Finding> {
+pub(crate) fn findings(home: &Home) -> Vec<Finding> {
     let mut found = vec![kvm()];
     found.extend(cpu());
     let guest = Guest::from_env();

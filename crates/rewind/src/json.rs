@@ -11,7 +11,7 @@ use crate::show::{self, KernelThreads};
 
 /// A run: its id, name and directory, the run and step it was forked from,
 /// how it ended, and the outputs its job hashed and left uncreated.
-pub fn run(run: &Run) -> Result<Value> {
+pub(crate) fn run(run: &Run) -> Result<Value> {
     let m = &run.manifest;
     let show::OutcomeKey {
         status,
@@ -41,7 +41,7 @@ pub fn run(run: &Run) -> Result<Value> {
 
 /// Where two runs' read and write records first differ, when their events
 /// are the same.
-pub fn io_divergence(d: &rewind_trace::Divergence) -> Value {
+pub(crate) fn io_divergence(d: &rewind_trace::Divergence) -> Value {
     json!({
         "part": "io_records",
         "index": d.index,
@@ -52,7 +52,7 @@ pub fn io_divergence(d: &rewind_trace::Divergence) -> Value {
 
 /// Where two runs first differ, with the first event that differs on each
 /// side; null for identical runs.
-pub fn divergence(left: &Trace, right: &Trace) -> Value {
+pub(crate) fn divergence(left: &Trace, right: &Trace) -> Value {
     let Some(d) = left.divergence(right) else {
         return Value::Null;
     };
@@ -70,7 +70,11 @@ pub fn divergence(left: &Trace, right: &Trace) -> Value {
 /// with `this` the run it was made from, with the first event that differs
 /// on each side and the program compared, if it was about one; null when
 /// they did the same things.
-pub fn comparison(this: &Trace, other: &Trace, c: &rewind_trace::compare::Comparison) -> Value {
+pub(crate) fn comparison(
+    this: &Trace,
+    other: &Trace,
+    c: &rewind_trace::compare::Comparison,
+) -> Value {
     let Some(point) = &c.point else {
         return Value::Null;
     };
@@ -90,7 +94,7 @@ pub fn comparison(this: &Trace, other: &Trace, c: &rewind_trace::compare::Compar
 /// The processes alive at `step`, as `rewind ps` lists them: each with its
 /// parent, its command line, and the threads besides its main one alive
 /// then.
-pub fn processes(trace: &Trace, step: u64, kernel: KernelThreads) -> Value {
+pub(crate) fn processes(trace: &Trace, step: u64, kernel: KernelThreads) -> Value {
     let processes: Vec<Value> = show::alive(trace, step, kernel)
         .iter()
         .map(|p| {
@@ -113,7 +117,7 @@ pub fn processes(trace: &Trace, step: u64, kernel: KernelThreads) -> Value {
 }
 
 /// What each source said about an output.
-pub fn comparisons(comparisons: &[Comparison]) -> Value {
+pub(crate) fn comparisons(comparisons: &[Comparison]) -> Value {
     let each: Vec<Value> = comparisons
         .iter()
         .map(|c| {
@@ -139,7 +143,7 @@ pub fn comparisons(comparisons: &[Comparison]) -> Value {
 
 /// What held the CPU over a slice of steps, as `rewind threads --json`
 /// prints it.
-pub fn slice(slice: &rewind_core::threads::Slice) -> Value {
+pub(crate) fn slice(slice: &rewind_core::threads::Slice) -> Value {
     use rewind_core::threads::OnTheCpu;
     let (on, pid, tid) = match &slice.on {
         OnTheCpu::Thread { pid, tid } => ("thread", Some(*pid), Some(*tid)),

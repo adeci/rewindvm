@@ -13,7 +13,7 @@ use rewind_vmm::Input;
 /// The size a terminal is taken to be when there is none to ask, as when
 /// a script pipes commands in: wide, so the shell's line editor does not
 /// wrap long commands it echoes back.
-pub const DEFAULT_SIZE: (u16, u16) = (1000, 24);
+pub(crate) const DEFAULT_SIZE: (u16, u16) = (1000, 24);
 
 /// How many bytes one read takes from standard input.
 const READ_CHUNK: usize = 4096;
@@ -23,7 +23,7 @@ const READ_CHUNK: usize = 4096;
 const END_OF_INPUT: u8 = 0x04;
 
 /// The window size of the terminal on `fd`, as (columns, rows).
-pub fn size(fd: RawFd) -> Option<(u16, u16)> {
+pub(crate) fn size(fd: RawFd) -> Option<(u16, u16)> {
     // SAFETY: winsize is four integers, for which all zeroes is a value.
     let mut size: libc::winsize = unsafe { std::mem::zeroed() };
     // SAFETY: a valid out pointer for TIOCGWINSZ.
@@ -34,12 +34,12 @@ pub fn size(fd: RawFd) -> Option<(u16, u16)> {
 /// Standard input in raw mode until dropped, when it is a terminal: keys
 /// arrive one by one, unechoed, with Ctrl-C and friends as bytes for the
 /// shell inside the VM rather than signals for this process.
-pub struct RawMode {
+pub(crate) struct RawMode {
     saved: Option<libc::termios>,
 }
 
 impl RawMode {
-    pub fn enter() -> RawMode {
+    pub(crate) fn enter() -> RawMode {
         let fd = std::io::stdin().as_raw_fd();
         // SAFETY: termios is integers and an array of them, for which all
         // zeroes is a value.
@@ -68,7 +68,7 @@ impl Drop for RawMode {
 }
 
 /// Standard input as the VM's input. Ends for good at end of file.
-pub struct Keyboard {
+pub(crate) struct Keyboard {
     /// The size last sent, to notice when the window changes.
     size: (u16, u16),
     closed: bool,
@@ -76,7 +76,7 @@ pub struct Keyboard {
 
 impl Keyboard {
     /// A keyboard whose shell was started at `size`.
-    pub fn new(size: (u16, u16)) -> Keyboard {
+    pub(crate) fn new(size: (u16, u16)) -> Keyboard {
         Keyboard {
             size,
             closed: false,
@@ -98,7 +98,7 @@ impl Keyboard {
 /// at once rather than with the next key: SIGWINCH is ignored by default,
 /// and a handler that does nothing, installed without SA_RESTART, makes
 /// poll return early.
-pub fn wake_on_resize() {
+pub(crate) fn wake_on_resize() {
     extern "C" fn nothing(_: libc::c_int) {}
     // SAFETY: installing a handler that touches nothing.
     unsafe {
@@ -160,12 +160,12 @@ impl Input for Keyboard {
 /// terminal inside the VM, which ends lines with CRLF, so a CR before a LF
 /// is dropped. A CR at the end of one chunk waits for the next.
 #[derive(Default)]
-pub struct Unterminal {
+pub(crate) struct Unterminal {
     held_cr: bool,
 }
 
 impl Unterminal {
-    pub fn convert(&mut self, bytes: &[u8]) -> Vec<u8> {
+    pub(crate) fn convert(&mut self, bytes: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(bytes.len() + 1);
         for &b in bytes {
             if self.held_cr && b != b'\n' {

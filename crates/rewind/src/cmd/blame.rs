@@ -229,7 +229,7 @@ fn grouped(n: u64) -> String {
 
 /// The arguments of `rewind blame`.
 #[derive(clap::Args)]
-pub struct BlameArgs {
+pub(crate) struct BlameArgs {
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
     pub(crate) left: String,
     #[arg(help = RUN_HELP, long_help = RUN_LONG_HELP)]
@@ -371,7 +371,7 @@ enum Source {
     Made,
 }
 
-pub fn blame(home: &Home, args: BlameArgs) -> Result<ExitCode> {
+pub(crate) fn blame(home: &Home, args: BlameArgs) -> Result<ExitCode> {
     let BlameArgs {
         left,
         right,

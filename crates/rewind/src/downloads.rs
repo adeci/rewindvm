@@ -15,11 +15,11 @@ use std::path::Path;
 
 /// The variable that has libdebuginfod log its queries on standard error,
 /// and the value that turns the log on.
-pub const VERBOSE_ENV: &str = "DEBUGINFOD_VERBOSE";
-pub const VERBOSE_ON: &str = "1";
+pub(crate) const VERBOSE_ENV: &str = "DEBUGINFOD_VERBOSE";
+pub(crate) const VERBOSE_ON: &str = "1";
 
 /// Programs' and libraries' file names by their build IDs.
-pub type FileNames = BTreeMap<String, String>;
+pub(crate) type FileNames = BTreeMap<String, String>;
 
 /// How the client logs a URL it asks: "url 0 http://host/buildid/<id>/...".
 /// A failed query is logged the same way with curl's error for the URL.
@@ -73,13 +73,13 @@ enum Said {
 
 /// Says the downloads in the client's log, each program's DWARF and its
 /// sources once.
-pub struct Downloads<'a> {
+pub(crate) struct Downloads<'a> {
     names: &'a FileNames,
     said: BTreeSet<(Said, String)>,
 }
 
 impl<'a> Downloads<'a> {
-    pub fn new(names: &'a FileNames) -> Downloads<'a> {
+    pub(crate) fn new(names: &'a FileNames) -> Downloads<'a> {
         Downloads {
             names,
             said: BTreeSet::new(),
@@ -89,7 +89,7 @@ impl<'a> Downloads<'a> {
     /// What to say for `line` of the client's log, such as "downloading
     /// debug info for libc.so.6; first time only", when the line starts a
     /// download not yet said. None for any other line.
-    pub fn message(&mut self, line: &str) -> Option<String> {
+    pub(crate) fn message(&mut self, line: &str) -> Option<String> {
         // The URL asked: the build ID, then what is wanted for it.
         let (index, url) = line.strip_prefix(URL_LINE)?.split_once(' ')?;
         index.parse::<usize>().ok()?;
@@ -128,7 +128,7 @@ impl<'a> Downloads<'a> {
 
 /// Whether `line` on gdb's standard error is the client's log rather than
 /// gdb's own.
-pub fn is_client_log(line: &str) -> bool {
+pub(crate) fn is_client_log(line: &str) -> bool {
     line.is_empty() || CLIENT_LOG_PREFIXES.iter().any(|p| line.starts_with(p))
 }
 

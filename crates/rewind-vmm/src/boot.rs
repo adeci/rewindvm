@@ -13,24 +13,24 @@ use crate::memory::Mapping;
 
 /// Offsets into `struct boot_params` and its embedded `setup_header`.
 mod bp {
-    pub const E820_ENTRIES: usize = 0x1e8;
-    pub const SETUP_SECTS: usize = 0x1f1;
-    pub const HEADER_MAGIC: usize = 0x202;
-    pub const HEADER_END_BYTE: usize = 0x201;
-    pub const VERSION: usize = 0x206;
-    pub const TYPE_OF_LOADER: usize = 0x210;
-    pub const LOADFLAGS: usize = 0x211;
-    pub const RAMDISK_IMAGE: usize = 0x218;
-    pub const RAMDISK_SIZE: usize = 0x21c;
-    pub const HEAP_END_PTR: usize = 0x224;
-    pub const CMD_LINE_PTR: usize = 0x228;
-    pub const INITRD_ADDR_MAX: usize = 0x22c;
-    pub const XLOADFLAGS: usize = 0x236;
-    pub const CMDLINE_SIZE: usize = 0x238;
-    pub const SETUP_DATA: usize = 0x250;
-    pub const INIT_SIZE: usize = 0x260;
-    pub const E820_TABLE: usize = 0x2d0;
-    pub const SIZE: usize = 4096;
+    pub(super) const E820_ENTRIES: usize = 0x1e8;
+    pub(super) const SETUP_SECTS: usize = 0x1f1;
+    pub(super) const HEADER_MAGIC: usize = 0x202;
+    pub(super) const HEADER_END_BYTE: usize = 0x201;
+    pub(super) const VERSION: usize = 0x206;
+    pub(super) const TYPE_OF_LOADER: usize = 0x210;
+    pub(super) const LOADFLAGS: usize = 0x211;
+    pub(super) const RAMDISK_IMAGE: usize = 0x218;
+    pub(super) const RAMDISK_SIZE: usize = 0x21c;
+    pub(super) const HEAP_END_PTR: usize = 0x224;
+    pub(super) const CMD_LINE_PTR: usize = 0x228;
+    pub(super) const INITRD_ADDR_MAX: usize = 0x22c;
+    pub(super) const XLOADFLAGS: usize = 0x236;
+    pub(super) const CMDLINE_SIZE: usize = 0x238;
+    pub(super) const SETUP_DATA: usize = 0x250;
+    pub(super) const INIT_SIZE: usize = 0x260;
+    pub(super) const E820_TABLE: usize = 0x2d0;
+    pub(super) const SIZE: usize = 4096;
 }
 
 /// "HdrS", the setup header's magic.
