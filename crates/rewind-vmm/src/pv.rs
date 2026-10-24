@@ -135,6 +135,10 @@ pub use rewind_trace::schedule::{
 pub const PENDING_STALL: u32 = 1 << 4;
 pub const SHARED_STALL_NS: u64 = SHARED_INPUT + INPUT_MAX as u64;
 
+// The stall's length is a u32 in the shared page, which holds 4.29 s; the
+// longest `--stall-max` allows has to fit.
+const _: () = assert!(rewind_trace::schedule::STALL_MAX_CAP_NS <= u32::MAX as u64);
+
 /// The kernel's task layout in the shared page, after the stall's length
 /// and aligned to 8 bytes, as [`TaskLayout`]'s fields in order, each a u64.
 pub const SHARED_TASKS: u64 = (SHARED_STALL_NS + 4).next_multiple_of(8);

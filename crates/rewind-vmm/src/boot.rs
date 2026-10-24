@@ -110,11 +110,17 @@ pub fn load(ram: &mut Mapping, spec: &BootSpec) -> Result<u64> {
     let init_size = read_u32(kernel, bp::INIT_SIZE) as u64;
     let initrd_max = (read_u32(kernel, bp::INITRD_ADDR_MAX) as u64).min(ram.len() as u64 - 1);
     let initrd_len = spec.initrd.len() as u64;
-    let initrd_addr = (initrd_max + 1 - initrd_len) & !(PAGE_SIZE as u64 - 1);
     if initrd_len > 0 {
-        if initrd_addr < KERNEL_START + init_size {
-            bail!("initramfs of {initrd_len} bytes does not fit in RAM above the kernel");
-        }
+        // An initramfs longer than everything below initrd_max has no
+        // address at all, and one that ends up below the kernel's
+        // init_size would be overwritten as the kernel decompresses.
+        let initrd_addr = (initrd_max + 1)
+            .checked_sub(initrd_len)
+            .map(|top| top & !(PAGE_SIZE as u64 - 1))
+            .filter(|addr| *addr >= KERNEL_START + init_size)
+            .with_context(|| {
+                format!("initramfs of {initrd_len} bytes does not fit in RAM above the kernel")
+            })?;
         ram.write(initrd_addr, spec.initrd)?;
         write_u32(&mut params, bp::RAMDISK_IMAGE, initrd_addr as u32);
         write_u32(&mut params, bp::RAMDISK_SIZE, initrd_len as u32);
@@ -206,4 +212,69 @@ fn write_u16(buf: &mut [u8], at: usize, value: u16) {
 
 fn write_u32(buf: &mut [u8], at: usize, value: u32) {
     buf[at..at + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    // Loading a kernel: a made-up bzImage with only the setup header's
+    // fields the loader reads, into a small RAM.
+    use super::*;
+
+    /// The guest's RAM in these tests.
+    const RAM: usize = 16 << 20;
+
+    /// A bzImage the loader takes: the header magic, a recent protocol, a
+    /// 64-bit entry point, and an initramfs allowed anywhere in 4 GiB.
+    fn kernel() -> Vec<u8> {
+        let mut kernel = vec![0u8; 0x2000];
+        kernel[bp::SETUP_SECTS] = 4;
+        kernel[bp::HEADER_END_BYTE] = 0x80;
+        write_u32(&mut kernel, bp::HEADER_MAGIC, HEADER_MAGIC);
+        write_u16(&mut kernel, bp::VERSION, MIN_PROTOCOL);
+        write_u16(&mut kernel, bp::XLOADFLAGS, XLF_KERNEL_64);
+        write_u32(&mut kernel, bp::INITRD_ADDR_MAX, u32::MAX);
+        write_u32(&mut kernel, bp::INIT_SIZE, 0x1000);
+        kernel
+    }
+
+    fn spec<'a>(kernel: &'a [u8], initrd: &'a [u8]) -> BootSpec<'a> {
+        BootSpec {
+            kernel,
+            initrd,
+            cmdline: "console=ttyS0",
+            seed: [0; 32],
+            pmem_len: 0,
+            extras_len: 0,
+        }
+    }
+
+    /// An initramfs that fits goes at the top of RAM, page aligned, and
+    /// the zero page names where and how long.
+    #[test]
+    fn an_initramfs_goes_at_the_top_of_ram() {
+        let mut ram = Mapping::anonymous(RAM).unwrap();
+        let kernel = kernel();
+        let initrd = vec![7u8; 5000];
+        load(&mut ram, &spec(&kernel, &initrd)).unwrap();
+
+        let mut params = vec![0u8; bp::SIZE];
+        ram.read(BOOT_PARAMS, &mut params).unwrap();
+        let addr = read_u32(&params, bp::RAMDISK_IMAGE) as u64;
+        assert_eq!(addr, (RAM as u64 - 5000) & !(PAGE_SIZE as u64 - 1));
+        assert_eq!(read_u32(&params, bp::RAMDISK_SIZE), 5000);
+    }
+
+    /// An initramfs larger than RAM is refused as not fitting, rather
+    /// than placed at an address computed by wrapping around.
+    #[test]
+    fn an_initramfs_larger_than_ram_does_not_fit() {
+        let mut ram = Mapping::anonymous(RAM).unwrap();
+        let kernel = kernel();
+        let initrd = vec![7u8; RAM + 1];
+        let err = load(&mut ram, &spec(&kernel, &initrd)).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("does not fit in RAM"),
+            "{err:#}"
+        );
+    }
 }
