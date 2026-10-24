@@ -1554,15 +1554,22 @@ in
         cat stderr
         grep -q 'property script ./broken.sh failed on run .*: broken' stderr
 
+        # The coin jobs below run at one fixed epoch. The guest kernel mixes
+        # its boot clock into its randomness, and the default epoch is the
+        # start of the current day, so without a fixed one the six seeds'
+        # coins land anew each day, and all six land the same way about one
+        # day in 64.
+        epoch=1790985600
+
         # Seeds: a job that fails when the first byte it reads from the
         # kernel's randomness is odd. Some seed of six decides it with no
         # schedule perturbed, and every run says its seed.
         coin='b=$(od -An -tu1 -N1 /dev/urandom); test $((b % 2)) = 0'
-        ! rewind check -j 4 --clock exits --seeds 6 --schedules 1 --root ${busyboxRoot} -- sh -c "$coin" > seeds
+        ! rewind check -j 4 --clock exits --epoch $epoch --seeds 6 --schedules 1 --root ${busyboxRoot} -- sh -c "$coin" > seeds
         cat seeds
         grep -qE '^seed  0 schedule   0: ' seeds
         grep -qE '^seed [0-9]+ decides it: under schedule 0, seed [0-9]+ passes and seed [0-9]+ fails$' seeds
-        ! rewind check -j 4 --clock exits --seeds 6 --schedules 1 --all --no-narrow --json \
+        ! rewind check -j 4 --clock exits --epoch $epoch --seeds 6 --schedules 1 --all --no-narrow --json \
           --root ${busyboxRoot} -- sh -c "$coin" > seeds.json
         jq -e '.seeds == 6 and ([.schedules[].seed] | unique) == [0, 1, 2, 3, 4, 5]' seeds.json
         jq -e '.differing > 0 and ([.schedules[] | select(.differs)] | length) == .differing' seeds.json
@@ -1570,7 +1577,7 @@ in
         # job's start, its RNG reseeded there. The coin may land either
         # way under the run's own seed, so its job exits 0 or 1.
         status=0
-        rewind run -q --clock exits --name coin --root ${busyboxRoot} -- sh -c "$coin" || status=$?
+        rewind run -q --clock exits --epoch $epoch --name coin --root ${busyboxRoot} -- sh -c "$coin" || status=$?
         [ "$status" -le 1 ]
         ! rewind check --run coin --seeds 6 --schedules 0 > reseeded
         cat reseeded
@@ -1609,13 +1616,13 @@ in
         if [ $((b % 2)) = 0 ]; then sdk sometimes hit even-byte; else sdk sometimes miss even-byte; fi
         exit 0
         EOF
-        ! rewind check -j 4 --clock exits --seeds 6 --schedules 0 --root ${busyboxRoot} -- sh -c "$(cat coin.sh)" > sdk
+        ! rewind check -j 4 --clock exits --epoch $epoch --seeds 6 --schedules 0 --root ${busyboxRoot} -- sh -c "$(cat coin.sh)" > sdk
         cat sdk
         grep -q '^rewind: the job asserts with the Rewind SDK, so each run is judged by property sdk too$' sdk
         grep -qE '^failing run violates sdk: step [0-9]+: always "even" failed: byte [0-9]+ is odd$' sdk
         grep -q '^never true in any run: sometimes "huge-byte"$' sdk
         grep -qE '^true in [1-9][0-9]* of [0-9]+ runs that checked it: sometimes "even-byte"$' sdk
-        ! rewind check -j 4 --clock exits --seeds 6 --schedules 0 --all --no-narrow --json \
+        ! rewind check -j 4 --clock exits --epoch $epoch --seeds 6 --schedules 0 --all --no-narrow --json \
           --root ${busyboxRoot} -- sh -c "$(cat coin.sh)" > sdk.json
         jq -e '.properties == ["same-outcome", "sdk"] and .sometimes_never == ["huge-byte"]' sdk.json
         jq -e '.sometimes_true | length == 1 and .[0].id == "even-byte" and .[0].runs == 6 and .[0].true >= 1' sdk.json
@@ -1637,7 +1644,7 @@ in
         EOF
         # The search has a home of its own, holding only its runs.
         junit_home=$TMPDIR/junit-home
-        ! REWIND_HOME=$junit_home rewind check -j 4 --clock exits --seeds 6 --schedules 0 \
+        ! REWIND_HOME=$junit_home rewind check -j 4 --clock exits --epoch $epoch --seeds 6 --schedules 0 \
           --property 'junit=/run/reports/*.xml' --root ${busyboxRoot} -- sh -c "$(cat report.sh)" > junit
         cat junit
         grep -qE '^failing run violates junit: step [0-9]+: test coin\.(flip|flop) passed in the unperturbed run and failed here$' junit
