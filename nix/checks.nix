@@ -841,7 +841,7 @@ in
           grep -q '^open an issue with the report filled in: https://github.com/fzakaria/rewindvm/issues/new?title=Run%20' report.out
           grep -q 'the machine is DIFFERENT' report/report.md
           grep -q '^- vendor_id: AuthenticAMD' report/report.md
-          test ! -e report/*.rwd
+          test -z "$(find report -name '*.rwd')"
 
           # Executing the run's inputs again keeps its keyframes, makes
           # another trace, and blames the host rather than the build.
