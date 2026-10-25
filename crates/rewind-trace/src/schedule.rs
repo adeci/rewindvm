@@ -227,6 +227,26 @@ pub fn stall_words(ns: u64) -> String {
     format!("{ms}.{rest:02} ms")
 }
 
+/// A stall's length in words after the article it is read with: "a 160
+/// µs", "an 80 µs". The number takes "an" when read aloud it starts with
+/// eight, eleven or eighteen: a leading 8, or a leading 11 or 18 in a
+/// number whose digits split into groups of three with two left over at
+/// the front, as 11 and 18000 do.
+pub fn a_stall(ns: u64) -> String {
+    const DIGITS_PER_GROUP: usize = 3;
+    const PAIR_AT_FRONT: usize = 2;
+    let words = stall_words(ns);
+    let whole = words
+        .split(|c: char| !c.is_ascii_digit())
+        .next()
+        .unwrap_or_default();
+    let an = whole.starts_with('8')
+        || (whole.len() % DIGITS_PER_GROUP == PAIR_AT_FRONT
+            && (whole.starts_with("11") || whole.starts_with("18")));
+    let article = if an { "an" } else { "a" };
+    format!("{article} {words}")
+}
+
 /// Whether the exit that made a step armed the guest's timer, which only
 /// the monitor sees as it runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -409,7 +429,7 @@ impl Schedule {
             parts.push("a request to switch threads".to_string());
         }
         if let Some(ns) = self.stall_at(step) {
-            parts.push(format!("a {} pause of the running thread", stall_words(ns)));
+            parts.push(format!("{} pause of the running thread", a_stall(ns)));
         }
         let slack = self.slack_at(step);
         let late = match timer {
@@ -703,6 +723,23 @@ mod tests {
     }
 
     #[test]
+    fn a_stall_takes_the_article_its_number_is_read_with() {
+        // "an" before the numbers read aloud starting with eight, eleven
+        // or eighteen, and "a" before the rest, for stalls in
+        // microseconds and in milliseconds.
+        assert_eq!(a_stall(80_000), "an 80 µs");
+        assert_eq!(a_stall(8_000_000), "an 8 ms");
+        assert_eq!(a_stall(11_000_000), "an 11 ms");
+        assert_eq!(a_stall(18_500_000), "an 18.5 ms");
+        assert_eq!(a_stall(800_000_000), "an 800 ms");
+        assert_eq!(a_stall(10_000), "a 10 µs");
+        assert_eq!(a_stall(160_000), "a 160 µs");
+        assert_eq!(a_stall(1_280_000), "a 1280 µs");
+        assert_eq!(a_stall(110_000_000), "a 110 ms");
+        assert_eq!(a_stall(11_000_000_000), "an 11000 ms");
+    }
+
+    #[test]
     fn a_long_stall_reads_in_milliseconds() {
         // Stalls up to the default's longest read in microseconds, as
         // they always have; longer ones in milliseconds, to two places
@@ -879,16 +916,16 @@ mod tests {
             format!("a request to switch threads and {}", late(reschedule))
         );
         let stall = find(&|st| !s.preempt_at(st) && s.stall_at(st).is_some());
-        let us = s.stall_at(stall).unwrap() / NS_PER_US;
+        let pause = a_stall(s.stall_at(stall).unwrap());
         assert_eq!(
             s.words_at(stall, Timer::NotArmed),
-            format!("a {us} µs pause of the running thread")
+            format!("{pause} pause of the running thread")
         );
         let both = find(&|st| s.preempt_at(st) && s.stall_at(st).is_some());
-        let us = s.stall_at(both).unwrap() / NS_PER_US;
+        let pause = a_stall(s.stall_at(both).unwrap());
         assert_eq!(
             s.words_at(both, Timer::NotArmed),
-            format!("a request to switch threads and a {us} µs pause of the running thread")
+            format!("a request to switch threads and {pause} pause of the running thread")
         );
         let timer = find(&|st| !s.preempt_at(st) && s.stall_at(st).is_none() && s.slack_at(st) > 0);
         assert_eq!(s.words_at(timer, Timer::Armed), late(timer));

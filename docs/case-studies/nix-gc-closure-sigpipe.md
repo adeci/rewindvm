@@ -175,7 +175,7 @@ schedule 0 failed; 255 of 256 other schedules ended differently
 
 schedule 1 passes where schedule 0 fails; finding the step that decides it
 schedule 1 limited to steps 37291..44429 still ends differently
-step 44428 decides it: a request to switch threads and a 80 µs pause of the running thread there makes the run pass
+step 44428 decides it: a request to switch threads and an 80 µs pause of the running thread there makes the run pass
 
 passing: run 5ecc968f48287a0f, schedule 1 over steps 37291..44429
 failing: run 69e21f691f4cb828, schedule 1 over steps 37291..44428
