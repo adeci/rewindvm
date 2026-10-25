@@ -50,11 +50,26 @@ the monitor controls.
 | Host scheduling       | Invisible to the guest                                              | Also invisible: a host interrupt or preemption causes a VM exit the guest cannot observe                                             |
 
 Determinism is checked rather than assumed. `rewind replay` runs a run's
-inputs again and compares every event and its step. A busybox workload with
-background jobs, pipes, `/dev/urandom` and `sleep`, and full nixpkgs builds of
-GNU hello (86712 steps) and mylib (5115 steps), all replay identically. The
-work on determinism was mostly finding the sources in the table above one at a
-time: each one first appeared as two replays of the same run disagreeing.
+inputs again and compares every event and its step, and at each of the run's
+keyframes the whole machine (see [Checking the whole
+machine](#checking-the-whole-machine)). A busybox workload with background
+jobs, pipes, `/dev/urandom` and `sleep`, and full nixpkgs builds of GNU hello
+(141,035 steps) and mylib (5115 steps), all replay identically, machine
+included. The work on determinism was mostly finding the sources in the table
+above one at a time: each one first appeared as two replays of the same run
+disagreeing. The performance counters were found that way on 2026-10-24, from
+a line in every run's boot log: a performance test that read cycles through
+`perf_event_open` read the host's, and `rewind check` blamed a schedule for
+what the host decided.
+
+`checks.determinism-sources` records and replays a probe for each source a
+guest might read past the monitor: the counters, XINUSE through `xgetbv(1)`,
+results x86 leaves to the CPU (the flags `MUL` leaves undefined, `BSF` and
+`BSR` of zero, `RCPPS` and `RSQRTPS`), and `/proc/cpuinfo`. Those probes and a
+GNU hello build, recorded with `--cpu v3-compat` on a Ryzen 7 7840U (Zen 4,
+Linux 7.1) and replayed on an EPYC 7763 (Zen 3, Linux 6.18, other microcode),
+replay with the machine identical at every keyframe. Intel hosts, APICv or
+AVIC, and hybrid Intel parts have not been tried this way.
 
 ### Steps and virtual time
 
@@ -71,6 +86,89 @@ time.
 The cost of this model is that computation between exits is free. A thread
 that computes for a millisecond without a system call sees no time pass, and
 nothing preempts it. See [Limits](#limits).
+
+### Checking the whole machine
+
+An event can only differ at an exit, so a replay that makes the recording's
+events can still be another machine: a value in memory or a register that
+nothing has printed yet, or ever will. A program that draws a number with
+user-space `RDRAND` and keeps it in a global replays with every event the
+same, and `rewind gdb` before the next keyframe shows a different number each
+time, since the look replays the draw.
+
+So at each step the run has a keyframe at, `rewind replay` captures its
+machine the way recording does, hashing the pages written since the last
+capture without storing them, and compares the page hashes, registers, MSRs,
+local APIC, pending events, interrupt controllers and the monitor's devices
+with the keyframe's, by name. The first keyframe that differs and the last
+that matched bracket where the machine changed. Each differing page is named
+where the replayed machine maps it: a process and an address, with the
+variable or function gdb finds there, or the kernel's image and its symbol,
+with the bytes on each side. The run is marked, and `rewind gdb`, `shell`,
+`cat` and `where` at a step in the bracket warn that they replay the stretch
+where it changed.
+
+A few pieces of state change for reasons of the host's that the guest cannot
+see, and are left out, each with its reason in `crates/rewind-vmm/src/state.rs`:
+the TSC MSR, which CPUID and CR4.TSD keep from the guest; three Hyper-V MSRs of
+host time and the host's TSC frequency, which a guest shown no Hyper-V leaves
+never reads; the local APIC timer's current count, which KVM computes from host
+time and the guest never arms; and the performance counters' MSRs, which the
+VM has none of, and which KVM lists by the host's CPU. KVM leaves the vector
+and error code of the last exception it delivered in the pending event fields,
+so those are compared only while an event is injected or pending. Each entry
+was found as a replay whose machine differed while its events did not.
+
+`--machine every` is the default; `last` compares only at the last keyframe
+and takes no capture before it, which shows that taking keyframes changes
+nothing the guest sees; `none` compares events and records only. On a GNU
+hello build of 140,525 steps and 82 keyframes, a replay took 17.1 s comparing
+events only, 19.4 s comparing at every keyframe and 17.6 s at the last.
+`checks.state-replay` replays a busybox run from boot, from each keyframe, at
+the last keyframe alone and as a fork, and has a keyframe name other contents
+for a page, which the replay must find, or a comparison of nothing would pass.
+
+### Finding the instruction
+
+`rewind replay --bisect` narrows a difference from the bracket to the
+instruction that made it. The recording holds the machine only at its
+keyframes, so from the last keyframe that matched, two fresh replays run side
+by side and compare with each other, captured every 256 steps and then step by
+step through the stride where they part. From the step before the first that
+differs, both are single-stepped and their registers compared after each
+instruction. KVM single-steps by setting TF, and an `iretq`, `sysretq` or
+`popf` loads flags saved before stepping began, which would let the vCPU run
+unstepped from the kernel's return to user space to the next exit; both
+copies are given TF in the flags such an instruction loads.
+
+The first instruction whose result differs is named with its process and its
+function and line, or its kernel symbol. When it is one of the instructions
+that read the host, `RDRAND`, `RDSEED`, `RDTSC`, `RDTSCP`, `RDPMC`, `RDMSR`,
+`CPUID`, `XGETBV` or `RDPID`, the report says why its result can differ and
+who can act: the program, for `RDRAND` in its own code, which `getrandom()`
+replaces with numbers the run's seed decides, or Rewind, for anything in the
+guest kernel or that Rewind should have kept from the guest. A step whose
+instructions all agree and whose machines differ after its exit names what
+the monitor or KVM wrote there. On the `RDRAND` probe the search takes about
+5 s and finds the instruction 4,072 instructions into step 302.
+
+The search needs the source to give two replays on this host different
+answers. A run recorded on another host whose replays all agree here gets
+the bracket and the pages, not the instruction. A source that differs only
+sometimes takes `--tries N`. Single-stepping costs about 6 µs an instruction,
+so a step past five million instructions stops the search and says so.
+
+`rewind report` gathers what a report of such a gap needs: this build, the
+host's CPU, microcode, kernel and the KVM parameters that change what a VM
+sees, what `rewind doctor` and `rewind replay` find, and the run's replayable
+`.rwd`, into a directory, and prints a link to a new GitHub issue filled in
+with it. A link cannot attach a file and rewind uploads nothing, so the person
+attaches the `.rwd`, which holds the run's programs, inputs and memory, or
+leaves it out with `--no-run`. The errors that find a run not deterministic on
+the host that recorded it point at `--bisect` and `rewind report`; a
+`rewind check` that finds a run ending differently from schedule 0 replays
+both before it says what decides it, and stops when either does not replay
+exactly, since then no schedule does.
 
 ### The guest kernel
 
@@ -1059,9 +1157,13 @@ Three earlier designs did not work, and why is worth keeping.
   run made on AMD replays on any AMD host from Zen 2 on but not on Intel,
   and the other way around. A `v3` run also needs a host that shows ERMS;
   a `v3-compat` run does not.
-- **User-space RDRAND and RDSEED** still work if a program executes them
-  without checking CPUID. KVM does not let the monitor trap them. Hardly any
-  program does this.
+- **User-space RDRAND and RDSEED** still work on AMD if a program executes
+  them without checking CPUID. KVM does not let the monitor trap them. Hardly
+  any program does this; `rewind replay` finds the machine differs where one
+  does, and `--bisect` names the instruction. On Intel, KVM is reported to
+  fault them when CPUID hides them, so the program dies of SIGILL;
+  `checks.determinism-sources` expects that there, and has not run on Intel
+  yet.
 - **Read and write records miss some writes.** Writes through a memory
   mapping, `splice` and io_uring are not recorded, and records that do not
   fit in the guest's 1 MiB buffer between two steps are lost. The trace
