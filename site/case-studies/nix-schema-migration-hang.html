@@ -178,8 +178,8 @@ open both in the desktop app: rewind open 27f6a5bbc7694573 26734 --compare afa5b
         <pre
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind log dcc8a0bb | grep -E 'UNIQUE|is busy|TIMEOUT' | sort | uniq -c</span>
-      1 1/1 nix-functional-tests:ca / concurrent-builds TIMEOUT        300.03s   killed by signal 15 SIGTERM
-      1 1/1 nix-functional-tests:ca / concurrent-builds        TIMEOUT        300.03s   killed by signal 15 SIGTERM
+      1 1/1 nix-functional-tests:ca / concurrent-builds <span class="ansi-bold ansi-red">TIMEOUT       </span> 300.03s   killed by signal 15 SIGTERM
+      1 1/1 nix-functional-tests:ca / concurrent-builds        <span class="ansi-bold ansi-red">TIMEOUT       </span> 300.03s   killed by signal 15 SIGTERM
       2        insert into SchemaMigrations values('20251017-ca-derivations')': constraint failed, UNIQUE constraint failed: SchemaMigrations.migration (in '/build/nix-test/ca/concurrent-builds/var/nix/db/db.sqlite')
      28 warning: SQLite database '/build/nix-test/ca/concurrent-builds/var/nix/db/db.sqlite' is busy
 

@@ -1,0 +1,19 @@
+[
+ {
+  "text": "$ rewind log dcc8a0bb | grep -E 'UNIQUE|is busy|TIMEOUT' | sort | uniq -c\n      1 1/1 nix-functional-tests:ca / concurrent-builds TIMEOUT        300.03s   killed by signal 15 SIGTERM\n      1 1/1 nix-functional-tests:ca / concurrent-builds        TIMEOUT        300.03s   killed by signal 15 SIGTERM\n      2        insert into SchemaMigrations values('20251017-ca-derivations')': constraint failed, UNIQUE constraint failed: SchemaMigrations.migration (in '/build/nix-test/ca/concurrent-builds/var/nix/db/db.sqlite')\n     28 warning: SQLite database '/build/nix-test/ca/concurrent-builds/var/nix/db/db.sqlite' is busy\n\n$ rewind events dcc8a0bb | grep -E 'exit_group\\(nix\\)'\n     26782   224/224   exit_group(nix) exited:1\n     27151   222/222   exit_group(nix) exited:1\n     32727   238/238   exit_group(nix) killed:SIGTERM\n     37423   220/220   exit_group(nix) exited:0\n     40319   221/221   exit_group(nix) exited:0\n     47358   225/225   exit_group(nix) exited:0\n    410647   223/223   exit_group(nix) exited:1",
+  "spans": [
+   [
+    1,
+    56,
+    70,
+    "bold red"
+   ],
+   [
+    2,
+    63,
+    77,
+    "bold red"
+   ]
+  ]
+ }
+]
