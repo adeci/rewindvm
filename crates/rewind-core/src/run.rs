@@ -1758,6 +1758,13 @@ pub(crate) fn kernel_symbol(map: &str, addr: u64) -> Option<String> {
         .map(|(start, name)| format!("{name}+{:#x}", addr - start))
 }
 
+/// A kernel address as `symbol+0xoffset`, from the System.map beside the
+/// guest kernel `kernel`.
+pub fn kernel_symbol_at(kernel: &Path, address: u64) -> Option<String> {
+    let map = fs::read_to_string(kernel.with_file_name(SYSTEM_MAP)).ok()?;
+    kernel_symbol(&map, address)
+}
+
 /// The address of the symbol `name` in the System.map text `map`.
 pub(crate) fn kernel_symbol_address(map: &str, name: &str) -> Option<u64> {
     map.lines().find_map(|line| {

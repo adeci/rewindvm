@@ -360,6 +360,21 @@ pub(crate) struct ReplayArgs {
     /// replay runs as one without keyframes would.
     #[arg(long, value_enum, default_value_t = MachineArg::Every, value_name = "WHERE")]
     pub(crate) machine: MachineArg,
+    /// When the replay differs, find the step and the instruction that
+    /// made it differ.
+    ///
+    /// Two fresh replays are restored at the last keyframe that matched
+    /// and run side by side, compared after every step; from the step
+    /// before the first that differs, both are single-stepped and their
+    /// registers compared after each instruction. This takes about two
+    /// replays of the stretch between two keyframes, and about 6 µs per
+    /// instruction of the step single-stepped.
+    #[arg(long, conflicts_with = "machine")]
+    pub(crate) bisect: bool,
+    /// How many times --bisect tries for two replays that differ, for a
+    /// source that differs only sometimes.
+    #[arg(long, value_name = "N", default_value_t = 1, requires = "bisect")]
+    pub(crate) tries: u32,
 }
 
 /// Where `rewind replay` compares the machine.
@@ -394,6 +409,8 @@ pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
         from,
         json,
         machine,
+        bisect,
+        tries,
     } = args;
     let run = Run::find(home, &run)?;
     let from = from.map(|s| run.check_step(s)).transpose()?;
@@ -410,6 +427,25 @@ pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
         ExitCode::FAILURE
     };
 
+    // Down to the step and the instruction, when asked and there is a
+    // difference to look for.
+    let bisected = match rewind_core::bisect::bracket_of(&replayed) {
+        Some(bracket) if bisect => {
+            let from = bracket
+                .from
+                .map_or("boot".to_string(), |s| format!("the keyframe at step {s}"));
+            crate::status(&format!(
+                "{} bisecting from {from} to step {}, with two replays side by side",
+                color::stderr().prefix(),
+                bracket.to
+            ));
+            let found = rewind_core::bisect::bisect(&run, home, bracket, tries);
+            crate::clear_status();
+            Some(found?)
+        }
+        _ => None,
+    };
+
     if json {
         let (original, again) = (&replayed.original, &replayed.again);
         let divergence = match &replayed.divergence {
@@ -424,6 +460,7 @@ pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
                 "keyframe": replayed.keyframe,
                 "divergence": divergence,
                 "machine": machine,
+                "bisect": bisected,
             })
         );
         return Ok(exit);
@@ -478,13 +515,233 @@ pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
     if let Some(first) = &machine.first {
         print!("{}", machine_words(home, &run, first, &replayed, paint));
     }
-    if !identical {
-        println!(
+    match &bisected {
+        Some(found) => print!("{}", bisect_words(home, &run, found, paint)),
+        None if bisect && identical => println!("nothing to bisect"),
+        None if !identical => println!(
             "\nto find the instruction that made the difference: rewind replay {} --bisect",
             run.manifest.id
-        );
+        ),
+        None => {}
     }
     Ok(exit)
+}
+
+/// What `--bisect` found, for a person: the step, the instruction and its
+/// place, why its result can differ and who can do something about it,
+/// and how the search went.
+fn bisect_words(
+    home: &Home,
+    run: &Run,
+    found: &rewind_core::bisect::Bisected,
+    paint: color::Paint,
+) -> String {
+    use rewind_core::bisect::{Bisected, Mode, WithinStep};
+    use std::fmt::Write;
+    let mut out = String::new();
+    let from_words = |from: Option<u64>| from.map_or("boot".to_string(), |s| format!("step {s}"));
+    let (bracket, step, within, tries) = match found {
+        Bisected::Agreed { bracket, tries } => {
+            let _ = writeln!(
+                out,
+                "\n{}: two replays from {} agreed through step {} in each of {tries} {}. The \
+                 source gives this host the same answer each time it is read; replaying the \
+                 run on another host, or with more --tries, may tell more.",
+                paint.verdict(Same::Yes, "no instruction found"),
+                from_words(bracket.from),
+                bracket.to,
+                if *tries == 1 { "try" } else { "tries" }
+            );
+            return out;
+        }
+        Bisected::Found {
+            bracket,
+            step,
+            within,
+            tries,
+        } => (bracket, *step, within, *tries),
+    };
+
+    let _ = writeln!(out, "\nthe machine first differs at step {step}.");
+    let mut why = None;
+    match within {
+        WithinStep::Instruction(i) => {
+            let process = match (&i.pid, &i.process) {
+                (Some(pid), Some(name)) => format!("process {pid} ({name})"),
+                _ => "the VM".to_string(),
+            };
+            let what = match &i.host {
+                Some(host) => host.mnemonic.clone(),
+                None => format!("the instruction {}", hex_bytes(&i.bytes)),
+            };
+            let place = match (i.mode, i.pid) {
+                (Mode::User, Some(pid)) => {
+                    crate::locate::address_words(home, run, step - 1, pid, i.rip)
+                }
+                (Mode::Kernel, _) => {
+                    rewind_core::run::kernel_symbol_at(&run.manifest.spec.kernel, i.rip)
+                        .map(|s| format!("in the kernel, {s}"))
+                }
+                _ => None,
+            };
+            let in_kernel = if i.mode == Mode::Kernel {
+                ", in the kernel,"
+            } else {
+                ""
+            };
+            let _ = writeln!(
+                out,
+                "  {process}{in_kernel} ran  {}  at {:#x}",
+                paint.paint(color::Style::Warn, &what),
+                i.rip
+            );
+            if let Some(place) = place {
+                let _ = writeln!(out, "    {place}");
+            }
+            for r in &i.registers {
+                let _ = writeln!(
+                    out,
+                    "  {} after it: {} in one replay, {} in the other",
+                    r.name,
+                    paint.paint(color::Style::Left, &r.left),
+                    paint.paint(color::Style::Right, &r.right)
+                );
+            }
+            why = Some(match &i.host {
+                Some(host) => host_words(host, i.mode, run),
+                None => "\nthe instruction is not one the table of instructions that read the \
+                         host knows; the registers above are where its result differs."
+                    .to_string(),
+            });
+        }
+        WithinStep::AtTheExit {
+            instructions,
+            state,
+            pages,
+        } => {
+            let _ = writeln!(
+                out,
+                "  each of the step's {instructions} instructions gave the same registers in \
+                 both replays, and the machines differ after the exit that ends it, so the \
+                 monitor or KVM wrote the difference there:"
+            );
+            for d in state {
+                let _ = writeln!(
+                    out,
+                    "  {}: {} in one replay, {} in the other",
+                    d.name, d.left, d.right
+                );
+            }
+            for page in pages {
+                let _ = writeln!(out, "  memory at physical {:#x}", *page as u64 * 4096);
+            }
+            why = Some(format!(
+                "\nthis is a gap in Rewind, not in the program: please report it with \
+                 `rewind report {}`.",
+                run.manifest.id
+            ));
+        }
+        WithinStep::OutOfBudget { instructions } => {
+            let _ = writeln!(
+                out,
+                "  the step ran past {instructions} single-stepped instructions without a \
+                 register differing, so the search stopped there."
+            );
+        }
+    }
+    if let Some(why) = why {
+        let _ = writeln!(out, "{why}");
+    }
+
+    // How the search went.
+    let _ = writeln!(out, "\nhow it was found:");
+    let _ = writeln!(
+        out,
+        "  the machine matched the recording at {}, and not by step {}",
+        bracket
+            .from
+            .map_or("boot".to_string(), |s| format!("the keyframe at step {s}")),
+        bracket.to
+    );
+    let tried = if tries > 1 {
+        format!(", on try {tries}")
+    } else {
+        String::new()
+    };
+    let _ = writeln!(
+        out,
+        "  two replays from {} first differ after step {step}{tried}",
+        from_words(bracket.from)
+    );
+    if let WithinStep::Instruction(i) = within {
+        let _ = writeln!(
+            out,
+            "  single steps from step {} found the first instruction whose result differs, \
+             instruction {} of the step",
+            step - 1,
+            i.index
+        );
+    }
+    out
+}
+
+/// Bytes as hex, a space between each.
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Why an instruction that reads the host gives a result the run's inputs
+/// do not decide, and who can do something about it: the program, for an
+/// instruction in its own code it could replace, or Rewind, for one in
+/// the guest kernel or one Rewind should have kept from the guest.
+fn host_words(
+    host: &rewind_core::host_instructions::Host,
+    mode: rewind_core::bisect::Mode,
+    run: &Run,
+) -> String {
+    use rewind_core::bisect::Mode;
+    use rewind_core::host_instructions::Reads;
+    let report = format!(
+        "This is a gap in Rewind, not in the program: please report it with `rewind report {}`.",
+        run.manifest.id
+    );
+    let name = host.mnemonic.split(' ').next().unwrap_or(&host.mnemonic);
+    let what = match host.reads {
+        Reads::Random => format!(
+            "{name} reads a random number from the host CPU. Rewind hides it in CPUID, but an \
+             AMD CPU still runs it, and nothing in the run's inputs decides the number."
+        ),
+        Reads::TimeStamp => format!(
+            "{name} reads the host's time stamp counter, which Rewind hides in CPUID and faults \
+             in user space."
+        ),
+        Reads::Counter => format!(
+            "{name} reads a hardware performance counter, which Rewind takes away from the VM."
+        ),
+        Reads::Identity => format!(
+            "{name}'s answer comes from KVM, and Rewind's CPU model is to fix every leaf of it."
+        ),
+        Reads::Msr => format!("{name} reads a model-specific register that KVM answers."),
+        Reads::ExtendedState => format!(
+            "{name} with ecx 1 reads XINUSE, which the CPU keeps as the extended registers are \
+             used, and which neither KVM nor Rewind controls."
+        ),
+        Reads::ProcessorId => format!(
+            "{name} reads the host's TSC_AUX. Rewind hides it in CPUID, but the CPU still runs \
+             it."
+        ),
+    };
+    let fix = match (host.reads, mode) {
+        (Reads::Random, Mode::User) => "A program that gets its random numbers from \
+             getrandom() or /dev/urandom gets ones the run's --seed decides."
+            .to_string(),
+        _ => report,
+    };
+    format!("\n{what} {fix}")
 }
 
 /// What a replay found of the machine at a keyframe, for a person: where

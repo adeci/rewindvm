@@ -398,6 +398,32 @@ impl Machine {
         Ok(self.vcpu.get_regs()?)
     }
 
+    /// The general purpose registers, the instruction pointer and flags,
+    /// by name, in the order KVM keeps them.
+    pub fn named_registers(&self) -> Result<[(&'static str, u64); 18]> {
+        let r = self.vcpu.get_regs()?;
+        Ok([
+            ("rax", r.rax),
+            ("rbx", r.rbx),
+            ("rcx", r.rcx),
+            ("rdx", r.rdx),
+            ("rsi", r.rsi),
+            ("rdi", r.rdi),
+            ("rsp", r.rsp),
+            ("rbp", r.rbp),
+            ("r8", r.r8),
+            ("r9", r.r9),
+            ("r10", r.r10),
+            ("r11", r.r11),
+            ("r12", r.r12),
+            ("r13", r.r13),
+            ("r14", r.r14),
+            ("r15", r.r15),
+            ("rip", r.rip),
+            ("rflags", r.rflags),
+        ])
+    }
+
     pub fn set_registers(&mut self, regs: &kvm_regs) -> Result<()> {
         Ok(self.vcpu.set_regs(regs)?)
     }

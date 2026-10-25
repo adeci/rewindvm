@@ -345,6 +345,12 @@ impl Memory {
         self.apply(parent, pages);
     }
 
+    /// The hash of a page's contents: the zero page's for a page this
+    /// memory does not hold.
+    pub fn hash_of(&self, page: u32) -> [u8; 32] {
+        *self.pages.get(&page).unwrap_or(&ZERO_PAGE)
+    }
+
     /// The pages whose contents differ between this memory and `other`,
     /// in page order, with each side's hash: the zero page's where a
     /// side holds none.

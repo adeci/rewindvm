@@ -825,6 +825,15 @@ in
           rewind cat hidden $((differs - 1)) /bin/hidden 2> look.err > /dev/null
           grep -q 'can be values the recording never had' look.err
 
+          # --bisect narrows it to the step and the instruction: rdrand in
+          # hidden's main, with why and what the program can do instead.
+          ! rewind replay hidden --bisect > hidden.bisect
+          cat hidden.bisect
+          grep -q '^the machine first differs at step ' hidden.bisect
+          grep -q 'process [0-9]* (hidden) ran  rdrand r' hidden.bisect
+          grep -q 'in main' hidden.bisect
+          grep -q 'getrandom()' hidden.bisect
+
           # Executing the run's inputs again keeps its keyframes, makes
           # another trace, and blames the host rather than the build.
           ! rewind run --name rdrand --root ${determinismRoot} -- /bin/rdrand 2> again.err
