@@ -271,6 +271,8 @@ def pipes_rewind(command):
     """Whether `command` pipes rewind's output into another program, so a
     reader's rewind writes plain text."""
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    # A flake reference's # starts its output's name, not a comment.
+    lexer.commenters = ""
     seen = False
     for token in lexer:
         if token == "rewind":
