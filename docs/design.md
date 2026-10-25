@@ -158,17 +158,20 @@ the bracket and the pages, not the instruction. A source that differs only
 sometimes takes `--tries N`. Single-stepping costs about 6 µs an instruction,
 so a step past five million instructions stops the search and says so.
 
-`rewind report` gathers what a report of such a gap needs: this build, the
+`rewind bugreport` gathers what a report of such a gap needs: this build, the
 host's CPU, microcode, kernel and the KVM parameters that change what a VM
-sees, what `rewind doctor` and `rewind replay` find, and the run's replayable
-`.rwd`, into a directory, and prints a link to a new GitHub issue filled in
-with it. A link cannot attach a file and rewind uploads nothing, so the person
-attaches the `.rwd`, which holds the run's programs, inputs and memory, or
-leaves it out with `--no-run`. The errors that find a run not deterministic on
-the host that recorded it point at `--bisect` and `rewind report`; a
-`rewind check` that finds a run ending differently from schedule 0 replays
-both before it says what decides it, and stops when either does not replay
-exactly, since then no schedule does.
+sees, and what `rewind doctor` and `rewind replay` find, with rewind's home and
+the user's home directory left out of every path, into a directory beside the
+run's trace-only `.rwd`, and prints a link to a new GitHub issue filled in with
+it. The trace-only export is a few kilobytes and carries the run's command,
+environment and output; the replayable one, with `--replayable`, carries the
+guest's kernel and memory and is tens of megabytes, past the 25 MB an issue
+takes, for a maintainer who asks. A link cannot attach a file and rewind
+uploads nothing, so the person attaches what they choose to share. The errors
+that find a run not deterministic on the host that recorded it point at
+`--bisect` and `rewind bugreport`; a `rewind check` that finds a run ending
+differently from schedule 0 replays both before it says what decides it, and
+stops when either does not replay exactly, since then no schedule does.
 
 ### The guest kernel
 
