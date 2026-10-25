@@ -28,32 +28,32 @@ schedule only:
 $ rewind check --epoch 1790985600 --seeds 8 --schedules 0 --all --no-narrow github:fzakaria/rewindvm#tiles
 rewind: packing 75 store paths for tiles-0.2.0
 rewind: 8 random seeds, each run under schedule 0 and 0 other schedules: 8 runs
-seed  0 schedule   0: exited:0       4035 steps  d20b5efd388d  run 8d29a01cc44264b4
-seed  1 schedule   0: exited:0       4035 steps  b4501793e383  run c4bd9260b7719942
-seed  2 schedule   0: exited:0       4035 steps  0cd5db6c5c2c  run a5448b8d2ca19c18
-seed  3 schedule   0: exited:0       4035 steps  24f18f09c329  run b03811e63cc68d97
-seed  4 schedule   0: exited:0       4035 steps  b4501793e383  run ed28383bea49e84f
-seed  5 schedule   0: exited:0       4035 steps  5e1f0a457cbe  run f5e8d2ac2c4b7782
-seed  6 schedule   0: exited:0       4035 steps  d20b5efd388d  run af24df10ae7ac1e8
-seed  7 schedule   0: exited:0       4035 steps  b4501793e383  run b5268e20063c5a9e
+seed  0 schedule   0: exited:0             4035 steps  d20b5efd388d  run 56e7036bef2be348
+seed  1 schedule   0: exited:0             4035 steps  b4501793e383  run a49817d2dc937c04
+seed  2 schedule   0: exited:0             4035 steps  0cd5db6c5c2c  run 432d4935f39f9882
+seed  3 schedule   0: exited:0             4035 steps  24f18f09c329  run 1202f2af6ed7f1fa
+seed  4 schedule   0: exited:0             4035 steps  b4501793e383  run 65e3d5aa30d5b7b0
+seed  5 schedule   0: exited:0             4035 steps  5e1f0a457cbe  run cb252aae5875cebc
+seed  6 schedule   0: exited:0             4035 steps  d20b5efd388d  run a35f07059805822e
+seed  7 schedule   0: exited:0             4035 steps  b4501793e383  run 9c1eedac589f0c0b
 6 of 7 other runs ended differently
 ```
 
 The third column from the end is the start of the output's hash, and the
-last is the run id. Eight builds made 5 different outputs, so `tiles` is not
-reproducible.
+last is the run id. Eight builds made 5 different outputs, so
+`tiles` is not reproducible.
 
 ## What differs
 
 Compare seed 0's run with seed 1's:
 
 ```console
-$ rewind diff --outputs 8d29a01c c4bd9260
+$ rewind diff --outputs 56e7036b a49817d2
 2 of the 5 files the runs left behind differ:
   /build/tiles/tiles.pc: 22 of 227 bytes differ, first at byte 178
   /nix/store/...-tiles-0.2.0/lib/pkgconfig/tiles.pc: 22 of 227 bytes differ, first at byte 178
 
-$ rewind diff --file /build/tiles/tiles.pc 8d29a01c c4bd9260
+$ rewind diff --file /build/tiles/tiles.pc 56e7036b a49817d2
 tiles.pc differs, first at line 7.
 Only in the left run: 1 line.
 Only in the right run: 1 line.
@@ -77,17 +77,17 @@ from. `--file` shows the lines: the same three packages in another order.
 the first byte that differs:
 
 ```console
-$ rewind blame 8d29a01c c4bd9260 /nix/store/ihhhzc5qphjjz5vgss7swki10dwkicsb-tiles-0.2.0/lib/pkgconfig/tiles.pc
-tiles.pc differs at byte 178. python3 (pid 112) wrote that byte at step 2,909 in run 8d29a01c and at step 2,909 in run c4bd9260.
+$ rewind blame 56e7036b a49817d2 /nix/store/ihhhzc5qphjjz5vgss7swki10dwkicsb-tiles-0.2.0/lib/pkgconfig/tiles.pc
+tiles.pc differs at byte 178. python3 (pid 112) wrote that byte at step 2,909 in run 56e7036b and at step 2,909 in run a49817d2.
 
 22 of 227 bytes differ. The bytes from byte 178:
-  8d29a01c  70 69 78 6d 61 6e 2d 31 2c 20 6c 69 62 70 6e 67  |pixman-1, libpng|
-  c4bd9260  7a 6c 69 62 2c 20 70 69 78 6d 61 6e 2d 31 2c 20  |zlib, pixman-1, |
+  56e7036b  70 69 78 6d 61 6e 2d 31 2c 20 6c 69 62 70 6e 67  |pixman-1, libpng|
+  a49817d2  7a 6c 69 62 2c 20 70 69 78 6d 61 6e 2d 31 2c 20  |zlib, pixman-1, |
 
-Who wrote the file in run 8d29a01c, from the last writer back:
+Who wrote the file in run 56e7036b, from the last writer back:
   install (pid 122) copied it from /build/tiles/tiles.pc, starting at step 3,157. Its source already differs, so the copy did not cause the difference.
   bash (pid 112) wrote /build/tiles/tiles.pc, starting at step 2,796. It is the first writer, and the file already differs when it is done.
-Run c4bd9260 made the file the same way, with the same programs.
+Run a49817d2 made the file the same way, with the same programs.
 
 In both runs, one write of 227 bytes, from byte 0, set byte 178.
 
@@ -117,7 +117,7 @@ without replaying either run.
 Open the two runs side by side:
 
 ```console
-$ rewind open 8d29a01c --compare c4bd9260
+$ rewind open 56e7036b --compare a49817d2
 ```
 
 The Compare tab's Files that differ link lists what `diff --outputs` does:
@@ -178,17 +178,17 @@ build with the stock order, dirents 0:
 
 ```console
 $ rewind check --epoch 1790985600 --seeds 1 --schedules 0 --all --no-narrow --dirents 3 .#plugins
-dirents  0 schedule   0: exited:0       3885 steps  77b96f07540a  run 8d64b8b46c5c8b68
-dirents  1 schedule   0: exited:0       3885 steps  3d555b541296  run e4c221b26df20a9c
-dirents  2 schedule   0: exited:0       3885 steps  925dde4ef23a  run 593a9430de55e469
-dirents  3 schedule   0: exited:0       3885 steps  abd7877043a8  run 067e05c27c9ceb09
+dirents  0 schedule   0: exited:0             3885 steps  77b96f07540a  run d9631407be54fc46
+dirents  1 schedule   0: exited:0             3885 steps  3d555b541296  run 78fdad37cbc99586
+dirents  2 schedule   0: exited:0             3885 steps  925dde4ef23a  run 26adc9540fd107c7
+dirents  3 schedule   0: exited:0             3885 steps  abd7877043a8  run b4fabcb208cd04ad
 3 of 3 other runs ended differently
 ```
 
 Each key builds another output. The index is the file that changed:
 
 ```console
-$ rewind diff --file /build/plugins/plugins.txt e4c221b2 593a9430
+$ rewind diff --file /build/plugins/plugins.txt 78fdad37 26adc954
 plugins.txt differs, first at line 3.
 Only in the left run: 2 lines.
 Only in the right run: 2 lines.
@@ -225,10 +225,10 @@ Sort the names in `gen-index.py`:
 ```console
 $ rewind check --epoch 1790985600 --seeds 1 --schedules 0 --all --no-narrow --dirents 3 .#plugins
 ...
-dirents  0 schedule   0: exited:0       3885 steps  164f7a685a08  run b6df38ae66f5fe2a
-dirents  1 schedule   0: exited:0       3885 steps  164f7a685a08  run baa0f5b19a200665
-dirents  2 schedule   0: exited:0       3885 steps  164f7a685a08  run 66cd95f7f45800ae
-dirents  3 schedule   0: exited:0       3885 steps  164f7a685a08  run 277108e566a7d02b
+dirents  0 schedule   0: exited:0             3885 steps  164f7a685a08  run f33b54b768d6600c
+dirents  1 schedule   0: exited:0             3885 steps  164f7a685a08  run c99a668fc8928820
+dirents  2 schedule   0: exited:0             3885 steps  164f7a685a08  run 04571eadc665dc44
+dirents  3 schedule   0: exited:0             3885 steps  164f7a685a08  run 7dcc86078b483da9
 0 of 3 other runs ended differently
 same result under all 4 runs
 ```

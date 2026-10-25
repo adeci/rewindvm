@@ -139,7 +139,7 @@ make: *** [Makefile:18: check] Error 1</code></pre>
 ...
 round 3: ok
 test_pool_shutdown: ok
-rewind: run dbe013e52eb8d4a2 exited:0 after 1322 steps, 0.019s virtual, 2.107s wall (poweroff)</code></pre>
+<span class="ansi-dim">rewind:</span> run 43601007d3477b21 <span class="ansi-green">exited:0</span> after 1322 steps, 0.019s virtual, 2.218s wall (poweroff)</code></pre>
         <p>
           It passes, in the same 1322 steps every time. Nothing the command writes reaches your
           disk. A run's id is the hash of its inputs, so your image makes ids other than these.
@@ -158,51 +158,51 @@ rewind: run dbe013e52eb8d4a2 exited:0 after 1322 steps, 0.019s virtual, 2.107s w
         <pre
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind check --root mylib.tar --cwd /src -- make check</span>
-schedule   0: exited:0       1322 steps    run dbe013e52eb8d4a2
-schedule   1: exited:0       1491 steps    run 2a36f6a977d4c74f
-schedule   2: exited:0       1558 steps    run b9191b5c442f31f1
-schedule   3: exited:0       1493 steps    run 968666bc01b5ec53
-schedule   4: exited:2       1547 steps    run 1cc1773bcdaaac93
-schedule   5: exited:0       1564 steps    run 01d28dacd8858ac4
-schedule   6: exited:0       1631 steps    run fde03f81dc2cb6d0
-schedule   7: exited:0       1462 steps    run ff3b5aaf8e6cd775
-schedule   8: exited:0       1539 steps    run 0601e3243e96c8d3
-schedule   9: exited:0       1531 steps    run 922476411bc56c9b
-schedule  10: exited:2       1308 steps    run 1a2f67c3a562b2c8
-schedule  11: exited:0       1543 steps    run 3e384af50e720a39
-schedule  12: exited:0       1634 steps    run 286f22edf61f0008
-schedule  13: exited:2       1308 steps    run 45969ad1c3732643
-schedule  14: exited:0       1603 steps    run f8bfea7b0135ce05
-schedule  15: exited:0       1566 steps    run a571fb619a02f974
-schedule  16: exited:0       1681 steps    run 18e6c042d7151b85
+schedule   0: <span class="ansi-green">exited:0</span>             1322 steps    run 43601007d3477b21
+schedule   1: <span class="ansi-green">exited:0</span>             1491 steps    run 7788847049fbb673
+schedule   2: <span class="ansi-green">exited:0</span>             1558 steps    run c80a76ec9e62735a
+schedule   3: <span class="ansi-green">exited:0</span>             1493 steps    run e599f9fda8c10a9b
+schedule   4: <span class="ansi-red">exited:2</span>             1547 steps    run a447599600a701d5
+schedule   5: <span class="ansi-green">exited:0</span>             1564 steps    run 013e9afd5c812c49
+schedule   6: <span class="ansi-green">exited:0</span>             1631 steps    run 627a6e2d185df930
+schedule   7: <span class="ansi-green">exited:0</span>             1462 steps    run 23ceb1cc3e86eca8
+schedule   8: <span class="ansi-green">exited:0</span>             1539 steps    run e9dc4a1a96740693
+schedule   9: <span class="ansi-green">exited:0</span>             1531 steps    run 2a8fbe3497192b16
+schedule  10: <span class="ansi-red">exited:2</span>             1308 steps    run cb330a0fe0339afa
+schedule  11: <span class="ansi-green">exited:0</span>             1563 steps    run 610470ebbda7b463
+schedule  12: <span class="ansi-green">exited:0</span>             1634 steps    run 9092cda538f12c41
+schedule  13: <span class="ansi-red">exited:2</span>             1308 steps    run 42a7bd51466f0788
+schedule  14: <span class="ansi-green">exited:0</span>             1603 steps    run 00728f3fb2764270
+schedule  15: <span class="ansi-green">exited:0</span>             1566 steps    run 684173c880936901
+schedule  16: <span class="ansi-green">exited:0</span>             1681 steps    run f0b3ed4e0c16e27d
 
 schedule 4 ends differently from schedule 0; finding the step that decides it
 schedule 4 limited to steps 367..1049 still ends differently
 step 1048 decides it: a request to switch threads there makes the run fail
 
-passing: run 045fa57259706650, schedule 4 over steps 367..1048
-failing: run a92076519e7ec75a, schedule 4 over steps 367..1049
+<span class="ansi-blue">passing</span>: run 3463de4711c348ad, schedule 4 over steps 367..1048
+<span class="ansi-yellow">failing</span>: run 79402e41bab400c1, schedule 4 over steps 367..1049
 the two are the same run until step 1048
 
 where ./tests/test_pool_shutdown first behaves differently:
   both           1036    39/42    write(1, "job 15 done: 42559\n")
   both           1037    39/42    write(1, "worker picked job 17\n")
   both           1048    39/43    write(1, "job 16 done: 5986\n")
-  failing        1052    39/42    thread exit(test_pool_shutd) exited:0
-  failing        1057    39/43    SIGSEGV code=1 addr=0x108
-  failing        1059    39/39    SIGSEGV code=0 addr=0x0
-  failing        1061    39/43    thread exit(test_pool_shutd) killed:SIGSEGV
-  passing        1049    39/43    write(1, "worker picked job 18\n")
-  passing        1058    39/42    thread exit(test_pool_shutd) exited:0
-  passing        1068    39/43    thread exit(test_pool_shutd) exited:0
-  passing        1075    39/39    clone(CLONE_THREAD) = 44
+  <span class="ansi-yellow">failing</span>        1052    39/42    thread exit(test_pool_shutd) exited:0
+  <span class="ansi-yellow">failing</span>        1057    39/43    SIGSEGV code=1 addr=0x108
+  <span class="ansi-yellow">failing</span>        1059    39/39    SIGSEGV code=0 addr=0x0
+  <span class="ansi-yellow">failing</span>        1061    39/43    thread exit(test_pool_shutd) killed:SIGSEGV
+  <span class="ansi-blue">passing</span>        1049    39/43    write(1, "worker picked job 18\n")
+  <span class="ansi-blue">passing</span>        1058    39/42    thread exit(test_pool_shutd) exited:0
+  <span class="ansi-blue">passing</span>        1068    39/43    thread exit(test_pool_shutd) exited:0
+  <span class="ansi-blue">passing</span>        1075    39/39    clone(CLONE_THREAD) = 44
 
-open both in the desktop app: rewind open a92076519e7ec75a 1052 --compare 045fa57259706650</code></pre>
+open both in the desktop app: rewind open 79402e41bab400c1 1052 --compare 3463de4711c348ad</code></pre>
         <p>
           <code>check</code> narrows schedule 4's failure to one step, 1048. The passing run
           perturbs the same steps less that one, and only the failing run gets a request to switch
           threads there. The last block shows where the test's own output then differs. The search
-          took 39 seconds. <code>--all</code> tries every schedule:
+          took 55 seconds. <code>--all</code> tries every schedule:
         </p>
         <pre
           class="console"
@@ -216,16 +216,16 @@ open both in the desktop app: rewind open a92076519e7ec75a 1052 --compare 045fa5
         </h2>
         <pre
           class="console"
-        ><code><span class="cmd"><span class="prompt">$</span> rewind log a9207651 --steps | tail -4</span>
+        ><code><span class="cmd"><span class="prompt">$</span> rewind log 79402e41 --steps | tail -4</span>
       1037    39  worker picked job 17
       1048    39  job 16 done: 5986
       1068    35  Segmentation fault
       1072    34  make: *** [Makefile:18: check] Error 1
 
-<span class="cmd"><span class="prompt">$</span> rewind events a9207651 --from 1048 --to 1059</span>
+<span class="cmd"><span class="prompt">$</span> rewind events 79402e41 --from 1048 --to 1059</span>
       1048    39/43    write(1, "job 16 done: 5986\n")
       1052    39/42    thread exit(test_pool_shutd) exited:0
-      1055     0/0     console "[    0.016841] test_pool_shutd[43]: segfault at 108 ip 00005635b75a4412 sp 00007f214d1e1ea0 error 6 in test_pool_shutdown[1412,5635b75a4000+1000] likely on CPU 0 (core 0, socket 0)"
+      1055     0/0     console "[    0.016841] test_pool_shutd[43]: segfault at 108 ip 00005604cdf2c412 sp 00007fe656edbea0 error 6 in test_pool_shutdown[1412,5604cdf2c000+1000] likely on CPU 0 (core 0, socket 0)"
       1056     0/0     console "[    0.016846] Code: 5f c3 0f b7 d3 44 89 f6 48 8d 3d 48 0c 00 00 b8 00 00 00 00 e8 6f fc ff ff 48 8b 3d 90 2c 00 00 e8 c3 fc ff ff 49 8b 44 24 58 &lt;83&gt; 80 08 01 00 00 01 e9 c6 fe ff ff 55 53 48 83 ec 08 be 78 00 00"
       1057    39/43    SIGSEGV code=1 addr=0x108
       1059    39/39    SIGSEGV code=0 addr=0x0</code></pre>
@@ -237,7 +237,7 @@ open both in the desktop app: rewind open a92076519e7ec75a 1052 --compare 045fa5
         </p>
         <pre
           class="console"
-        ><code><span class="cmd"><span class="prompt">$</span> rewind ps a9207651 1057</span>
+        ><code><span class="cmd"><span class="prompt">$</span> rewind ps 79402e41 1057</span>
      1 /init
     34   make check
     35     /bin/sh -c for t in tests/test_pool_basic tests/test_pool_shutdown; do echo "running $t"; ./$t || exit 1; done
@@ -255,7 +255,7 @@ open both in the desktop app: rewind open a92076519e7ec75a 1052 --compare 045fa5
         </p>
         <pre
           class="console"
-        ><code><span class="cmd"><span class="prompt">$</span> rewind cat a9207651 1057 src/pool.c --pid 39 | sed -n '/^void pool_shutdown/,/^}/p'</span>
+        ><code><span class="cmd"><span class="prompt">$</span> rewind cat 79402e41 1057 src/pool.c --pid 39 | sed -n '/^void pool_shutdown/,/^}/p'</span>
 void pool_shutdown(struct pool *p)
 {
 	pthread_mutex_lock(&amp;p-&gt;lock);
@@ -274,8 +274,8 @@ void pool_shutdown(struct pool *p)
 	free(p);
 }
 
-<span class="cmd"><span class="prompt">$</span> printf 'pwd; ls; exit\n' | rewind shell a9207651 1057 --pid 39</span>
-rewind: a shell at step 1057 of a92076519e7ec75a; exit it to leave
+<span class="cmd"><span class="prompt">$</span> printf 'pwd; ls; exit\n' | rewind shell 79402e41 1057 --pid 39</span>
+<span class="ansi-dim">rewind:</span> a shell at step 1057 of 79402e41bab400c1; exit it to leave
 [rewind] /src # pwd; ls; exit
 /src
 Containerfile  Makefile  libmylib.a  src  tests</code></pre>
@@ -287,27 +287,27 @@ Containerfile  Makefile  libmylib.a  src  tests</code></pre>
         </p>
         <pre
           class="console"
-        ><code><span class="cmd"><span class="prompt">$</span> DEBUGINFOD_URLS=https://debuginfod.debian.net rewind gdb a9207651 1048 -- -batch -ex 'break src/pool.c:77 if p-&gt;queue == 0' -ex continue -ex 'bt 3' -ex 'p p-&gt;queue' -ex list</span>
-rewind: step 1048 ran in process 39; loading symbols for 3 of its files
-rewind: fetched 12 source files from the VM
-rewind: gdb 16 cannot read thread-local variables, such as errno, at a step; gdb 17 or later can
-rewind: gdb at step 1048 of a92076519e7ec75a
-Downloading 3.97 M separate debug info for /tmp/claude-1000/-home-fmzakari-code-github-com-fzakaria-fzakaria-com/0c598647-cfe7-4d06-963b-cbeeebcd2959/scratchpad/rec-all-work/home/gdb/341589/newroot/usr/lib/x86_64-linux-gnu/libc.so.6...
-Downloading 539.96 K separate debug info for /tmp/claude-1000/-home-fmzakari-code-github-com-fzakaria-fzakaria-com/0c598647-cfe7-4d06-963b-cbeeebcd2959/scratchpad/rec-all-work/home/gdb/341589/newroot/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2...
+        ><code><span class="cmd"><span class="prompt">$</span> DEBUGINFOD_URLS=https://debuginfod.debian.net rewind gdb 79402e41 1048 -- -batch -ex 'break src/pool.c:77 if p-&gt;queue == 0' -ex continue -ex 'bt 3' -ex 'p p-&gt;queue' -ex list</span>
+<span class="ansi-dim">rewind:</span> step 1048 ran in process 39; loading symbols for 3 of its files
+<span class="ansi-dim">rewind:</span> fetched 12 source files from the VM
+<span class="ansi-dim">rewind:</span> gdb 16 cannot read thread-local variables, such as errno, at a step; gdb 17 or later can
+<span class="ansi-dim">rewind:</span> gdb at step 1048 of 79402e41bab400c1
+Downloading 3.97 M separate debug info for /home/fmzakari/.cache/rewind-record/home/gdb/2535182/newroot/usr/lib/x86_64-linux-gnu/libc.so.6...
+Downloading 539.96 K separate debug info for /home/fmzakari/.cache/rewind-record/home/gdb/2535182/newroot/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2...
 arch_local_irq_restore (flags=514) at ./arch/x86/include/asm/irqflags.h:146
 146		return !(flags &amp; X86_EFLAGS_IF);
 [Switching to thread 4 (Thread 1.43)]
 Download failed: Invalid argument.  Continuing without source file ./io/../sysdeps/unix/sysv/linux/write.c.
-#0  __GI___libc_write (nbytes=18, buf=0x7f2148000b70, fd=1) at ../sysdeps/unix/sysv/linux/write.c:26
+#0  __GI___libc_write (nbytes=18, buf=0x7fe650000b70, fd=1) at ../sysdeps/unix/sysv/linux/write.c:26
 warning: 26	../sysdeps/unix/sysv/linux/write.c: No such file or directory
-Breakpoint 1 at 0x5635b75a440d: file src/pool.c, line 77.
+Breakpoint 1 at 0x5604cdf2c40d: file src/pool.c, line 77.
 [Thread 1.42 exited]
 
-Thread 4 hit Breakpoint 1, worker (arg=0x5635c5889680) at src/pool.c:77
+Thread 4 hit Breakpoint 1, worker (arg=0x5604dca2d680) at src/pool.c:77
 77				p-&gt;queue-&gt;completed++;
-#0  worker (arg=0x5635c5889680) at src/pool.c:77
-#1  0x00007f214d26f1f5 in start_thread (arg=&lt;optimized out&gt;) at ./nptl/pthread_create.c:442
-#2  0x00007f214d2ef8ec in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+#0  worker (arg=0x5604dca2d680) at src/pool.c:77
+#1  0x00007fe656f691f5 in start_thread (arg=&lt;optimized out&gt;) at ./nptl/pthread_create.c:442
+#2  0x00007fe656fe98ec in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
 $1 = (struct queue *) 0x0
 72			 * the bug. */
 73			long result = run_job(job);
@@ -334,11 +334,11 @@ $1 = (struct queue *) 0x0
         <h2 id="replay-it"><a class="anchor" href="#replay-it">Replay it</a></h2>
         <pre
           class="console"
-        ><code><span class="cmd"><span class="prompt">$</span> rewind replay a9207651</span>
-identical to the recording: 319 events and 13 read and write records over 1081 steps
+        ><code><span class="cmd"><span class="prompt">$</span> rewind replay 79402e41</span>
+<span class="ansi-green">identical</span> to the recording: 319 events and 13 read and write records over 1081 steps
 
-<span class="cmd"><span class="prompt">$</span> rewind replay a9207651 --from 367</span>
-identical to the recording from the snapshot at step 256 to the end (0.60s)</code></pre>
+<span class="cmd"><span class="prompt">$</span> rewind replay 79402e41 --from 367</span>
+<span class="ansi-green">identical</span> to the recording from the snapshot at step 256 to the end (0.63s)</code></pre>
         <p>
           <code>--from</code> starts at the nearest keyframe before the step. A run replays on any
           machine with the same CPU vendor that has the features of the run's CPU model.
@@ -349,25 +349,25 @@ identical to the recording from the snapshot at step 256 to the end (0.60s)</cod
         <h2 id="fork-it"><a class="anchor" href="#fork-it">Fork it</a></h2>
         <pre
           class="console"
-        ><code><span class="cmd"><span class="prompt">$</span> rewind fork dbe013e5 367 --schedule 1 --quiet</span>
-rewind: run f632c83c5cc6e143 exited:0 after 1447 steps, 0.020s virtual, 0.564s wall (poweroff)
-rewind: the fork first differs from its parent at step 382
-rewind: open it beside its parent in the desktop app: rewind open f632c83c5cc6e143 382 --compare dbe013e52eb8d4a2
+        ><code><span class="cmd"><span class="prompt">$</span> rewind fork 43601007 367 --schedule 1 --quiet</span>
+<span class="ansi-dim">rewind:</span> run 6633dbbe98417bd9 <span class="ansi-green">exited:0</span> after 1447 steps, 0.020s virtual, 0.570s wall (poweroff)
+<span class="ansi-dim">rewind:</span> the fork <span class="ansi-red">first differs from its parent</span> at step 382
+<span class="ansi-dim">rewind:</span> open it beside its parent in the desktop app: rewind open 6633dbbe98417bd9 382 --compare 43601007d3477b21
 
-<span class="cmd"><span class="prompt">$</span> rewind fork dbe013e5 367 --schedule 2 --quiet</span>
-rewind: run 6bba49e2396acf82 exited:2 after 1530 steps, 0.021s virtual, 0.564s wall (poweroff)
-rewind: the fork first differs from its parent at step 384
-rewind: open it beside its parent in the desktop app: rewind open 6bba49e2396acf82 384 --compare dbe013e52eb8d4a2
+<span class="cmd"><span class="prompt">$</span> rewind fork 43601007 367 --schedule 2 --quiet</span>
+<span class="ansi-dim">rewind:</span> run a0d37885ca3447e9 <span class="ansi-red">exited:2</span> after 1530 steps, 0.021s virtual, 0.557s wall (poweroff)
+<span class="ansi-dim">rewind:</span> the fork <span class="ansi-red">first differs from its parent</span> at step 384
+<span class="ansi-dim">rewind:</span> open it beside its parent in the desktop app: rewind open a0d37885ca3447e9 384 --compare 43601007d3477b21
 
-<span class="cmd"><span class="prompt">$</span> rewind fork dbe013e5 367 --schedule 3 --quiet</span>
-rewind: run fde9b90230c9caa8 exited:0 after 1498 steps, 0.021s virtual, 0.567s wall (poweroff)
-rewind: the fork first differs from its parent at step 384
-rewind: open it beside its parent in the desktop app: rewind open fde9b90230c9caa8 384 --compare dbe013e52eb8d4a2
+<span class="cmd"><span class="prompt">$</span> rewind fork 43601007 367 --schedule 3 --quiet</span>
+<span class="ansi-dim">rewind:</span> run 0af542bb4a02691f <span class="ansi-green">exited:0</span> after 1498 steps, 0.021s virtual, 0.567s wall (poweroff)
+<span class="ansi-dim">rewind:</span> the fork <span class="ansi-red">first differs from its parent</span> at step 384
+<span class="ansi-dim">rewind:</span> open it beside its parent in the desktop app: rewind open 0af542bb4a02691f 384 --compare 43601007d3477b21
 
-<span class="cmd"><span class="prompt">$</span> rewind fork dbe013e5 367 --schedule 4 --quiet</span>
-rewind: run 351316d3373c1d32 exited:2 after 1082 steps, 0.017s virtual, 0.552s wall (poweroff)
-rewind: the fork first differs from its parent at step 385
-rewind: open it beside its parent in the desktop app: rewind open 351316d3373c1d32 385 --compare dbe013e52eb8d4a2</code></pre>
+<span class="cmd"><span class="prompt">$</span> rewind fork 43601007 367 --schedule 4 --quiet</span>
+<span class="ansi-dim">rewind:</span> run 78ababf6d5ebaae2 <span class="ansi-red">exited:2</span> after 1082 steps, 0.017s virtual, 0.568s wall (poweroff)
+<span class="ansi-dim">rewind:</span> the fork <span class="ansi-red">first differs from its parent</span> at step 385
+<span class="ansi-dim">rewind:</span> open it beside its parent in the desktop app: rewind open 78ababf6d5ebaae2 385 --compare 43601007d3477b21</code></pre>
         <p>From step 367 of the schedule 0 run, some schedules crash and some pass.</p>
       </section>
 
@@ -397,7 +397,7 @@ rewind: open it beside its parent in the desktop app: rewind open 351316d3373c1d
         </figure>
         <pre
           class="console"
-        ><code><span class="cmd"><span class="prompt">$</span> rewind-app ~/.local/share/rewind/runs/a92076519e7ec75a --compare ~/.local/share/rewind/runs/045fa57259706650</span></code></pre>
+        ><code><span class="cmd"><span class="prompt">$</span> rewind-app ~/.local/share/rewind/runs/79402e41bab400c1 --compare ~/.local/share/rewind/runs/3463de4711c348ad</span></code></pre>
         <p>
           Press f to jump to the failure at step 1057, then s to open the source panel. After a few
           seconds it shows <code>worker</code> at <code>src/pool.c:77</code>, with
@@ -448,12 +448,12 @@ rewind: open it beside its parent in the desktop app: rewind open 351316d3373c1d
         <pre
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> docker build -q -t mylib -f Containerfile . &amp;&amp; docker export $(docker create mylib) -o mylib.tar</span>
-sha256:72612b337900e993daca4aaa26a466990a0929e2dbeb0cc9a4aa327cd37393d7
+sha256:5dc3a1658ccc2275ec7d2d461dc719160586ca1f30813dad1ece4215e1da21a3
 
 <span class="cmd"><span class="prompt">$</span> rewind check --all --root mylib.tar --cwd /src -- make check</span>
 ...
-0 of 64 other schedules ended differently
-same result under all 65 schedules</code></pre>
+<span class="ansi-green">0 of 64 other schedules ended differently</span>
+<span class="ansi-green">same result under all 65 schedules</span></code></pre>
         <p>Before the fix, 13 of the same 64 schedules crashed.</p>
       </section>
 

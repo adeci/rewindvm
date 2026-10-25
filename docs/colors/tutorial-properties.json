@@ -1,0 +1,72 @@
+[
+ {
+  "text": "$ rewind check --epoch 1790985600 --schedules 8 --property 'atomic-replace=*.conf' github:fzakaria/rewindvm#config-reload\nrewind: packing 62 store paths for config-reload-0.1.0\nschedule   0: exited:0             4563 steps  f7b1c7741aba  run bf6b4edf2f924261  violates atomic-replace\n  atomic-replace: step 3238: process 139 (config) truncated /build/config-reload/app.conf in place, which the run wrote at step 3233; a reader can see it empty or half written\n...\nschedule   8: exited:2             3778 steps    run 266053bff1e5df50  violates atomic-replace\nevery schedule violated a property, as schedule 0 did\nopen it at the step: rewind open bf6b4edf2f924261 3238",
+  "spans": [
+   [
+    1,
+    0,
+    7,
+    "dim"
+   ],
+   [
+    2,
+    14,
+    22,
+    "green"
+   ],
+   [
+    2,
+    83,
+    91,
+    "red"
+   ],
+   [
+    5,
+    14,
+    22,
+    "red"
+   ],
+   [
+    5,
+    71,
+    79,
+    "red"
+   ],
+   [
+    6,
+    0,
+    53,
+    "red"
+   ]
+  ]
+ },
+ {
+  "text": "$ rewind check --epoch 1790985600 --schedules 0 github:fzakaria/rewindvm#bank\n...\nschedule   0: exited:0             4556 steps  2ffd6b62eb30  run fdeb41272510870a  holds\nnever true in any run: sometimes \"deposits-concurrent\"\nevery property held under the one schedule tried",
+  "spans": [
+   [
+    2,
+    14,
+    22,
+    "green"
+   ],
+   [
+    2,
+    83,
+    88,
+    "green"
+   ],
+   [
+    3,
+    0,
+    54,
+    "yellow"
+   ],
+   [
+    4,
+    0,
+    48,
+    "green"
+   ]
+  ]
+ }
+]
