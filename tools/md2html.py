@@ -10,9 +10,10 @@ tables, fenced code, inline code, links and bold. A relative link to a
 document the site also publishes points at its page; any other relative link
 points at the file on GitHub, since the site has no copy of the repository.
 
-A tutorial's console blocks are painted in the colors rewind printed them
-in, which tools/record-tutorials.py keeps in docs/colors/, since the
-Markdown, which GitHub shows, holds plain text.
+A tutorial's or case study's console blocks are painted in the colors
+rewind printed them in, which tools/record-tutorials.py keeps in
+docs/colors/<page>.json, since the Markdown, which GitHub shows, holds plain
+text.
 """
 
 import html
@@ -93,8 +94,10 @@ CONTAINER_FIGURE = """<figure class="shot">
 # The app on the failing devenv run at the step where SIGCHLD reaches the
 # test process, shown after the paragraph that walks through those events.
 # Numbered pins sit over the screenshot with a card for each below it, as
-# on the front page; the pins' positions are percentages of the 1440x616
-# image.
+# on the front page; the pins' positions are percentages of the 1440x900
+# image. The screenshot and the numbers come from the recording of
+# docs/templates/case-devenv-task-output-race.md, which checks that the
+# numbers here are its own.
 DEVENV_FIGURE = """<div class="tour tour-article">
   <figure class="tour-shot">
     <div class="tour-frame">
@@ -104,25 +107,25 @@ DEVENV_FIGURE = """<div class="tour tour-article">
           <img
             src="../img/devenv-sigchld.png"
             width="1440"
-            height="672"
+            height="900"
             loading="lazy"
-            alt="The Rewind desktop app on the failing devenv run at step 1,166, compared with the passing run ce9c7563: the build log stops at running 1 test, SIGCHLD has reached thread 41, and the run diverged at step 1,162. Opens the full-size image."
+            alt="The Rewind desktop app on the failing devenv run at step 1,194, compared with the passing run 9af45934: the build log stops at running 1 test, SIGCHLD has reached thread 41, and the runs are the same until step 1,191. Opens the full-size image."
           />
         </picture>
       </a>
-      <button type="button" class="pin pin-1" style="left: 90.3%; top: 14.9%" aria-label="1: the timeline">1</button>
-      <button type="button" class="pin pin-2" style="left: 20.8%; top: 46.6%" aria-label="2: the build log">2</button>
-      <button type="button" class="pin pin-3" style="left: 96.9%; top: 49.1%" aria-label="3: the step's event, SIGCHLD">3</button>
-      <button type="button" class="pin pin-4" style="left: 97.2%; top: 59.7%" aria-label="4: where the run diverged">4</button>
+      <button type="button" class="pin pin-1" style="left: 93.1%; top: 11.1%" aria-label="1: the timeline">1</button>
+      <button type="button" class="pin pin-2" style="left: 20.8%; top: 34.8%" aria-label="2: the build log">2</button>
+      <button type="button" class="pin pin-3" style="left: 96.9%; top: 36.7%" aria-label="3: the step's event, SIGCHLD">3</button>
+      <button type="button" class="pin pin-4" style="left: 97.2%; top: 44.6%" aria-label="4: where the runs part">4</button>
     </div>
     <figcaption>
-      The app on the failing run 81b5bb74 at step 1,166, compared with the passing run ce9c7563.
+      The app on the failing run 041dab22 at step 1,194, compared with the passing run 9af45934.
     </figcaption>
   </figure>
   <ol class="tour-cards">
     <li class="tour-card" id="tour-1" tabindex="0">
       <h3>The timeline</h3>
-      <p>Step 1,166 of 1,234, four steps after the run left the passing one.</p>
+      <p>Step 1,194 of 1,264, three steps after the one where only the passing run is rescheduled.</p>
     </li>
     <li class="tour-card" id="tour-2" tabindex="0">
       <h3>Build log</h3>
@@ -134,7 +137,7 @@ DEVENV_FIGURE = """<div class="tour tour-article">
     </li>
     <li class="tour-card" id="tour-4" tabindex="0">
       <h3>Divergence</h3>
-      <p>The run left ce9c7563 at step 1,162, where the shell starts the task's script.</p>
+      <p>The runs are the same until step 1,191, where only the passing run is asked to switch threads. This SIGCHLD is the first call that differs.</p>
     </li>
   </ol>
 </div>
