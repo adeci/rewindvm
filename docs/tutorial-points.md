@@ -22,7 +22,7 @@ run by the `sdk` property. Under 64 schedules, every run holds:
 ```console
 $ rewind check --epoch 1790985600 github:fzakaria/rewindvm#counter
 ...
-schedule  64: exited:0             5346 steps  e3f96e451c97  run 5f0371673cb49abb  holds
+schedule  64: exited:0             5293 steps  e3f96e451c97  run c4533360a1728e14  holds
 every property held under all 65 schedules
 ```
 
@@ -71,7 +71,7 @@ schedule 1 violates same-outcome, sdk; finding the step that decides it
 step 3237 decides it: a request to switch threads there makes the run violate same-outcome, sdk
 passing: run 045b6fe5de20a435, schedule 0
 failing: run 808bfeda84557cb5, schedule 1 over steps 3237..3238
-failing run violates sdk: step 3265: always "hits-add-up" failed: 10 hits, expected 20
+failing run violates sdk: step 3261: always "hits-add-up" failed: 10 hits, expected 20
 ```
 
 The run violates `same-outcome` too, since the job's build fails where

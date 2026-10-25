@@ -28,14 +28,14 @@ schedule only:
 $ rewind check --epoch 1790985600 --seeds 8 --schedules 0 --all --no-narrow github:fzakaria/rewindvm#tiles
 rewind: packing 75 store paths for tiles-0.2.0
 rewind: 8 random seeds, each run under schedule 0 and 0 other schedules: 8 runs
-seed  0 schedule   0: exited:0             4035 steps  d20b5efd388d  run 56e7036bef2be348
-seed  1 schedule   0: exited:0             4035 steps  b4501793e383  run a49817d2dc937c04
-seed  2 schedule   0: exited:0             4035 steps  0cd5db6c5c2c  run 432d4935f39f9882
-seed  3 schedule   0: exited:0             4035 steps  24f18f09c329  run 1202f2af6ed7f1fa
-seed  4 schedule   0: exited:0             4035 steps  b4501793e383  run 65e3d5aa30d5b7b0
-seed  5 schedule   0: exited:0             4035 steps  5e1f0a457cbe  run cb252aae5875cebc
-seed  6 schedule   0: exited:0             4035 steps  d20b5efd388d  run a35f07059805822e
-seed  7 schedule   0: exited:0             4035 steps  b4501793e383  run 9c1eedac589f0c0b
+seed  0 schedule   0: exited:0             4027 steps  d20b5efd388d  run 56e7036bef2be348
+seed  1 schedule   0: exited:0             4027 steps  b4501793e383  run a49817d2dc937c04
+seed  2 schedule   0: exited:0             4027 steps  0cd5db6c5c2c  run 432d4935f39f9882
+seed  3 schedule   0: exited:0             4027 steps  24f18f09c329  run 1202f2af6ed7f1fa
+seed  4 schedule   0: exited:0             4027 steps  b4501793e383  run 65e3d5aa30d5b7b0
+seed  5 schedule   0: exited:0             4027 steps  5e1f0a457cbe  run cb252aae5875cebc
+seed  6 schedule   0: exited:0             4027 steps  d20b5efd388d  run a35f07059805822e
+seed  7 schedule   0: exited:0             4027 steps  b4501793e383  run 9c1eedac589f0c0b
 6 of 7 other runs ended differently
 ```
 
@@ -78,15 +78,15 @@ the first byte that differs:
 
 ```console
 $ rewind blame 56e7036b a49817d2 /nix/store/ihhhzc5qphjjz5vgss7swki10dwkicsb-tiles-0.2.0/lib/pkgconfig/tiles.pc
-tiles.pc differs at byte 178. python3 (pid 112) wrote that byte at step 2,909 in run 56e7036b and at step 2,909 in run a49817d2.
+tiles.pc differs at byte 178. python3 (pid 112) wrote that byte at step 2,901 in run 56e7036b and at step 2,901 in run a49817d2.
 
 22 of 227 bytes differ. The bytes from byte 178:
   56e7036b  70 69 78 6d 61 6e 2d 31 2c 20 6c 69 62 70 6e 67  |pixman-1, libpng|
   a49817d2  7a 6c 69 62 2c 20 70 69 78 6d 61 6e 2d 31 2c 20  |zlib, pixman-1, |
 
 Who wrote the file in run 56e7036b, from the last writer back:
-  install (pid 122) copied it from /build/tiles/tiles.pc, starting at step 3,157. Its source already differs, so the copy did not cause the difference.
-  bash (pid 112) wrote /build/tiles/tiles.pc, starting at step 2,796. It is the first writer, and the file already differs when it is done.
+  install (pid 122) copied it from /build/tiles/tiles.pc, starting at step 3,149. Its source already differs, so the copy did not cause the difference.
+  bash (pid 112) wrote /build/tiles/tiles.pc, starting at step 2,788. It is the first writer, and the file already differs when it is done.
 Run a49817d2 made the file the same way, with the same programs.
 
 In both runs, one write of 227 bytes, from byte 0, set byte 178.
@@ -101,7 +101,7 @@ Likely cause: something inside python3 (pid 112), such as randomness or the orde
 ```
 
 The first line is the answer: python3, pid 112, wrote that byte at
-step 2,909. The lines after it show how blame got there. `install`
+step 2,901. The lines after it show how blame got there. `install`
 only copied a file that already differed. Before that, pid 112 opened
 `/build/tiles/tiles.pc` while it was still `bash`, for the `>` redirect,
 then became python3. python3 had the same command line and read the same
@@ -128,9 +128,9 @@ A click on a file opens it from both runs. One under the other puts each
 run's copy of a changed line together, this run's in amber and the other's
 in blue. Go to the write moves the playhead to the step whose write set the
 first byte that differs. For `/build/tiles/tiles.pc` that is step
-2,909, with `python3 gen-pc.py` in the process tree:
+2,901, with `python3 gen-pc.py` in the process tree:
 
-![The app at step 2,909, where python3 writes tiles.pc, with the file from both runs one under the other and the Requires.private line in amber and blue](../site/img/app-repro-write.png)
+![The app at step 2,901, where python3 writes tiles.pc, with the file from both runs one under the other and the Requires.private line in amber and blue](../site/img/app-repro-write.png)
 
 ## Fix it
 
@@ -178,10 +178,10 @@ build with the stock order, dirents 0:
 
 ```console
 $ rewind check --epoch 1790985600 --seeds 1 --schedules 0 --all --no-narrow --dirents 3 .#plugins
-dirents  0 schedule   0: exited:0             3885 steps  77b96f07540a  run d9631407be54fc46
-dirents  1 schedule   0: exited:0             3885 steps  3d555b541296  run 78fdad37cbc99586
-dirents  2 schedule   0: exited:0             3885 steps  925dde4ef23a  run 26adc9540fd107c7
-dirents  3 schedule   0: exited:0             3885 steps  abd7877043a8  run b4fabcb208cd04ad
+dirents  0 schedule   0: exited:0             3887 steps  77b96f07540a  run d9631407be54fc46
+dirents  1 schedule   0: exited:0             3887 steps  3d555b541296  run 78fdad37cbc99586
+dirents  2 schedule   0: exited:0             3887 steps  925dde4ef23a  run 26adc9540fd107c7
+dirents  3 schedule   0: exited:0             3887 steps  abd7877043a8  run b4fabcb208cd04ad
 3 of 3 other runs ended differently
 ```
 
@@ -225,10 +225,10 @@ Sort the names in `gen-index.py`:
 ```console
 $ rewind check --epoch 1790985600 --seeds 1 --schedules 0 --all --no-narrow --dirents 3 .#plugins
 ...
-dirents  0 schedule   0: exited:0             3885 steps  164f7a685a08  run f33b54b768d6600c
-dirents  1 schedule   0: exited:0             3885 steps  164f7a685a08  run c99a668fc8928820
-dirents  2 schedule   0: exited:0             3885 steps  164f7a685a08  run 04571eadc665dc44
-dirents  3 schedule   0: exited:0             3885 steps  164f7a685a08  run 7dcc86078b483da9
+dirents  0 schedule   0: exited:0             3887 steps  164f7a685a08  run f33b54b768d6600c
+dirents  1 schedule   0: exited:0             3887 steps  164f7a685a08  run c99a668fc8928820
+dirents  2 schedule   0: exited:0             3887 steps  164f7a685a08  run 04571eadc665dc44
+dirents  3 schedule   0: exited:0             3887 steps  164f7a685a08  run 7dcc86078b483da9
 0 of 3 other runs ended differently
 same result under all 4 runs
 ```

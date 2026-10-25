@@ -83,7 +83,7 @@
           class="console"
         ><code><span class="cmd"><span class="prompt">$</span> rewind check --epoch 1790985600 github:fzakaria/rewindvm#counter</span>
 ...
-schedule  64: <span class="ansi-green">exited:0</span>             5346 steps  e3f96e451c97  run 5f0371673cb49abb  <span class="ansi-green">holds</span>
+schedule  64: <span class="ansi-green">exited:0</span>             5293 steps  e3f96e451c97  run c4533360a1728e14  <span class="ansi-green">holds</span>
 <span class="ansi-green">every property held under all 65 schedules</span></code></pre>
         <p>
           The threads do race. On a multicore host they run at the same instant, and one hit in a
@@ -197,7 +197,7 @@ schedule 1 violates same-outcome, sdk; finding the step that decides it
 step 3237 decides it: a request to switch threads there makes the run violate same-outcome, sdk
 passing: run 045b6fe5de20a435, schedule 0
 failing: run 808bfeda84557cb5, schedule 1 over steps 3237..3238
-failing run violates sdk: step 3265: always "hits-add-up" failed: 10 hits, expected 20</code></pre>
+failing run violates sdk: step 3261: always "hits-add-up" failed: 10 hits, expected 20</code></pre>
         <p>
           The run violates <code>same-outcome</code> too, since the job's build fails where schedule
           0's passed. Step 3237 is a point: one thread has read the count and not stored it, and the
