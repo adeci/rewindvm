@@ -48,10 +48,35 @@ pub const IGNORED: &[(&str, &str)] = &[
          model shows no Hyper-V CPUID leaves, so the guest does not read it",
     ),
     (
+        "MSR 0x40000022 (Hyper-V TSC frequency)",
+        "the host's TSC frequency, which KVM keeps for Hyper-V guests: the CPU model shows \
+         no Hyper-V CPUID leaves, so the guest does not read it",
+    ),
+    (
         "local APIC 0x390 (timer current count)",
         "KVM computes it from host time when it is read; the guest never arms the APIC timer",
     ),
 ];
+
+/// The performance counters' MSRs, AMD's and Intel's, by range. The VM
+/// has no counters (see kvm::turn_off_counters), so the guest reads these
+/// as zero or faults, and which of them KVM lists depends on the host's
+/// CPU: AMD's PerfMonV2 controls only where the host has PerfMonV2. They
+/// are left out of the comparison.
+const COUNTER_MSRS: &[std::ops::RangeInclusive<u32>] = &[
+    0xc1..=0xc8,
+    0x186..=0x18d,
+    0x309..=0x30b,
+    0x38d..=0x390,
+    0xc000_0300..=0xc000_0303,
+    0xc001_0000..=0xc001_0007,
+    0xc001_0200..=0xc001_020b,
+];
+
+/// Whether an MSR is one of the performance counters'.
+fn counter_msr(index: u32) -> bool {
+    COUNTER_MSRS.iter().any(|range| range.contains(&index))
+}
 
 /// The x86 MSRs a keyframe holds that have names worth showing.
 const MSR_NAMES: &[(u32, &str)] = &[
@@ -75,6 +100,7 @@ const MSR_NAMES: &[(u32, &str)] = &[
     (0xc000_0103, "TSC_AUX"),
     (0x4000_0010, "Hyper-V VP runtime"),
     (0x4000_0020, "Hyper-V reference counter"),
+    (0x4000_0022, "Hyper-V TSC frequency"),
 ];
 
 /// The local APIC's registers a keyframe holds, by offset. Each is 32
@@ -132,20 +158,33 @@ impl Keyframe {
     /// [`IGNORED`] leaves out.
     pub fn state_differences(&self, other: &Keyframe) -> Result<Vec<StateDifference>> {
         let (left, right) = (self.fields()?, other.fields()?);
-        let right: std::collections::HashMap<&str, &[u8]> = right
-            .iter()
-            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
-            .collect();
+        let lookup = |fields: &[Field]| -> std::collections::HashMap<String, Vec<u8>> {
+            fields.iter().cloned().collect()
+        };
+        let (ours, theirs) = (lookup(&left), lookup(&right));
+
+        // Every name either side holds, this side's in order and then the
+        // other's that this one lacks.
+        let mut names: Vec<&str> = left.iter().map(|(name, _)| name.as_str()).collect();
+        names.extend(
+            right
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .filter(|name| !ours.contains_key(*name)),
+        );
         let mut differences = Vec::new();
-        for (name, bytes) in &left {
-            let theirs = right.get(name.as_str()).copied().unwrap_or(&[]);
-            if bytes.as_slice() == theirs || ignored(name) {
+        for name in names {
+            let (a, b) = (
+                ours.get(name).map_or(&[][..], Vec::as_slice),
+                theirs.get(name).map_or(&[][..], Vec::as_slice),
+            );
+            if a == b || ignored(name) {
                 continue;
             }
             differences.push(StateDifference {
-                name: name.clone(),
-                left: hex(bytes),
-                right: hex(theirs),
+                name: name.to_string(),
+                left: hex(a),
+                right: hex(b),
             });
         }
         Ok(differences)
@@ -160,7 +199,7 @@ impl Keyframe {
         xsave(&unpod::<kvm_xsave>(&c.xsave)?, &mut fields);
         xcrs(&unpod::<kvm_xcrs>(&c.xcrs)?, &mut fields);
         lapic(&unpod::<kvm_lapic_state>(&c.lapic)?, &mut fields);
-        for (index, data) in &c.msrs {
+        for (index, data) in c.msrs.iter().filter(|(i, _)| !counter_msr(*i)) {
             fields.push((msr_name(*index), data.to_le_bytes().to_vec()));
         }
         events(&unpod::<kvm_vcpu_events>(&c.events)?, &mut fields);
@@ -446,6 +485,25 @@ mod tests {
             .map(|d| d.name)
             .collect();
         assert_eq!(names, ["pending exception", "pending exception error code"]);
+    }
+
+    #[test]
+    fn host_only_msrs_are_left_out() {
+        // A keyframe from a host whose KVM lists AMD's PerfMonV2 controls
+        // and one from a host whose KVM does not, with different Hyper-V
+        // TSC frequencies: no difference. A difference in LSTAR is one.
+        let regs = kvm_regs::default();
+        let zen4 = with_cpu(&regs, &[(0xc000_0300, 0), (0x4000_0022, 3_294_861_576)]);
+        let zen3 = with_cpu(&regs, &[(0x4000_0022, 2_445_412_000)]);
+        assert!(zen4.state_differences(&zen3).unwrap().is_empty());
+        let other = with_cpu(&regs, &[(0xc000_0082, 1)]);
+        let names: Vec<String> = zen3
+            .state_differences(&other)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(names, ["MSR 0xc0000082 (LSTAR)"]);
     }
 
     #[test]
