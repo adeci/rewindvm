@@ -26,8 +26,11 @@ pub(crate) const NEW_ISSUE: &str = "https://github.com/fzakaria/rewindvm/issues/
 /// What a replay's verdict says when it found a difference.
 const DIFFERENT: &str = "DIFFERENT";
 
-/// The largest file GitHub takes as an issue's attachment.
-const ATTACHMENT_MAX: u64 = 25 << 20;
+/// The largest file GitHub takes as an issue's attachment, in bytes.
+/// GitHub states the limit as "25 MB" without saying which megabyte, so
+/// this is the decimal reading, the smaller of the two: a file under it
+/// fits either way.
+const ATTACHMENT_MAX_BYTES: u64 = 25 * 1000 * 1000;
 
 /// The report's own file in the directory.
 const REPORT: &str = "report.md";
@@ -163,15 +166,15 @@ pub(crate) fn bugreport(home: &Home, args: BugreportArgs) -> Result<ExitCode> {
 }
 
 /// What to do with the trace-only export of `size` bytes at `path`: GitHub
-/// takes an attachment up to [`ATTACHMENT_MAX`], and not .rwd by name, so
+/// takes an attachment up to [`ATTACHMENT_MAX_BYTES`], and not .rwd by name, so
 /// it goes zipped, or elsewhere when it is too large even so.
 fn attach_words(path: &Path, size: u64) -> String {
     let path = path.display();
-    if size > ATTACHMENT_MAX {
+    if size > ATTACHMENT_MAX_BYTES {
         return format!(
             "{path} is {} and an issue takes at most {}: share it some other way and link it",
             show::size(size),
-            show::size(ATTACHMENT_MAX)
+            show::size(ATTACHMENT_MAX_BYTES)
         );
     }
     format!(
@@ -380,7 +383,7 @@ mod tests {
         // is linked from elsewhere.
         let path = Path::new("r/abc.rwd");
         assert!(attach_words(path, 40 << 10).contains("zipped"));
-        let large = attach_words(path, ATTACHMENT_MAX + 1);
+        let large = attach_words(path, ATTACHMENT_MAX_BYTES + 1);
         assert!(large.contains("some other way"), "{large}");
     }
 
