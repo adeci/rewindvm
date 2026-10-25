@@ -34,6 +34,7 @@ use rewind_core::source_cache::{self, Entry, SourceCache, Version};
 use rewind_core::threads::{OnTheCpu, Tasks};
 use rewind_core::{Home, Run};
 
+use crate::color::Paint;
 use crate::downloads::{self, Downloads, FileNames};
 use crate::locate::Pick;
 
@@ -65,6 +66,10 @@ const AUTO_LOAD_ON: &str = "set auto-load python-scripts on";
 /// server has debug info for.
 const DEBUGINFOD_OFF: &str = "set debuginfod enabled off";
 const DEBUGINFOD_ON: &str = "set debuginfod enabled on";
+
+/// gdb's switch for its colored output, which its -batch turns off.
+const STYLE_ON: &str = "set style enabled on";
+const STYLE_OFF: &str = "set style enabled off";
 
 /// In the `debug` output, the files the Rewind patch adds or changes, in
 /// a directory named for the source tree. nixseparatedebuginfod2 serves
@@ -186,6 +191,9 @@ pub(crate) fn gdb(
         debuggee.serve(conn)?;
         return Ok(ExitCode::SUCCESS);
     }
+
+    // gdb's output is colored as rewind's own is, -batch or not.
+    args.extend(style_arguments(crate::color::stdout()));
 
     // Starting gdb: the fork is served from this thread while gdb owns the
     // terminal.
@@ -639,6 +647,16 @@ impl Symbols {
             .collect();
         arguments(&self.kernel, &self.process, &urls, target)
     }
+}
+
+/// gdb's arguments to style its output as `paint` paints rewind's. They
+/// run before gdb's files load, so every line gdb prints follows them.
+fn style_arguments(paint: Paint) -> [String; 2] {
+    let style = match paint {
+        Paint::Ansi => STYLE_ON,
+        Paint::Plain => STYLE_OFF,
+    };
+    ["-iex".into(), style.into()]
 }
 
 /// gdb's arguments: the debuginfod servers to ask for DWARF, the kernel's symbols
@@ -1885,6 +1903,21 @@ mod tests {
         assert_eq!(last_event_before(&trace, 140, 6300), Some(6299));
         assert_eq!(last_event_before(&trace, 140, 3788), None);
         assert_eq!(last_event_before(&trace, 147, 3795), None);
+    }
+
+    #[test]
+    fn gdb_styles_its_output_as_rewind_colors_its_own() {
+        // gdb's -batch turns its styling off, so rewind sets the style
+        // before any command runs: on when rewind paints standard output,
+        // off when it does not.
+        assert_eq!(
+            style_arguments(Paint::Ansi),
+            ["-iex", "set style enabled on"]
+        );
+        assert_eq!(
+            style_arguments(Paint::Plain),
+            ["-iex", "set style enabled off"]
+        );
     }
 
     #[test]
