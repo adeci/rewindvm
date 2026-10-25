@@ -338,6 +338,7 @@ impl Machine {
         vm.set_tss_address(TSS_ADDRESS)?;
         vm.create_irq_chip()
             .context("creating the in-kernel interrupt controller")?;
+        kvm::turn_off_counters(&vm)?;
 
         let ram = Mapping::anonymous(config.mem_bytes as usize)?;
         // SAFETY: the mapping outlives the VM (both live in Machine, and the

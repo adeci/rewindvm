@@ -455,6 +455,9 @@ let
     sleep 1
     echo "uptime $(cat /proc/uptime)"
   '';
+  # Probes for sources of difference past the monitor, for
+  # checks.determinism-sources.
+  determinismRoot = import ./determinism { inherit pkgs; };
   # Programs in five languages for checks.gdb-languages.
   languagesRoot = import ./gdb-languages { inherit pkgs; };
   # The Rewind SDK's libraries in use, for checks.sdk-languages.
@@ -712,6 +715,51 @@ in
         rewind remove bare --json
         rewind gc --json | tee collected-bare
         grep -q '"pages":[1-9]' collected-bare
+        touch $out
+      '';
+
+  # checks.determinism-sources: each probe in nix/determinism reaches for
+  # something a guest could read from the host past the monitor, and is
+  # recorded and replayed. The hardware counters perf_event_open offers
+  # must be absent, since KVM would count them on the host. rdrand is the
+  # one known gap: on AMD the CPU runs it whatever CPUID says, and the
+  # replay of a run that prints a number it drew differs; on Intel KVM
+  # faults it. Needs /dev/kvm.
+  determinism-sources =
+    pkgs.runCommand "rewind-determinism-sources"
+      {
+        nativeBuildInputs = [ rewind ];
+        requiredSystemFeatures = [ "kvm" ];
+      }
+      ''
+        export REWIND_HOME=$TMPDIR/rewind
+
+        # Every probe but rdrand's replays exactly, run twice under two
+        # seeds so a value that leaked would differ between them as well.
+        for probe in counters xinuse results; do
+          rewind run --name $probe --root ${determinismRoot} -- /bin/$probe | tee $probe.out
+          rewind replay $probe | tee $probe.replay
+          grep -q '^identical' $probe.replay
+          rewind run --seed 1 --name $probe-1 --root ${determinismRoot} -- /bin/$probe > $probe-1.out
+          cmp $probe.out $probe-1.out
+        done
+        rewind run --name cpuinfo --root ${determinismRoot} -- cat /proc/cpuinfo > cpuinfo
+        rewind replay cpuinfo | grep '^identical'
+
+        # The guest has no hardware counters to read.
+        grep -qx 'cycles: none, .*' counters.out
+        grep -qx 'instructions: none, .*' counters.out
+
+        if grep -q AuthenticAMD /proc/cpuinfo; then
+          rewind run -q --name rdrand --root ${determinismRoot} -- /bin/rdrand
+          ! rewind replay rdrand > rdrand.replay
+          cat rdrand.replay
+          grep -q '^DIFFERENT' rdrand.replay
+        else
+          ! rewind run --name rdrand --root ${determinismRoot} -- /bin/rdrand 2> rdrand.err
+          cat rdrand.err
+          grep -q 'killed:SIGILL' rdrand.err
+        fi
         touch $out
       '';
 
