@@ -834,14 +834,21 @@ in
           grep -q 'in main' hidden.bisect
           grep -q 'getrandom()' hidden.bisect
 
-          # rewind report gathers the replay and the host into report.md
-          # and prints a link that opens an issue filled in with it.
-          rewind report hidden --no-run -o report > report.out
+          # rewind bugreport gathers the replay and the host into
+          # report.md, with the home directories left out of its paths,
+          # writes the run's trace-only export, small enough for an
+          # issue, and prints a link that opens an issue filled in with
+          # the report. With --no-run it writes no export.
+          rewind bugreport hidden -o report > report.out
           cat report.out
           grep -q '^open an issue with the report filled in: https://github.com/fzakaria/rewindvm/issues/new?title=Run%20' report.out
           grep -q 'the machine is DIFFERENT' report/report.md
           grep -q '^- vendor_id: AuthenticAMD' report/report.md
-          test -z "$(find report -name '*.rwd')"
+          grep -q '^- clock: exit time$' report/report.md
+          ! grep -q "$REWIND_HOME" report/report.md
+          test "$(stat -c %s report/*.rwd)" -lt 1000000
+          rewind bugreport hidden --no-run -o bare > /dev/null
+          test -z "$(find bare -name '*.rwd')"
 
           # Executing the run's inputs again keeps its keyframes, makes
           # another trace, and blames the host rather than the build.

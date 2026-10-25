@@ -225,12 +225,13 @@ enum Command {
     /// opens a GitHub issue filled in with it.
     ///
     /// Writes a directory holding report.md, which names this build, the
-    /// host's CPU, kernel and KVM, what `rewind doctor` and `rewind replay`
-    /// find, and the run's replayable .rwd. The .rwd holds the run's
-    /// programs, inputs and memory; rewind uploads nothing, so attach it
-    /// to the issue yourself if you can share it, or leave it out with
-    /// --no-run.
-    Report(cmd::report::ReportArgs),
+    /// host's CPU, kernel and KVM, and what `rewind doctor` and `rewind
+    /// replay` find, with the paths under your home directory left out;
+    /// and the run's trace-only .rwd, small enough to attach, which holds
+    /// its command, environment and output. rewind uploads nothing: attach
+    /// what you choose to share. --replayable also writes the export
+    /// another machine can replay, for when a maintainer asks for it.
+    Bugreport(cmd::bugreport::BugreportArgs),
     /// Shell completions and man pages, which the packages install.
     #[command(hide = true)]
     Generate(cmd::setup::GenerateArgs),
@@ -317,7 +318,7 @@ impl Command {
             | Command::Check(_)
             | Command::Fork(_)
             | Command::Replay(_)
-            | Command::Report(_)
+            | Command::Bugreport(_)
             | Command::Export(_)
             | Command::Import(_)
             | Command::Prune(_)
@@ -350,7 +351,7 @@ impl Command {
             | Command::Threads(_)
             | Command::Blame(_)
             | Command::Replay(_)
-            | Command::Report(_)
+            | Command::Bugreport(_)
             | Command::Export(_)
             | Command::Import(_) => HomeHold::InUse,
             // Reading files boots each run's VM, as `cat` does.
@@ -451,7 +452,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Ps(args) => cmd::view::ps(&home, args),
         Command::Events(args) => cmd::view::events(&home, args),
         Command::Replay(args) => cmd::view::replay(&home, args),
-        Command::Report(args) => cmd::report::report(&home, args),
+        Command::Bugreport(args) => cmd::bugreport::bugreport(&home, args),
         Command::Generate(args) => cmd::setup::generate(args),
         Command::Diff(args) => cmd::view::diff(&home, args),
         Command::Blame(args) => cmd::blame::blame(&home, args),

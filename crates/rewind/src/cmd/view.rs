@@ -637,7 +637,7 @@ fn bisect_words(
             }
             why = Some(format!(
                 "\nthis is a gap in Rewind, not in the program: please report it with \
-                 `rewind report {}`.",
+                 `rewind bugreport {}`.",
                 run.manifest.id
             ));
         }
@@ -706,7 +706,7 @@ fn host_words(
     use rewind_core::bisect::Mode;
     use rewind_core::host_instructions::Reads;
     let report = format!(
-        "This is a gap in Rewind, not in the program: please report it with `rewind report {}`.",
+        "This is a gap in Rewind, not in the program: please report it with `rewind bugreport {}`.",
         run.manifest.id
     );
     let name = host.mnemonic.split(' ').next().unwrap_or(&host.mnemonic);

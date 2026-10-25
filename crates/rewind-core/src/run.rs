@@ -492,7 +492,7 @@ fn replaces(id: &RunId, kept: Option<Kept>, new: &str, this_build: &str) -> Resu
             "executing run {id}'s inputs again made a different trace than its recording, by \
              the same build of rewind, {this_build}: the run is not deterministic on this host. \
              The recording and its keyframes stay as they were; `rewind replay {id} --bisect` \
-             finds the instruction that read something from the host, and `rewind report \
+             finds the instruction that read something from the host, and `rewind bugreport \
              {id}` gathers what a bug report needs"
         );
     }
@@ -1834,7 +1834,7 @@ pub fn went_another_way_words(
             "replaying run {id} {went} {differs} than when it was recorded, by the same build \
              of rewind, {this_build}: the run is not deterministic on this host. Something it \
              read came from the host rather than from its inputs; `rewind replay {id} \
-             --bisect` finds the instruction that read it, and `rewind report {id}` gathers \
+             --bisect` finds the instruction that read it, and `rewind bugreport {id}` gathers \
              what a bug report needs"
         );
     }
@@ -2724,7 +2724,7 @@ pub(crate) mod tests {
         assert!(same.contains(rewind_trace::WENT_ANOTHER_WAY), "{same}");
         assert!(same.contains("not deterministic on this host"), "{same}");
         assert!(same.contains("--bisect"), "{same}");
-        assert!(same.contains("rewind report"), "{same}");
+        assert!(same.contains("rewind bugreport"), "{same}");
         assert!(!same.contains("this build"), "{same}");
         let other = went_another_way_words(&id, 311, "0.8.1 (def)", "0.9.0 (abc)");
         assert!(other.contains(rewind_trace::WENT_ANOTHER_WAY), "{other}");
