@@ -768,7 +768,23 @@ in
         grep -q '^identical to the recording: ' tampered
         grep -q '^the machine is DIFFERENT from the recording at the keyframe at step ' tampered
         grep -q 'not in the page store' tampered
+        grep -q 'not deterministic on this host' tampered
         grep -q 'rewind replay [0-9a-f]* --bisect' tampered
+
+        # The same difference, with the manifest naming another build as
+        # the run's recorder: replay names both builds and sends the
+        # reader to the one that recorded the run, not to --bisect, whose
+        # two replays would both be by this build.
+        sed -i 's/"recorded_by": "[^"]*"/"recorded_by": "0.8.0 (a211b3d6fefe)"/' "$a/manifest.json"
+        ! rewind replay a --machine last > other-build
+        cat other-build
+        grep -q '^the machine is DIFFERENT from the recording at the keyframe at step ' other-build
+        grep -q '^rewind 0.8.0 (a211b3d6fefe) recorded the run, and this is rewind ' other-build
+        grep -q 'Replay the run with rewind 0.8.0 (a211b3d6fefe)' other-build
+        ! grep -q -e '--bisect' -e 'not deterministic' other-build
+        ! rewind replay a --machine last --json > other-build.json
+        grep -q '"builds":"other"' other-build.json
+        grep -q '"recorded_by":"0.8.0 (a211b3d6fefe)"' other-build.json
         touch $out
       '';
 

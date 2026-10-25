@@ -167,9 +167,13 @@ it. The trace-only export is a few kilobytes and carries the run's command,
 environment and output; the replayable one, with `--replayable`, carries the
 guest's kernel and memory and is tens of megabytes, past the 25 MB an issue
 takes, for a maintainer who asks. A link cannot attach a file and rewind
-uploads nothing, so the person attaches what they choose to share. The errors
-that find a run not deterministic on the host that recorded it point at
-`--bisect` and `rewind bugreport`; a `rewind check` that finds a run ending
+uploads nothing, so the person attaches what they choose to share. A replay
+that differs under the build that recorded the run finds the run not
+deterministic on this host and points at `--bisect` and `rewind bugreport`.
+Under another build, which the manifest's `recorded_by` tells, either the run
+or the builds may be the cause, and `--bisect` cannot tell which, since its
+two replays are both by this build; rewind names both builds and points at the
+one that recorded the run. A `rewind check` that finds a run ending
 differently from schedule 0 replays both before it says what decides it, and
 stops when either does not replay exactly, since then no schedule does.
 

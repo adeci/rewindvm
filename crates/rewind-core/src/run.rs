@@ -479,7 +479,7 @@ struct Kept<'a> {
 /// trace: those keyframes are of the earlier execution, and seeking with
 /// them in another trace goes another way. A different trace from the
 /// build that made the recording means the run is not deterministic on
-/// this host.
+/// this host; from another build, the run or the builds may be the cause.
 fn replaces(id: &RunId, kept: Option<Kept>, new: &str, this_build: &str) -> Result<()> {
     let Some(kept) = kept else {
         return Ok(());
@@ -487,19 +487,14 @@ fn replaces(id: &RunId, kept: Option<Kept>, new: &str, this_build: &str) -> Resu
     if kept.hash == new {
         return Ok(());
     }
-    if kept.recorded_by == this_build {
-        bail!(
-            "executing run {id}'s inputs again made a different trace than its recording, by \
-             the same build of rewind, {this_build}: the run is not deterministic on this host. \
-             The recording and its keyframes stay as they were; `rewind replay {id} --bisect` \
-             finds the instruction that read something from the host, and `rewind bugreport \
-             {id}` gathers what a bug report needs"
-        );
-    }
+    let cause = another_way_cause(kept.recorded_by, this_build);
+    let next = match Builds::of(kept.recorded_by, this_build) {
+        Builds::Same => another_way_next(id, kept.recorded_by, this_build),
+        Builds::Other => "Remove the run to record it with this build".to_string(),
+    };
     bail!(
-        "this build of rewind runs the inputs differently from the build that recorded \
-         the run, and the run's keyframes are of that recording; the recording stays as \
-         it was. Remove the run to record it with this build"
+        "executing run {id}'s inputs again made a different trace than its recording: \
+         {cause}. The recording and its keyframes stay as they were. {next}"
     )
 }
 
@@ -1816,12 +1811,68 @@ fn stop_of(
     })
 }
 
+/// The build of rewind replaying a run, beside the one that recorded it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Builds {
+    /// The build that recorded the run: a replay that differs read
+    /// something from the host.
+    Same,
+    /// Another build, which may run the same inputs another way.
+    Other,
+}
+
+impl Builds {
+    /// Whether `this_build` is the build `recorded_by` names.
+    pub fn of(recorded_by: &str, this_build: &str) -> Builds {
+        if recorded_by == this_build {
+            return Builds::Same;
+        }
+        Builds::Other
+    }
+}
+
+/// Why a replay by `this_build` of a run `recorded_by` recorded can
+/// differ from the recording, for a person. The same build running the
+/// same inputs another way means the run read something from this host
+/// that its inputs do not decide. Under another build either the run or
+/// the builds may be the cause, and only a replay by the recording build
+/// tells which.
+pub fn another_way_cause(recorded_by: &str, this_build: &str) -> String {
+    match Builds::of(recorded_by, this_build) {
+        Builds::Same => format!(
+            "the same build of rewind, {this_build}, recorded the run, so the run is not \
+             deterministic on this host: something it read came from the host rather than \
+             from its inputs"
+        ),
+        Builds::Other => format!(
+            "rewind {recorded_by} recorded the run, and this is rewind {this_build}; another \
+             build may run the same inputs another way"
+        ),
+    }
+}
+
+/// What to do about a replay of run `id` that differs, for a person:
+/// under the recording build, `rewind replay --bisect` finds the
+/// instruction that read the host. Under another, --bisect would compare
+/// two replays by this build, which agree when the builds are the cause,
+/// so the reader is sent to the recording build instead.
+pub fn another_way_next(id: &RunId, recorded_by: &str, this_build: &str) -> String {
+    match Builds::of(recorded_by, this_build) {
+        Builds::Same => format!(
+            "`rewind replay {id} --bisect` finds the instruction that read it, and `rewind \
+             bugreport {id}` gathers what a bug report needs"
+        ),
+        Builds::Other => format!(
+            "Replay the run with rewind {recorded_by} to tell whether the run or the builds \
+             differ, or record the run again with this one"
+        ),
+    }
+}
+
 /// Why a replay of run `id` made a record other than the run's at step
-/// `differs`, by the build `this_build`, of a run `recorded_by` recorded.
-/// Another build may run the same inputs another way. The same build
-/// running them another way means the run read something from this host
-/// that its inputs do not decide, and `rewind replay --bisect` finds the
-/// instruction that did.
+/// `differs`, by the build `this_build`, of a run `recorded_by` recorded,
+/// and what to do about it.
 pub fn went_another_way_words(
     id: &RunId,
     differs: u64,
@@ -1829,19 +1880,10 @@ pub fn went_another_way_words(
     this_build: &str,
 ) -> String {
     let went = rewind_trace::WENT_ANOTHER_WAY;
-    if recorded_by == this_build {
-        return format!(
-            "replaying run {id} {went} {differs} than when it was recorded, by the same build \
-             of rewind, {this_build}: the run is not deterministic on this host. Something it \
-             read came from the host rather than from its inputs; `rewind replay {id} \
-             --bisect` finds the instruction that read it, and `rewind bugreport {id}` gathers \
-             what a bug report needs"
-        );
-    }
     format!(
-        "replaying run {id} {went} {differs} than when it was recorded, so this build of \
-         rewind, {this_build}, runs its inputs differently from rewind {recorded_by}, which \
-         recorded it; use that build, or record the run again with this one"
+        "replaying run {id} {went} {differs} than when it was recorded: {}. {}",
+        another_way_cause(recorded_by, this_build),
+        another_way_next(id, recorded_by, this_build)
     )
 }
 
@@ -2730,6 +2772,36 @@ pub(crate) mod tests {
         assert!(other.contains(rewind_trace::WENT_ANOTHER_WAY), "{other}");
         assert!(other.contains("0.8.1 (def)"), "{other}");
         assert!(other.contains("record the run again"), "{other}");
+    }
+
+    #[test]
+    fn a_replay_by_another_build_names_both_and_blames_neither() {
+        // Under another build a replay that differs may be the run's
+        // doing or the builds': the words name both builds, say how to
+        // tell which, and neither call the run not deterministic nor send
+        // the reader to --bisect, which compares two replays by this build.
+        let id = id("a");
+        assert_eq!(Builds::of("0.9.0 (abc)", "0.9.0 (abc)"), Builds::Same);
+        assert_eq!(Builds::of("0.8.1 (def)", "0.9.0 (abc)"), Builds::Other);
+        let cause = another_way_cause("0.8.1 (def)", "0.9.0 (abc)");
+        assert!(
+            cause.contains("rewind 0.8.1 (def) recorded the run"),
+            "{cause}"
+        );
+        assert!(cause.contains("this is rewind 0.9.0 (abc)"), "{cause}");
+        assert!(!cause.contains("not deterministic"), "{cause}");
+        let next = another_way_next(&id, "0.8.1 (def)", "0.9.0 (abc)");
+        assert!(
+            next.contains("Replay the run with rewind 0.8.1 (def)"),
+            "{next}"
+        );
+        assert!(next.contains("record the run again"), "{next}");
+        assert!(!next.contains("--bisect"), "{next}");
+        let other = went_another_way_words(&id, 311, "0.8.1 (def)", "0.9.0 (abc)");
+        assert!(other.contains(&cause) && other.contains(&next), "{other}");
+        assert!(!other.contains("--bisect"), "{other}");
+        let same = another_way_next(&id, "0.9.0 (abc)", "0.9.0 (abc)");
+        assert!(same.contains("--bisect"), "{same}");
     }
 
     #[test]

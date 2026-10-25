@@ -446,6 +446,12 @@ pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
         _ => None,
     };
 
+    // Which builds recorded and replayed the run, which decides what a
+    // difference can mean.
+    let recorded_by = run.manifest.recorded_by.as_str();
+    let this_build = rewind_core::VERSION;
+    let builds = rewind_core::run::Builds::of(recorded_by, this_build);
+
     if json {
         let (original, again) = (&replayed.original, &replayed.again);
         let divergence = match &replayed.divergence {
@@ -461,6 +467,9 @@ pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
                 "divergence": divergence,
                 "machine": machine,
                 "bisect": bisected,
+                "recorded_by": recorded_by,
+                "this_build": this_build,
+                "builds": builds,
             })
         );
         return Ok(exit);
@@ -502,11 +511,11 @@ pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
             );
         }
         (Some(d), None) if d.part == Part::IoRecords => println!(
-            "{different_word} from the recording: {}: the run was not deterministic",
+            "{different_word} from the recording: {}",
             show::io_divergence(d)
         ),
         (Some(d), None) => println!(
-            "{different_word} from the recording at event {} (step {} recorded, step {} replayed): the run was not deterministic",
+            "{different_word} from the recording at event {} (step {} recorded, step {} replayed)",
             d.index, d.left_step, d.right_step
         ),
     }
@@ -515,16 +524,51 @@ pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
     if let Some(first) = &machine.first {
         print!("{}", machine_words(home, &run, first, &replayed, paint));
     }
+
+    // Why it can differ and, unless --bisect has looked, what to do next.
+    if !identical {
+        let next = match bisected {
+            Some(_) => Next::Bisected,
+            None => Next::Show,
+        };
+        println!(
+            "\n{}",
+            why_words(&run.manifest.id, recorded_by, this_build, next)
+        );
+    }
     match &bisected {
-        Some(found) => print!("{}", bisect_words(home, &run, found, paint)),
+        Some(found) => print!("{}", bisect_words(home, &run, found, builds, paint)),
         None if bisect && identical => println!("nothing to bisect"),
-        None if !identical => println!(
-            "\nto find the instruction that made the difference: rewind replay {} --bisect",
-            run.manifest.id
-        ),
         None => {}
     }
     Ok(exit)
+}
+
+/// Whether `rewind replay` tells the reader what to do next about a
+/// difference, or --bisect has already looked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Next {
+    Show,
+    Bisected,
+}
+
+/// The paragraph `rewind replay` prints after a difference: why a replay
+/// by `this_build` of run `id`, which `recorded_by` recorded, can differ,
+/// and with `Next::Show` what to do about it.
+fn why_words(
+    id: &rewind_core::run::RunId,
+    recorded_by: &str,
+    this_build: &str,
+    next: Next,
+) -> String {
+    let mut cause = rewind_core::run::another_way_cause(recorded_by, this_build);
+    if next == Next::Show {
+        cause = format!(
+            "{cause}. {}",
+            rewind_core::run::another_way_next(id, recorded_by, this_build)
+        );
+    }
+    format!("{cause}.")
 }
 
 /// What `--bisect` found, for a person: the step, the instruction and its
@@ -534,6 +578,7 @@ fn bisect_words(
     home: &Home,
     run: &Run,
     found: &rewind_core::bisect::Bisected,
+    builds: rewind_core::run::Builds,
     paint: color::Paint,
 ) -> String {
     use rewind_core::bisect::{Bisected, Mode, WithinStep};
@@ -542,11 +587,20 @@ fn bisect_words(
     let from_words = |from: Option<u64>| from.map_or("boot".to_string(), |s| format!("step {s}"));
     let (bracket, step, within, tries) = match found {
         Bisected::Agreed { bracket, tries } => {
+            // Under another build, replays that agree point at the builds.
+            let why = match builds {
+                rewind_core::run::Builds::Same => {
+                    "The source gives this host the same answer each time it is read; replaying \
+                     the run on another host, or with more --tries, may tell more."
+                }
+                rewind_core::run::Builds::Other => {
+                    "This build runs the run the same way each time, so the difference most \
+                     likely lies between this build and the one that recorded the run."
+                }
+            };
             let _ = writeln!(
                 out,
-                "\n{}: two replays from {} agreed through step {} in each of {tries} {}. The \
-                 source gives this host the same answer each time it is read; replaying the \
-                 run on another host, or with more --tries, may tell more.",
+                "\n{}: two replays from {} agreed through step {} in each of {tries} {}. {why}",
                 paint.verdict(Same::Yes, "no instruction found"),
                 from_words(bracket.from),
                 bracket.to,
@@ -1012,5 +1066,35 @@ mod tests {
             vec!["/runs/a", "--step", "5", "--compare", "/runs/b"]
         );
         assert!(Cli::try_parse_from("rewind open abc 5 --compare def".split_whitespace()).is_ok());
+    }
+
+    #[test]
+    fn a_replay_that_differs_says_which_builds_ran_it() {
+        // The paragraph replay prints after a difference: under the build
+        // that recorded the run it blames the host and points at --bisect;
+        // under another it names both builds and points at the one that
+        // recorded the run. After --bisect has looked, it gives the cause
+        // without sending the reader to look again.
+        let id = rewind_core::run::RunId::parse("6544e96a1f5fd1a9").unwrap();
+        let same = why_words(&id, "0.10.0 (aaa)", "0.10.0 (aaa)", Next::Show);
+        assert!(same.contains("not deterministic on this host"), "{same}");
+        assert!(
+            same.contains("rewind replay 6544e96a1f5fd1a9 --bisect"),
+            "{same}"
+        );
+        let other = why_words(&id, "0.8.0 (a211b3d6fefe)", "0.10.0 (aaa)", Next::Show);
+        assert!(
+            other.contains("rewind 0.8.0 (a211b3d6fefe) recorded the run"),
+            "{other}"
+        );
+        assert!(other.contains("this is rewind 0.10.0 (aaa)"), "{other}");
+        assert!(!other.contains("not deterministic"), "{other}");
+        assert!(!other.contains("--bisect"), "{other}");
+        let looked = why_words(&id, "0.10.0 (aaa)", "0.10.0 (aaa)", Next::Bisected);
+        assert!(
+            looked.contains("not deterministic on this host"),
+            "{looked}"
+        );
+        assert!(!looked.contains("--bisect"), "{looked}");
     }
 }
