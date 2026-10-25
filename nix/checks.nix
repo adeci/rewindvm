@@ -834,6 +834,15 @@ in
           grep -q 'in main' hidden.bisect
           grep -q 'getrandom()' hidden.bisect
 
+          # rewind report gathers the replay and the host into report.md
+          # and prints a link that opens an issue filled in with it.
+          rewind report hidden --no-run -o report > report.out
+          cat report.out
+          grep -q '^open an issue with the report filled in: https://github.com/fzakaria/rewindvm/issues/new?title=Run%20' report.out
+          grep -q 'the machine is DIFFERENT' report/report.md
+          grep -q '^- vendor_id: AuthenticAMD' report/report.md
+          test ! -e report/*.rwd
+
           # Executing the run's inputs again keeps its keyframes, makes
           # another trace, and blames the host rather than the build.
           ! rewind run --name rdrand --root ${determinismRoot} -- /bin/rdrand 2> again.err

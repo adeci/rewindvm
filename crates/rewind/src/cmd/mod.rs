@@ -5,6 +5,7 @@ pub(crate) mod blame;
 pub(crate) mod inspect;
 pub(crate) mod record;
 pub(crate) mod remove;
+pub(crate) mod report;
 pub(crate) mod setup;
 pub(crate) mod transfer;
 pub(crate) mod view;

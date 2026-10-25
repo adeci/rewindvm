@@ -221,6 +221,16 @@ enum Command {
     Events(cmd::view::EventsArgs),
     /// Run a run's inputs again and check the trace comes out identical.
     Replay(cmd::view::ReplayArgs),
+    /// Gather what a bug report about a run needs, and print a link that
+    /// opens a GitHub issue filled in with it.
+    ///
+    /// Writes a directory holding report.md, which names this build, the
+    /// host's CPU, kernel and KVM, what `rewind doctor` and `rewind replay`
+    /// find, and the run's replayable .rwd. The .rwd holds the run's
+    /// programs, inputs and memory; rewind uploads nothing, so attach it
+    /// to the issue yourself if you can share it, or leave it out with
+    /// --no-run.
+    Report(cmd::report::ReportArgs),
     /// Shell completions and man pages, which the packages install.
     #[command(hide = true)]
     Generate(cmd::setup::GenerateArgs),
@@ -307,6 +317,7 @@ impl Command {
             | Command::Check(_)
             | Command::Fork(_)
             | Command::Replay(_)
+            | Command::Report(_)
             | Command::Export(_)
             | Command::Import(_)
             | Command::Prune(_)
@@ -339,6 +350,7 @@ impl Command {
             | Command::Threads(_)
             | Command::Blame(_)
             | Command::Replay(_)
+            | Command::Report(_)
             | Command::Export(_)
             | Command::Import(_) => HomeHold::InUse,
             // Reading files boots each run's VM, as `cat` does.
@@ -439,6 +451,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Ps(args) => cmd::view::ps(&home, args),
         Command::Events(args) => cmd::view::events(&home, args),
         Command::Replay(args) => cmd::view::replay(&home, args),
+        Command::Report(args) => cmd::report::report(&home, args),
         Command::Generate(args) => cmd::setup::generate(args),
         Command::Diff(args) => cmd::view::diff(&home, args),
         Command::Blame(args) => cmd::blame::blame(&home, args),
