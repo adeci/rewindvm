@@ -918,10 +918,12 @@ nothing.
 5. Compares the failing run with the run one step shorter, not with
    schedule 0, and shows where the failing program's own events first
    differ between them. It compares threads by the order they appear, not
-   by their ids. On mylib the test's events part at the crash, 14 steps
-   after the deciding reschedule; against schedule 0, which differs from
-   the failing run from the window's start on, they parted 974 steps
-   before it.
+   by their ids. On mylib the test's events part 2 steps after the
+   deciding step, where the other worker runs ahead of the one held there,
+   and the crash comes 22 steps later: the first difference is the cause,
+   and the crash its symptom. Against schedule 0, which differs from the
+   failing run from the window's start on, they part 305 steps before the
+   crash.
 6. With `--where`, says where the threads involved were, as `rewind where`
    finds them: the thread on the CPU at the deciding step, and the thread
    of the failing run's first event that differs, each by the line of the

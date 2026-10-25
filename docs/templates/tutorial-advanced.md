@@ -115,14 +115,25 @@ lookup forks the run and starts gdb, so it is opt-in:
 $ rewind check --where --epoch {{epoch}} {{flake}} 2>/dev/null | sed -n '/^where the threads were/,/first event that differs$/p'
 ```
 
-<!-- assert: grep -q 'worker (src/pool.c:75), on the CPU at the deciding step$' {{out:check_where}} && grep -q 'worker (src/pool.c:77), at the first event that differs$' {{out:check_where}} -->
+<!-- capture held_tid: \d+/(\d+) +worker \(src/pool.c:75\), on the CPU at the deciding step -->
+<!-- capture diff_step: (\d+) +\d+/\d+ +worker \(src/pool.c:66\), at the first event that differs -->
+<!-- capture diff_tid: \d+/(\d+) +worker \(src/pool.c:66\), at the first event that differs -->
+<!-- assert: test {{held_tid}} = {{crash_tid}} && test {{diff_tid}} != {{crash_tid}} && test {{diff_step}} -lt {{crash_step}} -->
+<!-- set late_gap: echo $(( {{crash_step}} - {{diff_step}} )) -->
+
+The first event that differs is the other worker, thread {{diff_tid}}, at line
+66, reporting the job it took off the queue. That is the cause showing up
+before the symptom: thread {{crash_tid}} is held at the deciding step, so the
+other worker and the main thread run ahead of it. Its fault at line 77, which
+`rewind where` showed at the top of this page, comes {{late_gap}} steps later,
+at step {{crash_step}}.
 
 In the app, the deciding step is a dashed blue mark on the timeline, before
 the solid one where the runs' events first differ. Zoomed in around the crash:
 
 <!-- screenshot site/img/app-decides: {{home}}/runs/{{failing}} --compare {{home}}/runs/{{passing}} --step {{crash_step}} ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus ;; key plus -->
 
-![The app zoomed in around the crash: a dashed blue mark at step {{deciding}} on the timeline, the crash just after it, and the divergence card saying the two runs are identical until step {{deciding}}, where only this run gets {{deciding_words}}](../site/img/app-decides.png)
+![The app zoomed in around the crash: a dashed blue mark at step {{deciding}} on the timeline, a solid one at step {{diff_step}} where the events first differ, the crash after them, and the divergence card saying the two runs are identical until step {{deciding}}, where only this run gets {{deciding_words}}](../site/img/app-decides.png)
 
 ## See which thread held the CPU
 
@@ -347,7 +358,7 @@ comes back:
 
 <!-- screenshot site/img/app-compare-tab: {{home}}/runs/{{failing}} --compare {{home}}/runs/{{passing}} ;; key d ;; click 1153 221 ;; wait 2 -->
 
-![The app's Compare tab: the writes both runs made before they part, then the failing run's SIGSEGV beside the passing run's write, each run's text in full with what differs in amber](../site/img/app-compare-tab.png)
+![The app's Compare tab: the writes both runs made before they part, then the other worker's write in the failing run beside the passing run's write, and the failing run's SIGSEGV a few events below, each run's text in full with what differs in amber](../site/img/app-compare-tab.png)
 
 ## Script it
 
@@ -478,10 +489,10 @@ $ rewind check --root ready --stall-max 50ms -- /bin/ready | grep -E 'ends diffe
 <!-- set mylib_long_secs: TIMEFORMAT=%R; { time rewind check --epoch {{epoch}} --schedules 32 --all --no-narrow --stall-max 100ms {{flake}} > /dev/null 2>&1; } 2>&1 | xargs printf '%.1f' -->
 
 The same steps stall, one exit in 128, but each stall picks one of the
-doublings of 10 µs up to the maximum, 14 of them for 50 ms. Fewer stalls are
-short, so a race that needs only a short hold turns up less often: 32
-schedules of mylib crash {{mylib_default}} times by default and {{mylib_long}} times with `--stall-max
-100ms`, in {{mylib_default_secs}} s and {{mylib_long_secs}} s. A stall is virtual time, so the guest's clock
+doublings of 10 µs up to the maximum, 14 of them for 50 ms, so fewer stalls
+are short. How often a race turns up then depends on how long it needs a
+thread held: 32 schedules of mylib crash {{mylib_default}} times by default and
+{{mylib_long}} times with `--stall-max 100ms`, in {{mylib_default_secs}} s and {{mylib_long_secs}} s. A stall is virtual time, so the guest's clock
 moves further, and a program's own timeouts see the extra time. The maximum is
 part of each run's spec, so `rewind show`, a replay and a fork of the run keep
 the maximum, and a run made without the flag keeps its id. A fork's own

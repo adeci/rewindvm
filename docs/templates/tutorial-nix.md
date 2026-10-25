@@ -103,12 +103,24 @@ $ rewind check --epoch {{epoch}} {{flake}}
 <!-- assert: test $(echo {{failed}} | wc -w) -ge 1 -->
 <!-- set failed_said: python3 -c 'import sys; s = sys.argv[1:]; print(f"Schedule {s[0]} fails" if len(s) == 1 else f"Schedules {", ".join(s[:-1])} and {s[-1]} fail")' {{failed}} -->
 <!-- assert: test {{check_seconds}} -lt 60 -->
+<!-- capture first_diff: \n  failing +(\d+) -->
+<!-- capture first_tid: \n  failing +\d+ +\d+/(\d+) -->
+<!-- capture first_said: \n  failing +\d+ +\d+/\d+ +write\(1, "([^"\\]+)\\n"\) -->
+<!-- capture check_crash: \n  failing +(\d+) +\d+/\d+ +SIGSEGV -->
+<!-- capture check_crash_tid: \n  failing +\d+ +\d+/(\d+) +SIGSEGV -->
+<!-- assert: test {{first_diff}} -lt {{check_crash}} && test {{first_tid}} != {{check_crash_tid}} -->
+<!-- set check_gap: echo $(( {{check_crash}} - {{first_diff}} )) -->
 
 {{failed_said}}. `check` narrows schedule {{narrowed}}'s failure to one step,
 {{deciding}}. The passing run perturbs the same steps less that one, so the two
 runs are the same until {{deciding}}, and only the failing one gets
-{{deciding_words}} there. The last block shows where the test's own output then
-differs. The search took {{check_seconds}} seconds.
+{{deciding_words}} there. The search took {{check_seconds}} seconds.
+
+The last block shows where the test's own output then differs. The first
+difference is the cause, showing up before the symptom: at step {{first_diff}}
+thread {{first_tid}} writes `{{first_said}}` while thread {{check_crash_tid}} is held
+at the deciding step. Thread {{check_crash_tid}}'s SIGSEGV comes {{check_gap}} steps later,
+at step {{check_crash}}.
 
 `--all` tries every schedule, which measures how flaky a build is:
 
@@ -181,7 +193,9 @@ machine with the same CPU vendor that has the features of the run's CPU model.
 
 ## Fork it
 
-<!-- set fork_first: for s in $(seq 1 16); do rewind fork {{base}} {{window_from}} --schedule $s --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])'; done | python3 -c 'import sys; s=[int(l) != 0 for l in sys.stdin]; print(next(i + 1 for i in range(len(s) - 3) if sum(s[i:i + 4]) == 2))' -->
+<!-- set fork_statuses: for s in $(seq 1 32); do rewind fork {{base}} {{window_from}} --schedule $s --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])'; done | tr '\n' ' ' -->
+<!-- set fork_first: python3 -c 'import sys; s=[int(x) != 0 for x in sys.argv[1:]]; print(next(i + 1 for i in range(len(s) - 3) if 0 < sum(s[i:i + 4]) < 4))' {{fork_statuses}} -->
+<!-- set fork_rate: python3 -c 'import sys; print(sum(int(x) != 0 for x in sys.argv[1:]))' {{fork_statuses}} -->
 <!-- set f2: echo $(( {{fork_first}} + 1 )) -->
 <!-- set f3: echo $(( {{fork_first}} + 2 )) -->
 <!-- set f4: echo $(( {{fork_first}} + 3 )) -->
@@ -199,9 +213,10 @@ $ rewind fork {{base|short}} {{window_from}} --schedule {{f4}} --quiet
 <!-- set fork_passed: grep -o 'exited:[0-9]*' {{out:forks}} | paste - <(printf '%s\n' {{fork_first}} {{f2}} {{f3}} {{f4}}) | awk '$1 == "exited:0" {print $2}' | tr '\n' ' ' -->
 <!-- set fork_run: grep -m1 -o 'run [0-9a-f]* exited:[1-9]' {{out:forks}} | awk '{print $2}' -->
 <!-- set fork_crash: rewind events {{fork_run}} | grep -m1 SIGSEGV | awk '{print $1}' -->
+<!-- set fork_said: python3 -c 'import sys; f, p = sys.argv[1].split(), sys.argv[2].split(); j = lambda s: s[0] if len(s) == 1 else ", ".join(s[:-1]) + " and " + s[-1]; print(("schedule " + j(f) + " crashes" if len(f) == 1 else "schedules " + j(f) + " crash") + " and " + ("schedule " + j(p) + " passes" if len(p) == 1 else "schedules " + j(p) + " pass"))' '{{fork_failed}}' '{{fork_passed}}' -->
 
-From step {{window_from}} of the schedule 0 build, schedules
-{{fork_failed|and}} crash and {{fork_passed|and}} pass. `check --run` asks many
+From step {{window_from}} of the schedule 0 build, {{fork_said}}. Of schedules
+1 to 32 from that step, {{fork_rate}} crash. `check --run` asks many
 schedules at once; the
 [advanced tutorial](tutorial-advanced.md#count-the-schedules-that-fail-from-a-step)
 shows it.
@@ -222,6 +237,7 @@ $ rewind-app ~/.local/share/rewind/runs/{{failing}} --compare ~/.local/share/rew
 
 <!-- assert: rewind where {{failing}} {{crash_step}} 2>/dev/null | grep -q '^#0 worker (src/pool.c:77)' -->
 <!-- assert: rewind where {{failing}} {{crash_step}} 2>/dev/null | grep -q '^> *77 .*p->queue->completed++;' -->
+<!-- assert: rewind where {{failing}} {{deciding}} 2>/dev/null | grep -q ', thread {{check_crash_tid}}, at step {{deciding}}$' -->
 
 Press f to jump to the failure at step {{crash_step}}, then s to open the
 source panel. After a few seconds it shows `worker` at `src/pool.c:77`, with
