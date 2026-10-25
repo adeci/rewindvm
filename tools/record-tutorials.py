@@ -4,10 +4,13 @@
     tools/record-tutorials.py --rev HEAD              # every tutorial
     tools/record-tutorials.py --rev v0.3.2 nix        # one of them
     tools/record-tutorials.py --local properties      # before a push
+    tools/record-tutorials.py --local --case-studies  # the case studies
 
 Each tutorial is a template in docs/templates/, written as the page reads,
 and this writes the page, docs/tutorial-<name>.md, which tools/md2html.py
-then turns into the site's. A template is Markdown with three additions.
+then turns into the site's. The case studies are recorded the same way,
+with --case-studies: docs/templates/case-<name>.md writes
+docs/case-studies/<name>.md. A template is Markdown with three additions.
 
 A console block whose info string starts with `run` is run, one `$ ` line at
 a time, in a shell in the tutorial's work directory, and written as a plain
@@ -16,6 +19,8 @@ console block with each command's output under it. Options follow `run`:
     name=NAME     keep the output, as {{out:NAME}}, a file, for later commands
     show=SLICES   print only these lines, Python slices such as `:1,-2:`,
                   with `...` where lines were left out
+    keep=REGEX    print only the lines REGEX matches, with `...` where lines
+                  were left out; options split at spaces, so `\\s` for one
     elide         shorten every store path to /nix/store/...-name
     cut=N         end lines longer than N characters there, with ` ...`
     hide          leave the output out, for a command whose output is not
@@ -31,11 +36,12 @@ Rewind colors its output on a terminal, so a shown command runs with
 REWIND_COLOR=always unless it pipes rewind's output into another program,
 where a reader's rewind writes plain text too. The page keeps the plain
 text, which GitHub shows; the colored stretches of each block go to
-docs/colors/tutorial-<name>.json, by line and column, for tools/md2html.py
-to paint the site's page with. Captures, named outputs and every command
+docs/colors/<page>.json, named as the page is, by line and column, for
+tools/md2html.py to paint the site's page with. Captures, named outputs and every command
 the page does not show see plain text.
 
-`{{NAME}}` anywhere, prose or command, is a value: `{{NAME|short}}` is its
+`{{NAME}}` anywhere, prose or command, is a value, among them {{dir}}, the
+templates' directory, {{work}}, the page's own, and {{site}}, the site's: `{{NAME|short}}` is its
 first eight characters, a run id as the tutorials write it, and
 `{{NAME|and}}` joins its words as "a, b and c". Values are set by one-line
 HTML comments, which are not written out:
@@ -59,7 +65,7 @@ HTML comments, which are not written out:
                                   the repository
 
 The commands run against a run directory of the recording's own, {{home}},
-emptied before each tutorial, so `rewind ls`, the app's Runs panel and
+emptied before each page, so `rewind ls`, the app's Runs panel and
 wall times are those of a reader's fresh install.
 
 Any command that fails, capture that does not match, or assertion that does
@@ -103,6 +109,25 @@ GITHUB_CLONE = re.compile(r"git clone https://github\.com/fzakaria/rewindvm(?: (
 # run boots, which RECORDED_WITH names.
 OUTPUTS = ["rewind", "app", "release", "release-debug", "initrd", "kernel"]
 
+
+class Kind(enum.Enum):
+    """What a template is, by the start of its file's name: a tutorial,
+    whose page goes next to the others in docs/, or a case study, whose
+    page goes in docs/case-studies/."""
+
+    TUTORIAL = "tutorial-"
+    CASE_STUDY = "case-"
+
+    def template(self, name):
+        return TEMPLATES / f"{self.value}{name}.md"
+
+    def page(self, name):
+        """The page the template called `name` writes."""
+        if self == Kind.CASE_STUDY:
+            return REPO / "docs" / "case-studies" / f"{name}.md"
+        return REPO / "docs" / f"tutorial-{name}.md"
+
+
 # Which guest the tutorials were recorded with. A run's id hashes the
 # guest's initramfs and kernel, so a release whose guest is another makes
 # runs the tutorials do not show; the release workflow refuses one.
@@ -113,15 +138,22 @@ GUEST = ["initrd", "kernel"]
 STORE_HASH = re.compile(r"/nix/store/[0-9a-z]{32}-")
 ELIDED_STORE = "/nix/store/...-"
 
-# Where each tutorial's colored stretches go, and how a shown command asks
-# rewind for color.
+# Where each page's colored stretches go, and how a shown command asks
+# rewind for color, on a terminal that draws it, as the reader's does: gdb,
+# which rewind asks to style its output then, warns on a dumb one.
 COLORS = REPO / "docs" / "colors"
-COLOR_ENV = {"REWIND_COLOR": "always"}
+COLOR_ENV = {"REWIND_COLOR": "always", "TERM": "xterm-256color"}
 
 # The escape sequences rewind colors with: Select Graphic Rendition, and
 # the parameters it uses, by the class the site paints each in. Any other
 # escape stops the recording, so a new style is given a class first.
 SGR = re.compile(r"\x1b\[([0-9;]*)m")
+
+# Erase in Line, which a program redrawing a line, such as meson's progress
+# line, writes after a carriage return. The output is read with universal
+# newlines, so the carriage return has already ended the line, and the
+# escape is dropped.
+ERASE_LINE = "\x1b[K"
 ESCAPE = "\x1b"
 SGR_RESET = {"", "0"}
 SGR_ATTRIBUTES = {"1": "bold", "2": "dim", "4": "underline"}
@@ -138,6 +170,9 @@ SGR_FOREGROUNDS = {
     "36": "cyan",
     "37": "white",
 }
+
+# What stands for lines left out of a block.
+ELIDED = "..."
 
 # What a cut line ends with.
 CUT_MARK = " ..."
@@ -218,6 +253,8 @@ class Styled:
 
 def styled_lines(output):
     """`output`, which may color with SGR escapes, as Styled lines."""
+    output = output.replace(ERASE_LINE, "")
+
     attributes = set()
     foreground = None
     text = []
@@ -302,7 +339,7 @@ def build(rev):
 
 
 class Recording:
-    """One tutorial being recorded: its values, its shell's directory and
+    """One page being recorded: its values, its shell's directory and
     environment, and the page so far."""
 
     def __init__(self, name, work, home, paths, commit=None):
@@ -314,6 +351,7 @@ class Recording:
         self.cwd = work
         self.values = {
             "dir": str(TEMPLATES),
+            "site": str(REPO / "site"),
             "work": str(work),
             "home": str(home),
             "release": paths["release"],
@@ -466,6 +504,8 @@ class Recording:
                     Styled(line) if isinstance(line, str) else line
                     for line in slices(lines, opts["show"])
                 ]
+            if "keep" in opts:
+                lines = kept(lines, re.compile(opts["keep"]))
             if "cut" in opts:
                 n = int(opts["cut"])
                 lines = [
@@ -612,11 +652,23 @@ def slices(lines, spec):
         if len(rng) == 0:
             continue
         if rng[0] > end or (i > 0 and rng[0] != end):
-            out.append("...")
+            out.append(ELIDED)
         out.extend(lines[j] for j in rng)
         end = rng[-1] + 1
     if end < len(lines):
-        out.append("...")
+        out.append(ELIDED)
+    return out
+
+
+def kept(lines, pattern):
+    """The lines `pattern` matches, with `...` in place of each run of
+    lines it does not."""
+    out = []
+    for line in lines:
+        if pattern.search(line.text):
+            out.append(line)
+        elif not out or out[-1].text != ELIDED:
+            out.append(Styled(ELIDED))
     return out
 
 
@@ -655,9 +707,9 @@ def check_guest(home, paths):
                 )
 
 
-def record(name, work, home, paths, commit=None):
-    """Records one tutorial and writes its page."""
-    template = TEMPLATES / f"tutorial-{name}.md"
+def record(name, kind, work, home, paths, commit=None):
+    """Records one template of `kind` and writes its page."""
+    template = kind.template(name)
     rec = Recording(name, work, home, paths, commit)
     lines = template.read_text().splitlines()
     page = []
@@ -692,11 +744,11 @@ def record(name, work, home, paths, commit=None):
         check_guest(home, paths)
     except Failed as e:
         sys.exit(f"{template.relative_to(REPO)}: {e}")
-    out = REPO / "docs" / f"tutorial-{name}.md"
+    out = kind.page(name)
     out.write_text("\n".join(collapse(page)) + "\n")
 
     # The colored stretches beside it, or none for a page without color.
-    colors = COLORS / f"tutorial-{name}.json"
+    colors = COLORS / f"{out.stem}.json"
     colors.unlink(missing_ok=True)
     written = [out]
     if rec.colors:
@@ -733,17 +785,23 @@ def main():
         help="build the pages' github:fzakaria/rewindvm workloads from the recorded commit",
     )
     parser.add_argument(
+        "--case-studies",
+        action="store_true",
+        help="record the case studies, docs/templates/case-*.md, instead",
+    )
+    parser.add_argument(
         "tutorials", nargs="*", help="names, such as nix; all by default"
     )
     args = parser.parse_args()
 
+    kind = Kind.CASE_STUDY if args.case_studies else Kind.TUTORIAL
     names = args.tutorials or sorted(
-        p.stem.removeprefix("tutorial-") for p in TEMPLATES.glob("tutorial-*.md")
+        p.stem.removeprefix(kind.value) for p in TEMPLATES.glob(f"{kind.value}*.md")
     )
     paths, commit = build(args.rev)
     print(f"recording with {commit[:12]}")
-    # Each tutorial starts from an empty home, as a reader's first does,
-    # so a page does not depend on which tutorials were recorded with it.
+    # Each page starts from an empty home, as a reader's first does, so a
+    # page does not depend on which pages were recorded with it.
     home = args.work / "home"
     for name in names:
         shutil.rmtree(home, ignore_errors=True)
@@ -751,8 +809,11 @@ def main():
         work = args.work / name
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
-        record(name, work, home, paths, commit if args.local else None)
+        record(name, kind, work, home, paths, commit if args.local else None)
 
+    # Only the tutorials name the guest: the release workflow checks theirs.
+    if kind != Kind.TUTORIAL:
+        return
     lines = [
         "# The guest the tutorials were recorded with, by tools/record-tutorials.py.",
         "# The release workflow refuses a tag whose guest is another.",
