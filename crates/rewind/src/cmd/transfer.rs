@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use rewind_core::{Home, Run, export};
 
-use crate::{RUN_HELP, RUN_LONG_HELP, show};
+use crate::{RUN_HELP, RUN_LONG_HELP, color, show};
 
 /// The arguments of `rewind export`.
 #[derive(clap::Args)]
@@ -39,7 +39,12 @@ pub(crate) fn export(home: &Home, args: ExportArgs) -> Result<ExitCode> {
     };
     export::export(home, &run, contents, &out)?;
     let size = std::fs::metadata(&out)?.len();
-    eprintln!("rewind: wrote {} ({})", out.display(), show::size(size));
+    eprintln!(
+        "{} wrote {} ({})",
+        color::stderr().prefix(),
+        out.display(),
+        show::size(size)
+    );
     Ok(ExitCode::SUCCESS)
 }
 
@@ -59,7 +64,7 @@ pub(crate) struct ImportArgs {
 pub(crate) fn import(home: &Home, args: ImportArgs) -> Result<ExitCode> {
     let ImportArgs { file, json } = args;
     let run = if export::is_url(&file) {
-        eprintln!("rewind: downloading {file}");
+        eprintln!("{} downloading {file}", color::stderr().prefix());
         export::import_url(home, &file)?
     } else {
         export::import(home, std::path::Path::new(&file))?
@@ -76,6 +81,6 @@ pub(crate) fn import(home: &Home, args: ImportArgs) -> Result<ExitCode> {
         );
         return Ok(ExitCode::SUCCESS);
     }
-    println!("{}", show::summary(&run));
+    println!("{}", show::summary(&run, color::stdout()));
     Ok(ExitCode::SUCCESS)
 }

@@ -8,32 +8,49 @@ use rewind_core::compare::{Comparison, Source, Verdict};
 use rewind_trace::ending::{Ending, ExitStatus};
 use rewind_trace::{Divergence, Event, EventKind, Trace, signal_name};
 
-/// A one-line summary for `rewind ls`.
-pub(crate) fn summary(run: &Run) -> String {
+use crate::color::{Paint, Same, Style};
+
+/// How wide `rewind ls` keeps the column that says how a run ended.
+const ENDING_WIDTH: usize = 9;
+
+/// How a run's ending is painted: green when the job exited 0, red when
+/// it did not.
+fn ending(paint: Paint, ending: Ending, width: usize) -> String {
+    let style = if ending.passed() {
+        Style::Same
+    } else {
+        Style::Differs
+    };
+    paint.padded(style, ending, width)
+}
+
+/// A one-line summary for `rewind ls`, painted for standard output.
+pub(crate) fn summary(run: &Run, paint: Paint) -> String {
     let m = &run.manifest;
     let outcome = match &m.outcome {
         Some(o) => format!(
-            "{:<9} {:>12} steps",
-            Ending::of(&o.stop, o.status, &[]).to_string(),
+            "{} {:>12} steps",
+            ending(paint, Ending::of(&o.stop, o.status, &[]), ENDING_WIDTH),
             o.step
         ),
-        None if run.executing() => "running".into(),
-        None => "interrupted".into(),
+        None if run.executing() => paint.paint(Style::Warn, "running"),
+        None => paint.paint(Style::Differs, "interrupted"),
     };
     format!("{}  {outcome}  {}", m.id, m.name)
 }
 
 /// The line printed when a run finishes, with how it stopped in the
-/// words `stop` gives, else the stop's own.
-pub(crate) fn finished(run: &Run, stop: Option<&str>) -> String {
+/// words `stop` gives, else the stop's own, painted for standard error.
+pub(crate) fn finished(run: &Run, stop: Option<&str>, paint: Paint) -> String {
     let m = &run.manifest;
     let Some(o) = &m.outcome else {
-        return format!("rewind: run {} did not finish", m.id);
+        return format!("{} run {} did not finish", paint.prefix(), m.id);
     };
     format!(
-        "rewind: run {} {} after {} steps, {:.3}s virtual, {:.3}s wall ({})",
+        "{} run {} {} after {} steps, {:.3}s virtual, {:.3}s wall ({})",
+        paint.prefix(),
         m.id,
-        Ending::of(&o.stop, o.status, &[]),
+        ending(paint, Ending::of(&o.stop, o.status, &[]), 0),
         o.step,
         Duration::from_nanos(o.virtual_ns).as_secs_f64(),
         Duration::from_millis(o.wall_ms).as_secs_f64(),
@@ -83,15 +100,16 @@ pub(crate) fn size(bytes: u64) -> String {
 /// with the events around it on each side: the culprit program's own
 /// events when the comparison is about one, else every event. `this` is
 /// the run the comparison was made from, `other` the run it was compared
-/// with, each with the word its lines start with.
+/// with, each with the word its lines start with, `this` amber and
+/// `other` blue.
 pub(crate) fn comparison(
     (this, this_name): (&Trace, &str),
     (other, other_name): (&Trace, &str),
     c: &rewind_trace::compare::Comparison,
+    paint: Paint,
 ) -> String {
     const BEFORE: usize = 3;
     const AFTER: usize = 4;
-    const BOTH: &str = "both";
 
     let mut out = match &c.program {
         Some(argv) => format!("where {} first behaves differently:\n", argv.join(" ")),
@@ -115,9 +133,14 @@ pub(crate) fn comparison(
     for &e in &mine[i.saturating_sub(BEFORE)..i] {
         let _ = writeln!(out, "  {BOTH:<width$}  {}", event(&this.events[e]));
     }
-    for (name, trace, indices) in [(this_name, this, &mine), (other_name, other, &theirs)] {
+    let sides = [
+        (this_name, Style::Left, this, &mine),
+        (other_name, Style::Right, other, &theirs),
+    ];
+    for (name, style, trace, indices) in sides {
+        let label = paint.padded(style, name, width);
         for &e in indices.iter().skip(i).take(AFTER) {
-            let _ = writeln!(out, "  {name:<width$}  {}", event(&trace.events[e]));
+            let _ = writeln!(out, "  {label}  {}", event(&trace.events[e]));
         }
     }
     out
@@ -136,8 +159,14 @@ pub(crate) fn missing_outputs(expected: &[String], hashed: &[(String, String)]) 
 }
 
 /// One line for an output of a Nix run: its path, the start of its NAR
-/// hash, and what this machine's store and the caches said about it.
-pub(crate) fn verdict_line(path: &str, hash: &str, comparisons: &[Comparison]) -> String {
+/// hash, and what this machine's store and the caches said about it,
+/// painted for standard output.
+pub(crate) fn verdict_line(
+    path: &str,
+    hash: &str,
+    comparisons: &[Comparison],
+    paint: Paint,
+) -> String {
     let named = |verdict: &dyn Fn(&Verdict) -> bool| -> Vec<String> {
         comparisons
             .iter()
@@ -152,10 +181,10 @@ pub(crate) fn verdict_line(path: &str, hash: &str, comparisons: &[Comparison]) -
     // What had the path, or else how many places did not.
     let mut parts = Vec::new();
     if !matches.is_empty() {
-        parts.push(format!("matches {}", matches.join(", ")));
+        parts.push(paint.verdict(Same::Yes, format!("matches {}", matches.join(", "))));
     }
     if !differs.is_empty() {
-        parts.push(format!("differs from {}", differs.join(", ")));
+        parts.push(paint.verdict(Same::No, format!("differs from {}", differs.join(", "))));
     }
     if parts.is_empty() {
         parts.push(match absent {
@@ -168,12 +197,14 @@ pub(crate) fn verdict_line(path: &str, hash: &str, comparisons: &[Comparison]) -
     // Caches that could not say either way.
     for c in comparisons {
         match &c.verdict {
-            Verdict::NeedsCredentials => {
-                parts.push(format!("{} needs credentials", source_name(&c.source)))
-            }
-            Verdict::Unreachable(why) => {
-                parts.push(format!("{} unreachable ({why})", source_name(&c.source)))
-            }
+            Verdict::NeedsCredentials => parts.push(paint.paint(
+                Style::Warn,
+                format!("{} needs credentials", source_name(&c.source)),
+            )),
+            Verdict::Unreachable(why) => parts.push(paint.paint(
+                Style::Warn,
+                format!("{} unreachable ({why})", source_name(&c.source)),
+            )),
             _ => {}
         }
     }
@@ -204,13 +235,19 @@ fn source_name(source: &Source) -> String {
 }
 
 /// Printed once under the verdict lines when some build of an output
-/// differs from the run's.
-pub(crate) const DIFFERS_NOTE: &str = "rewind: a store path names a build's inputs, not its contents, so \
+/// differs from the run's, after rewind's prefix.
+pub(crate) const DIFFERS_NOTE: &str = "a store path names a build's inputs, not its contents, so \
      another build of it can differ in bytes: the package may not be bit-reproducible, or the \
      VM's CPU model, kernel or --cores reached its output";
 
-/// One line per run for `rewind check`.
-pub(crate) fn outcome_line(run: &Run) -> anyhow::Result<String> {
+/// How wide `rewind check` keeps the column that says how a run ended.
+const CHECK_ENDING_WIDTH: usize = 14;
+
+/// One line per run for `rewind check`, painted for standard output: its
+/// ending green when the job exited 0 and red when not, and each output's
+/// hash red where it differs from the same output's in `base`, the
+/// unperturbed run's.
+pub(crate) fn outcome_line(run: &Run, base: &OutcomeKey, paint: Paint) -> anyhow::Result<String> {
     let OutcomeKey {
         status: status_,
         outputs,
@@ -223,14 +260,20 @@ pub(crate) fn outcome_line(run: &Run) -> anyhow::Result<String> {
     let steps = run.manifest.outcome.as_ref().map_or(0, |o| o.step);
     let hashes: Vec<String> = outputs
         .iter()
-        .map(|(_, h)| {
+        .map(|(path, h)| {
             let digest = h.strip_prefix(rewind_init::NAR_HASH_PREFIX).unwrap_or(h);
-            digest.get(..CHECK_HASH_SHOWN).unwrap_or(digest).to_string()
+            let short = digest.get(..CHECK_HASH_SHOWN).unwrap_or(digest);
+            let same = base.outputs.iter().any(|(p, b)| p == path && b == h);
+            if same {
+                short.to_string()
+            } else {
+                paint.verdict(Same::No, short)
+            }
         })
         .collect();
     Ok(format!(
-        "{:<14} {:>10} steps  {}  run {}",
-        ended,
+        "{} {:>10} steps  {}  run {}",
+        ending(paint, ended, CHECK_ENDING_WIDTH),
         steps,
         hashes.join(" "),
         run.manifest.id
@@ -388,25 +431,36 @@ pub(crate) fn io_divergence(d: &Divergence) -> String {
     )
 }
 
-/// Where two runs first differ, with the events on each side.
-pub(crate) fn divergence(left: &Trace, right: &Trace) -> String {
+/// The words a divergence's lines start with, and the column they fill.
+const BOTH: &str = "both";
+const LEFT: &str = "left";
+const RIGHT: &str = "right";
+const SIDE_WIDTH: usize = 5;
+
+/// Where two runs first differ, with the events on each side, the left
+/// run's amber and the right run's blue.
+pub(crate) fn divergence(left: &Trace, right: &Trace, paint: Paint) -> String {
     let Some(d) = left.divergence(right) else {
-        return "identical\n".into();
+        return format!("{}\n", paint.verdict(Same::Yes, "identical"));
     };
     let mut out = format!(
-        "first difference at event {}: step {} on the left, step {} on the right\n",
-        d.index, d.left_step, d.right_step
+        "{} at event {}: step {} on the left, step {} on the right\n",
+        paint.verdict(Same::No, "first difference"),
+        d.index,
+        d.left_step,
+        d.right_step
     );
     let context = d.index.saturating_sub(3)..d.index;
     for e in &left.events[context] {
-        let _ = writeln!(out, "  both  {}", event(e));
+        let _ = writeln!(out, "  {BOTH:<SIDE_WIDTH$} {}", event(e));
     }
     const AFTER: usize = 4;
-    for e in left.events.iter().skip(d.index).take(AFTER) {
-        let _ = writeln!(out, "  left  {}", event(e));
-    }
-    for e in right.events.iter().skip(d.index).take(AFTER) {
-        let _ = writeln!(out, "  right {}", event(e));
+    let sides = [(LEFT, Style::Left, left), (RIGHT, Style::Right, right)];
+    for (name, style, trace) in sides {
+        let label = paint.padded(style, name, SIDE_WIDTH);
+        for e in trace.events.iter().skip(d.index).take(AFTER) {
+            let _ = writeln!(out, "  {label} {}", event(e));
+        }
     }
     out
 }
@@ -497,6 +551,7 @@ mod tests {
                 cache("http://leviathan:5000", Verdict::Differs),
                 cache("https://other.cachix.org", Verdict::Absent),
             ],
+            Paint::Plain,
         );
         assert_eq!(
             line,
@@ -514,6 +569,7 @@ mod tests {
                     Verdict::Unreachable("timeout".into()),
                 ),
             ],
+            Paint::Plain,
         );
         assert_eq!(
             line,
@@ -523,9 +579,81 @@ mod tests {
             )
         );
         assert_eq!(
-            verdict_line(path, hash, &[]),
+            verdict_line(path, hash, &[], Paint::Plain),
             format!("{prefix}not in your store")
         );
+    }
+
+    #[test]
+    fn a_colored_verdict_line_paints_each_verdict() {
+        // With color, what matched reads green, what differs red and a
+        // cache that could not say amber; the path and hash stay plain.
+        let path = "/nix/store/x-hello";
+        let hash = "sha256:dfd7aed38b3557dcbca63b4a1a7572f4af98c98e7649549a6d53cbfbcee928f4";
+        let line = verdict_line(
+            path,
+            hash,
+            &[
+                Comparison {
+                    source: Source::Store,
+                    verdict: Verdict::Matches,
+                },
+                Comparison {
+                    source: Source::Cache("http://leviathan:5000".into()),
+                    verdict: Verdict::Differs,
+                },
+                Comparison {
+                    source: Source::Cache("https://private.cachix.org".into()),
+                    verdict: Verdict::NeedsCredentials,
+                },
+            ],
+            Paint::Ansi,
+        );
+        assert_eq!(
+            line,
+            format!(
+                "{path} dfd7aed38b3557dc  \x1b[32mmatches your store\x1b[0m; \
+                 \x1b[31mdiffers from leviathan:5000\x1b[0m; \
+                 \x1b[33mprivate.cachix.org needs credentials\x1b[0m"
+            )
+        );
+    }
+
+    /// A write of `text` by `pid` at `step`.
+    fn write(step: u64, pid: u32, text: &str) -> Event {
+        Event {
+            step,
+            pid,
+            tid: pid,
+            kind: EventKind::Output {
+                fd: 1,
+                bytes: text.as_bytes().to_vec(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_colored_divergence_paints_each_side() {
+        // The events both runs share stay plain; the left run's label is
+        // amber and the right run's blue, and the columns after them line
+        // up as without color.
+        let left = Trace {
+            events: vec![write(3, 7, "a"), write(5, 7, "b")],
+        };
+        let right = Trace {
+            events: vec![write(3, 7, "a"), write(6, 7, "c")],
+        };
+        let plain = divergence(&left, &right, Paint::Plain);
+        let painted = divergence(&left, &right, Paint::Ansi);
+        assert!(painted.contains("\n  both  "), "{painted}");
+        assert!(painted.contains("\n  \x1b[33mleft\x1b[0m  "), "{painted}");
+        assert!(painted.contains("\n  \x1b[34mright\x1b[0m "), "{painted}");
+        let stripped = painted
+            .replace("\x1b[31m", "")
+            .replace("\x1b[33m", "")
+            .replace("\x1b[34m", "")
+            .replace("\x1b[0m", "");
+        assert_eq!(stripped, plain);
     }
 
     #[test]

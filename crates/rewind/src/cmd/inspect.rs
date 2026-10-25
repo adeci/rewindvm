@@ -45,7 +45,7 @@ pub(crate) fn cat(home: &Home, args: CatArgs) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Inspection::NotFound(message) => {
-            eprintln!("rewind: {message}");
+            eprintln!("{} {message}", crate::color::stderr().prefix());
             Ok(ExitCode::from(CAT_NOT_FOUND))
         }
         Inspection::Failed(message) => bail!("reading {path} at step {step}: {message}"),
@@ -97,8 +97,9 @@ pub(crate) fn shell(home: &Home, args: ShellArgs) -> Result<ExitCode> {
         };
         if !p.alive_at(step) {
             eprintln!(
-                "rewind: pid {pid} is not running at step {step}; the shell takes \
-                     the view of its nearest running ancestor"
+                "{} pid {pid} is not running at step {step}; the shell takes \
+                     the view of its nearest running ancestor",
+                crate::color::stderr().prefix()
             );
         }
     }
@@ -112,7 +113,8 @@ pub(crate) fn shell(home: &Home, args: ShellArgs) -> Result<ExitCode> {
     };
     let size = terminal::size(std::io::stdout().as_raw_fd()).unwrap_or(terminal::DEFAULT_SIZE);
     eprintln!(
-        "rewind: a shell at step {step} of {}; exit it to leave",
+        "{} a shell at step {step} of {}; exit it to leave",
+        crate::color::stderr().prefix(),
         run.manifest.id
     );
     terminal::wake_on_resize();

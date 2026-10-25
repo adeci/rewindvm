@@ -14,7 +14,7 @@ pub(crate) fn doctor(home: &Home) -> Result<ExitCode> {
     println!("rewind {}", rewind_core::VERSION);
     let found = doctor::findings(home);
     for finding in &found {
-        println!("{}", finding.line());
+        println!("{}", finding.line(crate::color::stdout()));
     }
     let failed = found.iter().any(|f| f.level == doctor::Level::Fail);
     Ok(if failed {

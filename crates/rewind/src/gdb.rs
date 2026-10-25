@@ -177,7 +177,8 @@ pub(crate) fn gdb(
     if listen.is_some() {
         let shown: Vec<String> = args.iter().map(|a| crate::show::quote(a)).collect();
         eprintln!(
-            "rewind: gdb at step {step} of {}; connect with: gdb {}",
+            "{} gdb at step {step} of {}; connect with: gdb {}",
+            crate::color::stderr().prefix(),
             run.manifest.id,
             shown.join(" ")
         );
@@ -190,7 +191,11 @@ pub(crate) fn gdb(
     // terminal.
     // SAFETY: ignoring SIGINT has no preconditions; gdb installs its own.
     unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
-    eprintln!("rewind: gdb at step {step} of {}", run.manifest.id);
+    eprintln!(
+        "{} gdb at step {step} of {}",
+        crate::color::stderr().prefix(),
+        run.manifest.id
+    );
     let (status, _) = run_gdb(&args, Some((&mut debuggee, &listener)), Output::Terminal)?;
     Ok(if status.success() {
         ExitCode::SUCCESS
@@ -221,7 +226,7 @@ impl Say {
     /// Prints `text` on its own line after rewind's prefix, when aloud.
     fn line(self, text: impl std::fmt::Display) {
         if self == Say::Aloud {
-            eprintln!("rewind: {text}");
+            eprintln!("{} {text}", crate::color::stderr().prefix());
         }
     }
 }
@@ -860,8 +865,9 @@ impl KernelSymbols {
         // say where it is.
         if on_path(NIX_STORE_PROGRAM, std::env::var_os("PATH").as_deref()).is_none() {
             eprintln!(
-                "rewind: the kernel has its symbol table only; unpack {DEBUG_RELEASE} \
-                 next to rewind-x86_64-linux for its DWARF and source files"
+                "{} the kernel has its symbol table only; unpack {DEBUG_RELEASE} \
+                 next to rewind-x86_64-linux for its DWARF and source files",
+                crate::color::stderr().prefix()
             );
         }
         KernelSymbols {
@@ -1706,7 +1712,11 @@ fn realise(path: &Path, what: &str) -> bool {
     let Some(nix_store) = on_path(NIX_STORE_PROGRAM, std::env::var_os("PATH").as_deref()) else {
         return false;
     };
-    eprintln!("rewind: fetching {what}, {}", root.display());
+    eprintln!(
+        "{} fetching {what}, {}",
+        crate::color::stderr().prefix(),
+        root.display()
+    );
     let _ = Command::new(nix_store)
         .arg("--realise")
         .arg(&root)
@@ -1714,7 +1724,8 @@ fn realise(path: &Path, what: &str) -> bool {
         .status();
     if !path.exists() {
         eprintln!(
-            "rewind: could not fetch {what}; is Rewind's binary cache among Nix's substituters?"
+            "{} could not fetch {what}; is Rewind's binary cache among Nix's substituters?",
+            crate::color::stderr().prefix()
         );
     }
     path.exists()

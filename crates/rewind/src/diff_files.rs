@@ -11,6 +11,7 @@ use rewind_trace::file_diff::{self, ByteDiff, FileDiff, Line, LineDiff, Sides};
 use rewind_trace::properties::{Glob, written_files};
 
 use crate::cmd::view::Format;
+use crate::color::{Paint, Same, Style};
 use crate::property::end_step;
 
 /// What the summaries call the two runs, as the rest of `rewind diff`
@@ -32,9 +33,18 @@ const MARK_BOTH: &str = "  ";
 const MARK_LEFT: &str = "- ";
 const MARK_RIGHT: &str = "+ ";
 
-/// The line before a text excerpt that says what its marks mean.
-pub(crate) const TEXT_LEGEND: &str =
-    "Lines marked - are only in the left run. Lines marked + are only in the right run.";
+/// The line before a text excerpt that says what its marks mean, each
+/// mark in its run's color.
+fn text_legend(paint: Paint) -> String {
+    format!(
+        "Lines marked {} are only in the left run. Lines marked {} are only in the right run.",
+        paint.paint(Style::Left, MARK_LEFT.trim_end()),
+        paint.paint(Style::Right, MARK_RIGHT.trim_end())
+    )
+}
+
+/// What marks a byte that differs, under its pair.
+const BYTE_MARK: &str = "^^";
 
 /// Bytes per line of a byte excerpt, and per group within a line.
 const BYTES_PER_LINE: usize = 16;
@@ -52,8 +62,13 @@ const PRINTABLE: std::ops::RangeInclusive<u8> = 0x20..=0x7e;
 
 /// The lines around the first difference of two text copies, `a` the
 /// left run's lines and `b` the right run's, each marked by which runs
-/// have it.
-pub(crate) fn text_excerpt(a: &[String], b: &[String], diff: &LineDiff) -> Vec<String> {
+/// have it, the left run's lines amber and the right run's blue.
+pub(crate) fn text_excerpt(
+    a: &[String],
+    b: &[String],
+    diff: &LineDiff,
+    paint: Paint,
+) -> Vec<String> {
     let first = diff.lines.iter().position(changed).unwrap_or(0);
     diff.lines
         .iter()
@@ -61,25 +76,30 @@ pub(crate) fn text_excerpt(a: &[String], b: &[String], diff: &LineDiff) -> Vec<S
         .take(EXCERPT_LINES)
         .map(|line| match *line {
             Line::Both { a: i, .. } => format!("{MARK_BOTH}{}", a[i]),
-            Line::OnlyA(i) => format!("{MARK_LEFT}{}", a[i]),
-            Line::OnlyB(j) => format!("{MARK_RIGHT}{}", b[j]),
+            Line::OnlyA(i) => paint.paint(Style::Left, format!("{MARK_LEFT}{}", a[i])),
+            Line::OnlyB(j) => paint.paint(Style::Right, format!("{MARK_RIGHT}{}", b[j])),
         })
         .collect()
 }
 
 /// The lines of bytes from the first difference of two binary copies:
-/// each run's bytes, then a line marking the bytes that differ.
-pub(crate) fn byte_excerpt(a: &[u8], b: &[u8], diff: &ByteDiff) -> Vec<String> {
-    /// What each run's line starts with, padded to one width.
-    const LEFT: &str = "left   ";
-    const RIGHT: &str = "right  ";
-    const BOTH: &str = "both   ";
+/// each run's bytes, then a line marking the bytes that differ; the left
+/// run's name amber, the right run's blue and the marks red.
+pub(crate) fn byte_excerpt(a: &[u8], b: &[u8], diff: &ByteDiff, paint: Paint) -> Vec<String> {
+    /// What each run's line starts with, and the width they are padded to.
+    const LEFT: &str = "left";
+    const RIGHT: &str = "right";
+    const BOTH: &str = "both";
+    const NAME_WIDTH: usize = 7;
 
     // Where a byte's pair starts in a line of `hex_line`: past the run's
     // name, the offset and the gap after it.
     const OFFSET_WIDTH: usize = 8 + 2;
     const PAIR_WIDTH: usize = 3;
-    let pair_column = |i: usize| LEFT.len() + OFFSET_WIDTH + i * PAIR_WIDTH + i / BYTES_PER_GROUP;
+    let pair_column = |i: usize| NAME_WIDTH + OFFSET_WIDTH + i * PAIR_WIDTH + i / BYTES_PER_GROUP;
+    let both = format!("{BOTH:<NAME_WIDTH$}");
+    let left = paint.padded(Style::Left, LEFT, NAME_WIDTH);
+    let right = paint.padded(Style::Right, RIGHT, NAME_WIDTH);
 
     let Some(first) = diff.first() else {
         return Vec::new();
@@ -96,18 +116,21 @@ pub(crate) fn byte_excerpt(a: &[u8], b: &[u8], diff: &ByteDiff) -> Vec<String> {
 
         // A line the runs share is shown once.
         if here == there {
-            excerpt.push(format!("{BOTH}{}", hex_line(offset, &here)));
+            excerpt.push(format!("{both}{}", hex_line(offset, &here)));
             continue;
         }
-        excerpt.push(format!("{LEFT}{}", hex_line(offset, &here)));
-        excerpt.push(format!("{RIGHT}{}", hex_line(offset, &there)));
+        excerpt.push(format!("{left}{}", hex_line(offset, &here)));
+        excerpt.push(format!("{right}{}", hex_line(offset, &there)));
 
-        // A ^^ under each pair that differs.
+        // A ^^ under each pair that differs, counting columns as shown,
+        // without the escapes that paint the marks.
         let mut marks = String::new();
+        let mut shown = 0;
         for i in (0..BYTES_PER_LINE).filter(|i| diff.differs_at(offset + i)) {
             let column = pair_column(i);
-            marks.push_str(&" ".repeat(column - marks.len()));
-            marks.push_str("^^");
+            marks.push_str(&" ".repeat(column - shown));
+            marks.push_str(&paint.verdict(Same::No, BYTE_MARK));
+            shown = column + BYTE_MARK.len();
         }
         excerpt.push(marks);
     }
@@ -210,25 +233,31 @@ pub(crate) fn output_note(output: &OutputDiff) -> String {
 }
 
 /// The summary and excerpt `rewind diff --file` prints for `name`, the
-/// left run's copy `a` and the right run's `b`.
-pub(crate) fn file_report(name: &str, a: &[u8], b: &[u8]) -> Vec<String> {
+/// left run's copy `a` and the right run's `b`, its first line, the
+/// verdict, green when the copies are the same and red when not.
+pub(crate) fn file_report(name: &str, a: &[u8], b: &[u8], paint: Paint) -> Vec<String> {
     let diff = file_diff::compare(a, b);
     let mut report = file_diff::summary(name, a, b, &diff, SIDES);
+    let same = Same::from(matches!(diff, FileDiff::Same));
+    if let Some(verdict) = report.first_mut() {
+        *verdict = paint.verdict(same, &verdict);
+    }
     match &diff {
         FileDiff::Same => {}
         FileDiff::Text(lines) => {
             report.push(String::new());
-            report.push(TEXT_LEGEND.to_string());
+            report.push(text_legend(paint));
             report.extend(text_excerpt(
                 &file_diff::lines_of(a),
                 &file_diff::lines_of(b),
                 lines,
+                paint,
             ));
         }
         FileDiff::Binary(bytes) => {
             report.push(String::new());
             report.push(BYTES_LEGEND.to_string());
-            report.extend(byte_excerpt(a, b, bytes));
+            report.extend(byte_excerpt(a, b, bytes, paint));
         }
     }
     report
@@ -259,7 +288,7 @@ pub(crate) fn diff_file(
         (Some(a), Some(b)) => {
             let cut = a.len() > file_diff::MAX_COMPARED || b.len() > file_diff::MAX_COMPARED;
             let (a, b) = (compared(a), compared(b));
-            let mut report = file_report(name, a, b);
+            let mut report = file_report(name, a, b, crate::color::stdout());
             if cut {
                 report.insert(1, file_diff::cut_note());
             }
@@ -339,7 +368,7 @@ pub(crate) fn diff_outputs(
 
     match format {
         Format::Text => {
-            for line in outputs_report(&differ, same) {
+            for line in outputs_report(&differ, same, crate::color::stdout()) {
                 println!("{line}");
             }
         }
@@ -383,17 +412,24 @@ fn sections<'a>(answer: &'a [u8], run: &Run) -> Result<Vec<(String, &'a [u8])>> 
 }
 
 /// What `rewind diff --outputs` prints: how many files differ, then one
-/// line for each.
-pub(crate) fn outputs_report(differ: &[OutputDiff], same: usize) -> Vec<String> {
+/// line for each; the count green when none differ and red when some do.
+pub(crate) fn outputs_report(differ: &[OutputDiff], same: usize, paint: Paint) -> Vec<String> {
     let total = differ.len() + same;
     if differ.is_empty() {
-        return vec![format!(
-            "None of the {total} files the runs left behind differ."
+        return vec![paint.verdict(
+            Same::Yes,
+            format!("None of the {total} files the runs left behind differ."),
         )];
     }
     let mut report = vec![format!(
-        "{} of the {total} files the runs left behind differ:",
-        differ.len()
+        "{}:",
+        paint.verdict(
+            Same::No,
+            format!(
+                "{} of the {total} files the runs left behind differ",
+                differ.len()
+            )
+        )
     )];
     report.extend(
         differ
@@ -427,7 +463,7 @@ mod tests {
         let mut b = a.clone();
         b[9] = "line ten".to_string();
         let diff = file_diff::line_diff(&a, &b);
-        let excerpt = text_excerpt(&a, &b, &diff);
+        let excerpt = text_excerpt(&a, &b, &diff, Paint::Plain);
         assert_eq!(excerpt.len(), EXCERPT_LINES);
         assert_eq!(
             excerpt[..6],
@@ -445,7 +481,10 @@ mod tests {
         // A difference on the first line has no context before it.
         let (a, b) = (lines("x\ny"), lines("z\ny"));
         let diff = file_diff::line_diff(&a, &b);
-        assert_eq!(text_excerpt(&a, &b, &diff), ["- x", "+ z", "  y"]);
+        assert_eq!(
+            text_excerpt(&a, &b, &diff, Paint::Plain),
+            ["- x", "+ z", "  y"]
+        );
     }
 
     /// Two copies 40 bytes long that differ at bytes 18, 19 and 33: the
@@ -459,7 +498,7 @@ mod tests {
         b[19] = 0xfe;
         b[33] = b'A';
         let diff = file_diff::byte_diff(&a, &b);
-        let excerpt = byte_excerpt(&a, &b, &diff);
+        let excerpt = byte_excerpt(&a, &b, &diff, Paint::Plain);
         assert_eq!(
             excerpt,
             [
@@ -526,14 +565,14 @@ mod tests {
             first_byte: Some(216),
         };
         assert_eq!(
-            outputs_report(&[pc], 11),
+            outputs_report(&[pc], 11, Paint::Plain),
             [
                 "1 of the 12 files the runs left behind differ:",
                 "  /out/lib/pkgconfig/neatvnc.pc: 16 of 407 bytes differ, first at byte 216",
             ]
         );
         assert_eq!(
-            outputs_report(&[], 3),
+            outputs_report(&[], 3, Paint::Plain),
             ["None of the 3 files the runs left behind differ."]
         );
     }
@@ -542,7 +581,13 @@ mod tests {
     /// legend, then the excerpt.
     #[test]
     fn a_file_report_is_the_summary_then_the_excerpt() {
-        let report = file_report("test.log", b"PASS a\nPASS b\n", b"PASS a\nFAIL b\n");
+        let report = file_report(
+            "test.log",
+            b"PASS a\nPASS b\n",
+            b"PASS a\nFAIL b\n",
+            Paint::Plain,
+        );
+        let legend = text_legend(Paint::Plain);
         assert_eq!(
             report,
             [
@@ -550,11 +595,60 @@ mod tests {
                 "Only in the left run: 1 line.",
                 "Only in the right run: 1 line.",
                 "",
-                TEXT_LEGEND,
+                legend.as_str(),
                 "  PASS a",
                 "- PASS b",
                 "+ FAIL b",
             ]
         );
+    }
+
+    /// The same report in color: the verdict red, the left run's line and
+    /// its mark in the legend amber, the right run's blue, and the line
+    /// both have plain.
+    #[test]
+    fn a_colored_file_report_paints_each_run() {
+        let report = file_report(
+            "test.log",
+            b"PASS a\nPASS b\n",
+            b"PASS a\nFAIL b\n",
+            Paint::Ansi,
+        );
+        assert_eq!(
+            report[0],
+            "\x1b[31mtest.log differs, first at line 2.\x1b[0m"
+        );
+        assert_eq!(
+            report[4],
+            "Lines marked \x1b[33m-\x1b[0m are only in the left run. \
+             Lines marked \x1b[34m+\x1b[0m are only in the right run."
+        );
+        assert_eq!(report[5], "  PASS a");
+        assert_eq!(report[6], "\x1b[33m- PASS b\x1b[0m");
+        assert_eq!(report[7], "\x1b[34m+ FAIL b\x1b[0m");
+
+        // A copy the same in both runs reads green.
+        let same = file_report("test.log", b"PASS a\n", b"PASS a\n", Paint::Ansi);
+        assert!(same[0].starts_with("\x1b[32m"), "{same:?}");
+    }
+
+    /// In color, a byte excerpt paints each run's name and the marks
+    /// under the bytes that differ, and its columns stay where they are.
+    #[test]
+    fn a_colored_byte_excerpt_keeps_its_columns() {
+        let a: Vec<u8> = (0u8..16).collect();
+        let mut b = a.clone();
+        b[2] = 0xff;
+        let diff = file_diff::byte_diff(&a, &b);
+        let excerpt = byte_excerpt(&a, &b, &diff, Paint::Ansi);
+        assert!(
+            excerpt[0].starts_with("\x1b[33mleft\x1b[0m   00000000"),
+            "{excerpt:?}"
+        );
+        assert!(
+            excerpt[1].starts_with("\x1b[34mright\x1b[0m  00000000"),
+            "{excerpt:?}"
+        );
+        assert_eq!(excerpt[2], "                       \x1b[31m^^\x1b[0m");
     }
 }

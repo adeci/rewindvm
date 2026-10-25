@@ -7,6 +7,8 @@ use rewind_core::Run;
 use rewind_core::run::{RunOutcome, Unreadable};
 use rewind_trace::ending::Ending;
 
+use crate::color::{Paint, Style};
+
 /// How a run stands, as `rewind ls --status` picks runs by.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Status {
@@ -145,11 +147,16 @@ pub(crate) enum Row<'a> {
 }
 
 /// A run's line: its summary, or for one whose manifest does not read,
-/// why.
-pub(crate) fn line(row: &Row) -> String {
+/// why, painted for standard output.
+pub(crate) fn line(row: &Row, paint: Paint) -> String {
     match row {
-        Row::Run(run) => crate::show::summary(run),
-        Row::Unreadable(u) => format!("{}  unreadable  {}", u.id, u.reason),
+        Row::Run(run) => crate::show::summary(run, paint),
+        Row::Unreadable(u) => format!(
+            "{}  {}  {}",
+            u.id,
+            paint.paint(Style::Differs, "unreadable"),
+            u.reason
+        ),
     }
 }
 

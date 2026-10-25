@@ -115,8 +115,9 @@ pub(crate) fn located(
             let alive = alive_step(run.trace()?, step, pid);
             if alive != step {
                 eprintln!(
-                    "rewind: process {pid} exits at step {step}, its memory gone; \
-                     looking at step {alive}, the last it had it"
+                    "{} process {pid} exits at step {step}, its memory gone; \
+                     looking at step {alive}, the last it had it",
+                    crate::color::stderr().prefix()
                 );
             }
             alive
@@ -203,7 +204,10 @@ fn walk(
         "-x".to_string(),
         script.display().to_string(),
     ]);
-    eprintln!("rewind: walking thread {tid}'s stack in gdb");
+    eprintln!(
+        "{} walking thread {tid}'s stack in gdb",
+        crate::color::stderr().prefix()
+    );
     let names = symbols.file_names();
     let output = Output::CapturedSayingDownloads(&names);
     let (_, printed) = gdb::run_gdb(&args, Some((&mut debuggee, &listener)), output)?;

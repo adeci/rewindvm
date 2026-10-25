@@ -10,6 +10,7 @@ use rewind_core::{Guest, Home, Run};
 
 use rewind_vmm::cpu::DefaultModel;
 
+use crate::color::{Paint, Style};
 use crate::show;
 
 /// How a finding stands.
@@ -28,6 +29,15 @@ impl Level {
             Level::Ok => "ok",
             Level::Warn => "warn",
             Level::Fail => "fail",
+        }
+    }
+
+    /// The style the level's word is painted in.
+    fn style(self) -> Style {
+        match self {
+            Level::Ok => Style::Same,
+            Level::Warn => Style::Warn,
+            Level::Fail => Style::Differs,
         }
     }
 }
@@ -50,11 +60,11 @@ impl Finding {
     }
 
     /// The finding as a line: its level and topic in columns, then what
-    /// was found.
-    pub(crate) fn line(&self) -> String {
+    /// was found, the level green, amber or red.
+    pub(crate) fn line(&self, paint: Paint) -> String {
         format!(
-            "{:<LEVEL_WIDTH$}{:<TOPIC_WIDTH$}{}",
-            self.level.word(),
+            "{}{:<TOPIC_WIDTH$}{}",
+            paint.padded(self.level.style(), self.level.word(), LEVEL_WIDTH),
             self.topic,
             self.text
         )
@@ -373,9 +383,9 @@ mod tests {
         // The level and the topic each take a column of their own, so the
         // findings' texts start under one another.
         let f = Finding::new(Level::Warn, "gdb", "not on PATH");
-        assert_eq!(f.line(), "warn  gdb         not on PATH");
+        assert_eq!(f.line(Paint::Plain), "warn  gdb         not on PATH");
         let f = Finding::new(Level::Ok, "debuginfod", "/bin/x");
-        assert_eq!(f.line(), "ok    debuginfod  /bin/x");
+        assert_eq!(f.line(Paint::Plain), "ok    debuginfod  /bin/x");
     }
 
     #[test]

@@ -44,6 +44,7 @@ use rewind_trace::writes::{
 };
 use rewind_trace::{EventKind, Process, Trace};
 
+use crate::color::{self, Same, Style};
 use crate::{RUN_HELP, RUN_LONG_HELP};
 
 /// How many bytes from the first differing offset are shown and bisected
@@ -408,8 +409,9 @@ pub(crate) fn blame(home: &Home, args: BlameArgs) -> Result<ExitCode> {
         let lost = log.lost();
         if lost > 0 {
             eprintln!(
-                "rewind: run {} is missing {lost} read and write records, because its buffer was \
+                "{} run {} is missing {lost} read and write records, because its buffer was \
                  full. Blame may miss some reads or writes.",
+                color::stderr().prefix(),
                 side.id()
             );
         }
@@ -425,7 +427,8 @@ pub(crate) fn blame(home: &Home, args: BlameArgs) -> Result<ExitCode> {
     };
     let Some(first) = offset.or_else(|| first_difference(a, b)) else {
         println!(
-            "{path} is the same in both runs ({} bytes).",
+            "{path} {} ({} bytes).",
+            color::stdout().verdict(Same::Yes, "is the same in both runs"),
             grouped(a.len() as u64)
         );
         return Ok(ExitCode::SUCCESS);
@@ -498,21 +501,30 @@ pub(crate) fn blame(home: &Home, args: BlameArgs) -> Result<ExitCode> {
         None
     };
 
-    // The answer first.
+    // The answer first. The left run's id is amber and the right run's
+    // blue wherever the answer and the bytes name them.
+    let paint = color::stdout();
+    let painted = [
+        paint.paint(Style::Left, ids[0]),
+        paint.paint(Style::Right, ids[1]),
+    ];
     let [x, y] = &origins;
     let at = |s: &Settled| {
         s.step
             .map_or("an unknown step".into(), |s| format!("step {}", grouped(s)))
     };
     println!(
-        "{} differs at byte {}. {} wrote that byte at {} in run {} and at {} in run {}.",
+        "{} {}. {} wrote that byte at {} in run {} and at {} in run {}.",
         base_name(&path),
-        grouped(first as u64),
+        paint.verdict(
+            Same::No,
+            format!("differs at byte {}", grouped(first as u64))
+        ),
         who(&wrote[0], &wrote[1], &ids),
         at(&settled[0]),
-        ids[0],
+        painted[0],
         at(&settled[1]),
-        ids[1]
+        painted[1]
     );
     println!();
 
@@ -523,7 +535,7 @@ pub(crate) fn blame(home: &Home, args: BlameArgs) -> Result<ExitCode> {
         grouped(a.len().max(b.len()) as u64),
         grouped(first as u64)
     );
-    for (id, bytes) in ids.iter().zip([a, b]) {
+    for (id, bytes) in painted.iter().zip([a, b]) {
         println!("  {id}  {}", window(bytes, first));
     }
     println!();

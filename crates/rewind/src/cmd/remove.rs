@@ -51,7 +51,11 @@ pub(crate) fn prune(home: &Home, args: PruneArgs) -> Result<ExitCode> {
         println!("{verb} {}: the same trace as {}", r.id, r.same_as);
     }
     if removals.is_empty() {
-        eprintln!("rewind: no fork of {} needs pruning", root.manifest.id);
+        eprintln!(
+            "{} no fork of {} needs pruning",
+            crate::color::stderr().prefix(),
+            root.manifest.id
+        );
         return Ok(ExitCode::SUCCESS);
     }
     if !dry_run {
@@ -184,8 +188,9 @@ pub(crate) fn gc(home: &Home, args: GcArgs) -> Result<ExitCode> {
     );
     if garbage.unreadable_keyframes > 0 {
         eprintln!(
-            "rewind: {} keyframes do not read back, as from another build of rewind; \
+            "{} {} keyframes do not read back, as from another build of rewind; \
                  the pages only they name were not kept",
+            crate::color::stderr().prefix(),
             garbage.unreadable_keyframes
         );
     }
@@ -204,11 +209,15 @@ fn print_gc_hint(home: &Home) {
     };
     let bytes: u64 = images.iter().map(|i| i.bytes).sum();
     if bytes == 0 {
-        eprintln!("rewind: `rewind gc` removes the pages no run uses any more");
+        eprintln!(
+            "{} `rewind gc` removes the pages no run uses any more",
+            crate::color::stderr().prefix()
+        );
         return;
     }
     eprintln!(
-        "rewind: images no run uses take {}; `rewind gc` removes them and the pages no run uses",
+        "{} images no run uses take {}; `rewind gc` removes them and the pages no run uses",
+        crate::color::stderr().prefix(),
         show::size(bytes)
     );
 }

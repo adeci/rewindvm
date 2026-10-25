@@ -8,6 +8,7 @@ use anyhow::{Result, bail};
 use rewind_core::{Guest, Home, Run, image};
 use rewind_trace::Part;
 
+use crate::color::{self, Same};
 use crate::{RUN_HELP, RUN_LONG_HELP, json, list, reproduce, show};
 
 /// The arguments of `rewind open`.
@@ -118,7 +119,7 @@ pub(crate) fn ls(home: &Home, args: LsArgs) -> Result<ExitCode> {
         if json {
             println!("{}", list::json(entry, row));
         } else {
-            println!("{}", list::line(row));
+            println!("{}", list::line(row, color::stdout()));
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -203,15 +204,20 @@ pub(crate) fn show(home: &Home, args: ShowArgs) -> Result<ExitCode> {
         );
         return Ok(ExitCode::SUCCESS);
     }
-    println!("{}", show::summary(&run));
+    println!("{}", show::summary(&run, color::stdout()));
     println!("recorded by rewind {}", run.manifest.recorded_by);
+    let paint = color::stderr();
     if let Some(parent) = gone {
-        eprintln!("rewind: run {parent}, which the first of these forks, is not in this home");
+        eprintln!(
+            "{} run {parent}, which the first of these forks, is not in this home",
+            paint.prefix()
+        );
     }
     if same_guest == Some(false) {
         eprintln!(
-            "rewind: this rewind boots another kernel or initramfs than the run did, so \
-                 these commands make other runs"
+            "{} this rewind boots another kernel or initramfs than the run did, so \
+                 these commands make other runs",
+            paint.prefix()
         );
     }
     for (id, _, line) in &commands {
@@ -345,6 +351,10 @@ pub(crate) struct ReplayArgs {
     pub(crate) json: bool,
 }
 
+/// The words `rewind replay` starts its verdict with.
+const IDENTICAL: &str = "identical";
+const DIFFERENT: &str = "DIFFERENT";
+
 pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
     match args {
         ReplayArgs {
@@ -378,22 +388,29 @@ pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
                     ExitCode::FAILURE
                 });
             }
+            let paint = color::stdout();
+            let identical_word = paint.verdict(Same::Yes, IDENTICAL);
+            let different_word = paint.verdict(Same::No, DIFFERENT);
             match &replayed.divergence {
                 None => {
                     println!(
-                        "identical to the recording from the snapshot at step {kf} to the end ({:.2}s)",
+                        "{identical_word} to the recording from the snapshot at step {kf} to the end ({:.2}s)",
                         started.elapsed().as_secs_f64()
                     );
                     Ok(ExitCode::SUCCESS)
                 }
                 Some(d) if d.part == Part::IoRecords => {
-                    println!("DIFFERENT from the recording after the snapshot at step {kf}:");
+                    println!(
+                        "{different_word} from the recording after the snapshot at step {kf}:"
+                    );
                     println!("{}", show::io_divergence(d));
                     Ok(ExitCode::FAILURE)
                 }
                 Some(_) => {
-                    println!("DIFFERENT from the recording after the snapshot at step {kf}:");
-                    print!("{}", show::divergence(original, again));
+                    println!(
+                        "{different_word} from the recording after the snapshot at step {kf}:"
+                    );
+                    print!("{}", show::divergence(original, again, paint));
                     Ok(ExitCode::FAILURE)
                 }
             }
@@ -428,10 +445,13 @@ pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
                     ExitCode::FAILURE
                 });
             }
+            let paint = color::stdout();
+            let identical_word = paint.verdict(Same::Yes, IDENTICAL);
+            let different_word = paint.verdict(Same::No, DIFFERENT);
             match replayed {
                 None => {
                     println!(
-                        "identical to the recording: {} events and {} read and write records over {} steps",
+                        "{identical_word} to the recording: {} events and {} read and write records over {} steps",
                         run.trace()?.events.len(),
                         run.io()?.records.len(),
                         run.manifest.outcome.as_ref().map_or(0, |o| o.step)
@@ -440,14 +460,14 @@ pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
                 }
                 Some(d) if d.part == Part::IoRecords => {
                     println!(
-                        "DIFFERENT from the recording: {}: the run was not deterministic",
+                        "{different_word} from the recording: {}: the run was not deterministic",
                         show::io_divergence(&d)
                     );
                     Ok(ExitCode::FAILURE)
                 }
                 Some(d) => {
                     println!(
-                        "DIFFERENT from the recording at event {} (step {} recorded, step {} replayed): the run was not deterministic",
+                        "{different_word} from the recording at event {} (step {} recorded, step {} replayed): the run was not deterministic",
                         d.index, d.left_step, d.right_step
                     );
                     Ok(ExitCode::FAILURE)
@@ -525,7 +545,7 @@ pub(crate) fn diff(home: &Home, args: DiffArgs) -> Result<ExitCode> {
             })
         );
     } else {
-        print!("{}", show::divergence(lt, rt));
+        print!("{}", show::divergence(lt, rt, color::stdout()));
     }
     match lt.divergence(rt) {
         None => Ok(ExitCode::SUCCESS),

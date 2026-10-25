@@ -18,6 +18,7 @@ use rewind_trace::compare::Comparison;
 use rewind_trace::located::Located;
 use rewind_trace::schedule::{Reseed, StallMax};
 
+use crate::color::{self, Paint, Same, Style};
 use crate::property::{self, Coverage, Judge, Property, Violation};
 use crate::{
     RUN_HELP, RUN_LONG_HELP, STEP_HELP, STEP_LONG_HELP, Terminal, clear_status, json, locate, show,
@@ -442,6 +443,11 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             println!("{line}");
         }
     };
+    let paint = if json {
+        color::stderr()
+    } else {
+        color::stdout()
+    };
     if seeds == 0 {
         bail!("--seeds needs at least one seed");
     }
@@ -484,7 +490,8 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             }
             if seeds > 1 {
                 say(format!(
-                    "rewind: {seeds} random seeds, the run's own and {} new ones from the search's first step, each run under schedule 0 and {schedules} other schedules",
+                    "{} {seeds} random seeds, the run's own and {} new ones from the search's first step, each run under schedule 0 and {schedules} other schedules",
+                    paint.prefix(),
                     seeds - 1
                 ));
             }
@@ -515,7 +522,8 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                     String::new()
                 };
                 say(format!(
-                    "rewind: {seeds} random seeds, each run under schedule 0 and {schedules} other schedule{plural}{keys}: {} runs",
+                    "{} {seeds} random seeds, each run under schedule 0 and {schedules} other schedule{plural}{keys}: {} runs",
+                    paint.prefix(),
                     seeds * (schedules + 1) + dirents
                 ));
             }
@@ -555,7 +563,10 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             properties.push(Property::SameOutcome);
         }
         properties.push(Property::Sdk);
-        say("rewind: the job asserts with the Rewind SDK, so each run is judged by property sdk too".to_string());
+        say(format!(
+            "{} the job asserts with the Rewind SDK, so each run is judged by property sdk too",
+            paint.prefix()
+        ));
     }
 
     // What each run is judged by, and schedule 0's verdict, which the
@@ -567,8 +578,8 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     say(format!(
         "{}: {}{}",
         label(first_seed, STOCK_DIRENTS, 0),
-        show::outcome_line(&base)?,
-        verdict_words(&judge, &base_violations)
+        show::outcome_line(&base, judge.base_key(), paint)?,
+        verdict_words(&judge, &base_violations, paint)
     ));
     if !json {
         print_timeout(home, 0, &base);
@@ -643,7 +654,8 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             })
             .collect();
         status(&format!(
-            "rewind: dirents {}..{} executing",
+            "{} dirents {}..{} executing",
+            color::stderr().prefix(),
             batch[0],
             batch[batch.len() - 1]
         ));
@@ -655,8 +667,8 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             say(format!(
                 "{}: {}{}",
                 label(first_seed, key, 0),
-                show::outcome_line(&run)?,
-                verdict_words(&judge, &violations)
+                show::outcome_line(&run, judge.base_key(), paint)?,
+                verdict_words(&judge, &violations, paint)
             ));
             tried_runs.push(schedule_json(&run, differs, &violations)?);
             coverage.add(&run)?;
@@ -686,7 +698,10 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                 seed,
                 ..machine.clone()
             };
-            status(&format!("rewind: seed {seed} executing"));
+            status(&format!(
+                "{} seed {seed} executing",
+                color::stderr().prefix()
+            ));
             let (seed_base, subject) = match (&seeded[0].subject, inputs) {
                 // A recorded run: a fork of it at the search's first step,
                 // its RNG reseeded there, and its schedules forks of the
@@ -742,8 +757,8 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             say(format!(
                 "{}: {}{}",
                 label(seed, STOCK_DIRENTS, 0),
-                show::outcome_line(&seed_base)?,
-                verdict_words(&judge, &violations)
+                show::outcome_line(&seed_base, judge.base_key(), paint)?,
+                verdict_words(&judge, &violations, paint)
             ));
             tried_runs.push(schedule_json(&seed_base, differs, &violations)?);
             coverage.add(&seed_base)?;
@@ -779,7 +794,8 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                 String::new()
             };
             status(&format!(
-                "rewind: {seed_words}schedules {}..{} executing",
+                "{} {seed_words}schedules {}..{} executing",
+                color::stderr().prefix(),
                 batch[0],
                 batch[batch.len() - 1]
             ));
@@ -791,8 +807,8 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                 say(format!(
                     "{}: {}{}",
                     label(seed, STOCK_DIRENTS, run.manifest.spec.schedule),
-                    show::outcome_line(&run)?,
-                    verdict_words(&judge, &violations)
+                    show::outcome_line(&run, judge.base_key(), paint)?,
+                    verdict_words(&judge, &violations, paint)
                 ));
                 tried_runs.push(schedule_json(&run, differs, &violations)?);
                 coverage.add(&run)?;
@@ -818,29 +834,41 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     } else {
         "other schedules"
     };
+    // The tally reads green when every run agreed with schedule 0 and
+    // red when some did not, or schedule 0 itself failed.
+    let agreed = Same::from(differing == 0 && !base_bad);
     if all && same_outcome_only && base_failed {
-        say(format!(
-            "{base_words} failed; {differing} of {tried} {tried_words} ended differently"
+        say(paint.verdict(
+            agreed,
+            format!("{base_words} failed; {differing} of {tried} {tried_words} ended differently"),
         ));
     } else if all && same_outcome_only {
-        say(format!(
-            "{differing} of {tried} {tried_words} ended differently"
+        say(paint.verdict(
+            agreed,
+            format!("{differing} of {tried} {tried_words} ended differently"),
         ));
     } else if all && base_holds {
-        say(format!(
-            "{differing} of {tried} {tried_words} violated a property"
+        say(paint.verdict(
+            agreed,
+            format!("{differing} of {tried} {tried_words} violated a property"),
         ));
     } else if all {
-        say(format!(
-            "{base_words} violated a property; {differing} of {tried} {tried_words} held every one"
+        say(paint.verdict(
+            agreed,
+            format!(
+                "{base_words} violated a property; {differing} of {tried} {tried_words} held every one"
+            ),
         ));
     }
     // The `sometimes` conditions some run made true: the search reached
     // what they describe, as often as this.
     for (id, reach) in coverage.reached() {
-        say(format!(
-            "true in {} of {} runs that checked it: sometimes \"{id}\"",
-            reach.hits, reach.runs
+        say(paint.verdict(
+            Same::Yes,
+            format!(
+                "true in {} of {} runs that checked it: sometimes \"{id}\"",
+                reach.hits, reach.runs
+            ),
         ));
     }
 
@@ -848,9 +876,12 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     // reached what they describe, so a clean result says less.
     let never = coverage.never();
     if !never.is_empty() {
-        say(format!(
-            "never true in any run: sometimes \"{}\"",
-            never.join("\", \"")
+        say(paint.paint(
+            Style::Warn,
+            format!(
+                "never true in any run: sometimes \"{}\"",
+                never.join("\", \"")
+            ),
         ));
     }
     let search = |narrowed: serde_json::Value| {
@@ -884,13 +915,14 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
             format!("all {} {all_runs}", tried + 1)
         };
         if same_outcome_only {
-            say(format!("same result under {every}"));
+            say(paint.verdict(Same::Yes, format!("same result under {every}")));
         } else if base_holds {
-            say(format!("every property held under {every}"));
+            say(paint.verdict(Same::Yes, format!("every property held under {every}")));
         } else {
             if !all {
-                say(format!(
-                    "every {one_run} violated a property, as {base_words} did"
+                say(paint.verdict(
+                    Same::No,
+                    format!("every {one_run} violated a property, as {base_words} did"),
                 ));
             }
             // Schedule 0's violation is the bug, at the step it names.
@@ -1028,7 +1060,8 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                 let lo = windows.iter().map(|w| w.0).min().unwrap_or(0);
                 let hi = windows.iter().map(|w| w.1).max().unwrap_or(0);
                 status(&format!(
-                    "rewind: narrowing, {} windows within steps {lo}..{hi}",
+                    "{} narrowing, {} windows within steps {lo}..{hi}",
+                    color::stderr().prefix(),
                     windows.len()
                 ));
                 let windows: Vec<Window> = windows
@@ -1192,13 +1225,30 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         words.push(show::schedule_words(spec));
         words.join(", ")
     };
-    println!("passing: run {}, {}", passing.manifest.id, words(&passing));
-    println!("failing: run {}, {}", failing.manifest.id, words(&failing));
+    // The failing run is amber and the passing one blue, as in the
+    // comparison below and the app's Compare view.
+    let paint = color::stdout();
+    println!(
+        "{}: run {}, {}",
+        paint.paint(Style::Right, PASSING),
+        passing.manifest.id,
+        words(&passing)
+    );
+    println!(
+        "{}: run {}, {}",
+        paint.paint(Style::Left, FAILING),
+        failing.manifest.id,
+        words(&failing)
+    );
     if let Some(deciding) = deciding {
         println!("the two are the same run until step {deciding}");
     }
     for v in &failing_violations {
-        println!("failing run violates {}: {v}", v.property);
+        println!(
+            "failing run {} {}: {v}",
+            paint.verdict(Same::No, "violates"),
+            v.property
+        );
     }
 
     // Where they part, in words, and the failing run's step there,
@@ -1206,7 +1256,7 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     println!();
     print!(
         "{}",
-        show::comparison((ft, "failing"), (pt, "passing"), &comparison)
+        show::comparison((ft, FAILING), (pt, PASSING), &comparison, paint)
     );
     if !threads.is_empty() {
         println!("\nwhere the threads were:");
@@ -1472,15 +1522,25 @@ pub(crate) fn fork(home: &Home, args: ForkArgs) -> Result<ExitCode> {
         return Ok(exit_status(&child));
     }
     let stop = locate::describe_stall(home, &child);
-    eprintln!("{}", show::finished(&child, stop.as_deref()));
+    let paint = color::stderr();
+    eprintln!("{}", show::finished(&child, stop.as_deref(), paint));
     match first_difference {
-        None => eprintln!("rewind: the fork ran the same as its parent"),
-        Some(step) => {
-            eprintln!("rewind: the fork first differs from its parent at step {step}")
-        }
+        None => eprintln!(
+            "{} the fork {}",
+            paint.prefix(),
+            paint.verdict(Same::Yes, "ran the same as its parent")
+        ),
+        Some(step) => eprintln!(
+            "{} the fork {} at step {step}",
+            paint.prefix(),
+            paint.verdict(Same::No, "first differs from its parent")
+        ),
     }
     let open = open_line(&child.manifest.id, first_difference, Some(&m.id));
-    eprintln!("rewind: open it beside its parent in the desktop app: {open}");
+    eprintln!(
+        "{} open it beside its parent in the desktop app: {open}",
+        paint.prefix()
+    );
     Ok(exit_status(&child))
 }
 
@@ -1525,7 +1585,11 @@ fn resolve_clock(home: &Home, guest: &Guest, arg: ClockArg) -> Result<rewind_vmm
             if vendor.event().is_some() && pmu::counter_usable_this_boot(home, guest, &vendor)? {
                 return branches();
             }
-            eprintln!("rewind: {}", pmu::exit_time_warning(&vendor));
+            eprintln!(
+                "{} {}",
+                color::stderr().prefix(),
+                pmu::exit_time_warning(&vendor)
+            );
             Ok(ClockSource::Exits)
         }
     }
@@ -1580,7 +1644,7 @@ fn resolve_cpu(arg: Option<CpuArg>) -> Result<rewind_vmm::CpuModel> {
     // No model asked for: the one this host's features allow.
     let model = rewind_vmm::cpu::default_model(&kvm)?;
     if model == rewind_vmm::CpuModel::V3Compat {
-        eprintln!("rewind: {V3_COMPAT_NOTICE}");
+        eprintln!("{} {V3_COMPAT_NOTICE}", color::stderr().prefix());
     }
     Ok(model)
 }
@@ -1931,7 +1995,8 @@ fn prepare_nix(
     let image = home.images().join(format!("store-{}.erofs", &key[..32]));
     if !image.exists() {
         eprintln!(
-            "rewind: packing {} store paths for {}",
+            "{} packing {} store paths for {}",
+            color::stderr().prefix(),
             closure.len(),
             drv.name
         );
@@ -2023,7 +2088,7 @@ fn execute(
     )?;
     if announce == Announce::Yes {
         let stop = locate::describe_stall(home, &run);
-        eprintln!("{}", show::finished(&run, stop.as_deref()));
+        eprintln!("{}", show::finished(&run, stop.as_deref(), color::stderr()));
     }
     Ok(run)
 }
@@ -2076,15 +2141,23 @@ fn violations_json(violations: &[Violation]) -> serde_json::Value {
 /// The end of a schedule's line when properties were given: whether the
 /// run holds them all or which it violates. Nothing for the default,
 /// whose line already says how the run ended.
-fn verdict_words(judge: &Judge, violations: &[Violation]) -> String {
+fn verdict_words(judge: &Judge, violations: &[Violation], paint: Paint) -> String {
     if judge.same_outcome_only() {
         return String::new();
     }
     if violations.is_empty() {
-        return "  holds".to_string();
+        return format!("  {}", paint.verdict(Same::Yes, "holds"));
     }
-    format!("  violates {}", violated_names(violations))
+    format!(
+        "  {} {}",
+        paint.verdict(Same::No, "violates"),
+        violated_names(violations)
+    )
 }
+
+/// The words `rewind check`'s report names its two runs by.
+const FAILING: &str = "failing";
+const PASSING: &str = "passing";
 
 /// The properties `violations` name, as a report lists them.
 fn violated_names(violations: &[Violation]) -> String {
@@ -2157,7 +2230,10 @@ fn compare_outputs(run: &Run, lookup: &compare::Lookup) -> Result<Compared> {
     let caches = match compare::caches(lookup) {
         Ok(caches) => caches,
         Err(e) => {
-            eprintln!("rewind: comparing with your store only: {e:#}");
+            eprintln!(
+                "{} comparing with your store only: {e:#}",
+                color::stderr().prefix()
+            );
             compare::Caches::default()
         }
     };
@@ -2186,8 +2262,9 @@ fn compare_outputs(run: &Run, lookup: &compare::Lookup) -> Result<Compared> {
 /// Prints each output's hash from the guest and what each source said
 /// about it, then the outputs a job that exited 0 did not create.
 fn print_compared(compared: &Compared) {
+    let paint = color::stdout();
     for (path, hash, comparisons) in &compared.outputs {
-        println!("{}", show::verdict_line(path, hash, comparisons));
+        println!("{}", show::verdict_line(path, hash, comparisons, paint));
     }
     let differs = compared
         .outputs
@@ -2195,16 +2272,20 @@ fn print_compared(compared: &Compared) {
         .flat_map(|(_, _, comparisons)| comparisons)
         .any(|c| c.verdict == compare::Verdict::Differs);
     if differs {
-        println!("{}", show::DIFFERS_NOTE);
+        println!("{} {}", paint.prefix(), show::DIFFERS_NOTE);
     }
     if !compared.outputs.is_empty() && !compared.skipped.is_empty() {
         println!(
-            "rewind: did not ask {}, which are not HTTP binary caches",
+            "{} did not ask {}, which are not HTTP binary caches",
+            paint.prefix(),
             compared.skipped.join(", ")
         );
     }
     for path in &compared.missing {
-        println!("{path} missing: the builder exited 0 without creating it");
+        println!(
+            "{path} {}: the builder exited 0 without creating it",
+            paint.verdict(Same::No, "missing")
+        );
     }
 }
 

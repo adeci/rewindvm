@@ -1,6 +1,7 @@
 //! The `rewind` command.
 
 mod cmd;
+mod color;
 mod diff_files;
 mod doctor;
 mod downloads;
@@ -20,7 +21,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use rewind_core::Home;
 
 /// The help of every argument that names a run.
@@ -58,6 +59,21 @@ struct Cli {
         value_name = "HOW"
     )]
     progress: progress::Format,
+    /// Whether to color what rewind prints: verdicts green when the same
+    /// and red when they differ, the left run amber and the right blue.
+    ///
+    /// Auto colors a terminal, unless NO_COLOR is set or TERM is dumb, and
+    /// a pipe too when CLICOLOR_FORCE is set. Standard output and standard
+    /// error are decided each on its own.
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        default_value_t,
+        env = color::ENV,
+        value_name = "WHEN"
+    )]
+    color: color::Choice,
 }
 
 #[derive(Subcommand)]
@@ -353,10 +369,15 @@ fn main() -> ExitCode {
     // A check running many VMs at once opens more files than the usual
     // soft limit of 1024 allows.
     open_files::raise_limit();
-    match run(Cli::parse()) {
+    // Clap draws help and errors while it parses, in the color asked for.
+    let asked = color::asked(std::env::args_os());
+    let matches = Cli::command().color(asked.clap()).get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    color::init(cli.color);
+    match run(cli) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("rewind: {e:#}");
+            eprintln!("{} {e:#}", color::stderr().error_prefix());
             ExitCode::FAILURE
         }
     }
@@ -374,7 +395,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
 
     // Completions and man pages need no runs, and a package's build has no
     // home to find them under.
-    let Cli { command, progress } = cli;
+    let Cli {
+        command, progress, ..
+    } = cli;
     let command = match command {
         Command::Generate(args) => return cmd::setup::generate(args),
         command => command,
