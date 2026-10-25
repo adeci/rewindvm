@@ -157,8 +157,10 @@ mod tests {
     #[test]
     fn the_examples_show_a_crash_and_where_the_runs_part() {
         // The failing run fails with a SIGSEGV and the passing run passes.
-        // Their schedules part before the crash, and their events part at
-        // it, since the two are the same run until the deciding step.
+        // The two are the same run until the deciding step, where their
+        // schedules part. Their events part after it and before the crash:
+        // the other worker runs ahead while the one that crashes is held,
+        // so the first difference is the cause and the crash comes later.
         crate::archive::test_cache();
         let session = open().unwrap();
 
@@ -177,7 +179,7 @@ mod tests {
         let divergence = session.divergence_step().unwrap();
         let split = session.split.as_ref().unwrap();
         assert!(split.step < divergence);
-        assert_eq!(divergence, failure.step);
+        assert!(divergence < failure.step);
 
         // In words: how each run ended, where the schedules part, and the
         // first thing test_pool_shutdown does differently.
@@ -188,10 +190,11 @@ mod tests {
             lines,
             vec![
                 "This run failed and the passing run did not.",
-                "The two runs are identical until step 5,080. There, Rewind pauses the running thread for 1280 µs in this run only.",
-                "test_pool_shutdown did the same things in the same order in both runs until step 5,105.",
-                "Then in this run, thread 9 of test_pool_shutdown gets SIGSEGV at address 0x108.",
-                "In the passing run, thread 9 of test_pool_shutdown writes \"worker picked job 30\" to stdout.",
+                "The two runs are identical until step 4,758. There, Rewind asks the kernel to switch threads and pauses the running thread for 640 µs in this run only.",
+                "test_pool_shutdown did the same things in the same order in both runs until step 4,760.",
+                "Then in this run, thread 7 of test_pool_shutdown writes \"worker picked job 17\" to stdout.",
+                "In the passing run, thread 6 of test_pool_shutdown writes \"job 16 done: 5986\" to stdout.",
+                "Both write to the same stream; the text differs.",
             ]
         );
     }
