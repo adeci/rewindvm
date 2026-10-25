@@ -1763,6 +1763,30 @@ a.card:hover {
   color: #8a6a3a;
   user-select: none;
 }
+/* The colors rewind printed a transcript in, from tools/md2html.py: green
+   where things are the same, red where they differ, the left run amber and
+   the right blue, and rewind's own prefix dim. */
+.console .ansi-green {
+  color: #9be3a6;
+}
+.console .ansi-red {
+  color: var(--red);
+}
+.console .ansi-yellow {
+  color: var(--amber-hi);
+}
+.console .ansi-blue {
+  color: var(--blue);
+}
+.console .ansi-dim {
+  color: #80858f;
+}
+.console .ansi-bold {
+  font-weight: 600;
+}
+.console .ansi-underline {
+  text-decoration: underline;
+}
 /* Diff lines fill the block's width so their tint reads as a band. */
 .diff .add,
 .diff .del,

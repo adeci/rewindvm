@@ -9,14 +9,25 @@ Markdown these documents use is handled: headings, paragraphs, "- " lists,
 tables, fenced code, inline code, links and bold. A relative link to a
 document the site also publishes points at its page; any other relative link
 points at the file on GitHub, since the site has no copy of the repository.
+
+A tutorial's console blocks are painted in the colors rewind printed them
+in, which tools/record-tutorials.py keeps in docs/colors/, since the
+Markdown, which GitHub shows, holds plain text.
 """
 
 import html
+import json
 import posixpath
 import re
+import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+
+# Where tools/record-tutorials.py keeps each tutorial's colored stretches,
+# and the prefix of the class each stretch's styles become.
+COLORS = REPO / "docs" / "colors"
+COLOR_CLASS_PREFIX = "ansi-"
 
 # Where the repository's files are on GitHub, for links the site cannot serve.
 GITHUB_BLOB = "https://github.com/fzakaria/rewindvm/blob/main/"
@@ -532,11 +543,42 @@ def inline(text, source, page):
     return "".join(out)
 
 
-def console(lines):
-    """A console block: "$ " starts a command, "> " continues one."""
+def colors_of(source):
+    """The colored console blocks of `source`, from docs/colors/, by each
+    block's text: its stretches as line, start, end and styles."""
+    path = COLORS / (Path(source).stem + ".json")
+    if not path.exists():
+        return path, {}
+    return path, {b["text"]: b["spans"] for b in json.loads(path.read_text())}
+
+
+def painted(line, spans):
+    """`line` as HTML, each of `spans` (start, end, styles) in a span whose
+    classes are its styles."""
+    out = []
+    end = 0
+    for start, stop, styles in sorted(spans):
+        out.append(html.escape(line[end:start], quote=False))
+        classes = " ".join(COLOR_CLASS_PREFIX + s for s in styles.split())
+        out.append(
+            f'<span class="{classes}">'
+            + html.escape(line[start:stop], quote=False)
+            + "</span>"
+        )
+        end = stop
+    out.append(html.escape(line[end:], quote=False))
+    return "".join(out)
+
+
+def console(lines, spans=()):
+    """A console block: "$ " starts a command, "> " continues one. `spans`
+    are the output's colored stretches, as line, start, end and styles."""
+    by_line = {}
+    for i, start, stop, styles in spans:
+        by_line.setdefault(i, []).append((start, stop, styles))
     body = []
     in_command = False
-    for line in lines:
+    for i, line in enumerate(lines):
         prompt = (
             "$"
             if line.startswith("$ ")
@@ -544,7 +586,7 @@ def console(lines):
         )
         in_command = prompt is not None
         if prompt is None:
-            body.append(html.escape(line, quote=False))
+            body.append(painted(line, by_line.get(i, [])))
             continue
         body.append(
             f'<span class="cmd"><span class="prompt">{html.escape(prompt)}</span> '
@@ -756,6 +798,8 @@ def convert(cfg):
     lines = (REPO / source).read_text().splitlines()
     title = lines[0].removeprefix("# ").strip()
     blocks = parse(lines[1:])
+    colors_path, colors = colors_of(source)
+    painted_blocks = set()
 
     out = [
         HEAD.format(
@@ -820,7 +864,11 @@ def convert(cfg):
             continue
         lang, marked, code = payload
         if lang == "console":
-            out.append(console(code))
+            text = "\n".join(code)
+            spans = colors.get(text, ())
+            if spans:
+                painted_blocks.add(text)
+            out.append(console(code, spans))
         elif lang == "diff":
             out.append(diff(code))
         elif lang in SOURCE_TOKENS:
@@ -841,6 +889,16 @@ def convert(cfg):
     )
     out.append(BUY.format(up=up))
     out.append(FOOT.format(up=up))
+
+    # Colors kept for a block the page no longer has are a recording
+    # the page has moved on from.
+    stale = set(colors) - painted_blocks
+    if stale:
+        sys.exit(
+            f"{colors_path.relative_to(REPO)} has colors for {len(stale)} console "
+            f"block(s) {source} no longer has; record it again with "
+            "tools/record-tutorials.py"
+        )
     return page, "".join(out)
 
 

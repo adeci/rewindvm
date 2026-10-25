@@ -27,6 +27,14 @@ console block with each command's output under it. Options follow `run`:
 A console block without `run` is copied as it is: output from the host,
 which no build of rewind changes.
 
+Rewind colors its output on a terminal, so a shown command runs with
+REWIND_COLOR=always unless it pipes rewind's output into another program,
+where a reader's rewind writes plain text too. The page keeps the plain
+text, which GitHub shows; the colored stretches of each block go to
+docs/colors/tutorial-<name>.json, by line and column, for tools/md2html.py
+to paint the site's page with. Captures, named outputs and every command
+the page does not show see plain text.
+
 `{{NAME}}` anywhere, prose or command, is a value: `{{NAME|short}}` is its
 first eight characters, a run id as the tutorials write it, and
 `{{NAME|and}}` joins its words as "a, b and c". Values are set by one-line
@@ -68,6 +76,7 @@ prints "Cloning into 'rewindvm'...".
 """
 
 import argparse
+import enum
 import hashlib
 import json
 import os
@@ -102,6 +111,36 @@ GUEST = ["initrd", "kernel"]
 
 # A store path's hash, to shorten as the tutorials do.
 STORE_HASH = re.compile(r"/nix/store/[0-9a-z]{32}-")
+ELIDED_STORE = "/nix/store/...-"
+
+# Where each tutorial's colored stretches go, and how a shown command asks
+# rewind for color.
+COLORS = REPO / "docs" / "colors"
+COLOR_ENV = {"REWIND_COLOR": "always"}
+
+# The escape sequences rewind colors with: Select Graphic Rendition, and
+# the parameters it uses, by the class the site paints each in. Any other
+# escape stops the recording, so a new style is given a class first.
+SGR = re.compile(r"\x1b\[([0-9;]*)m")
+ESCAPE = "\x1b"
+SGR_RESET = {"", "0"}
+SGR_ATTRIBUTES = {"1": "bold", "2": "dim", "4": "underline"}
+SGR_NORMAL_INTENSITY = "22"
+SGR_NO_UNDERLINE = "24"
+SGR_DEFAULT_FOREGROUND = "39"
+SGR_FOREGROUNDS = {
+    "30": "black",
+    "31": "red",
+    "32": "green",
+    "33": "yellow",
+    "34": "blue",
+    "35": "magenta",
+    "36": "cyan",
+    "37": "white",
+}
+
+# What a cut line ends with.
+CUT_MARK = " ..."
 
 # How the desktop app is screenshotted: a virtual screen the size of its
 # window, mesa's software Vulkan, and long enough to draw.
@@ -121,6 +160,124 @@ VALUE = re.compile(r"\{\{([a-z_:.0-9]+)(?:\|([a-z]+))?\}\}")
 
 class Failed(Exception):
     pass
+
+
+class Color(enum.Enum):
+    """Whether a command's rewind is asked for color: a shown command whose
+    output reaches the reader's terminal is, any other is not."""
+
+    SHOWN = "shown"
+    PLAIN = "plain"
+
+
+class Styled:
+    """A line of output as plain text, with the class each character is
+    painted in, None for plain."""
+
+    def __init__(self, text, classes=None):
+        self.text = text
+        self.classes = classes if classes is not None else [None] * len(text)
+
+    def __add__(self, other):
+        return Styled(self.text + other.text, self.classes + other.classes)
+
+    def __getitem__(self, cut):
+        return Styled(self.text[cut], self.classes[cut])
+
+    def __len__(self):
+        return len(self.text)
+
+    def rstrip(self):
+        return self[: len(self.text.rstrip())]
+
+    def sub(self, pattern, replacement):
+        """The line with `pattern` replaced, the replacement painted as the
+        first character it replaces."""
+        out = Styled("")
+        end = 0
+        for m in pattern.finditer(self.text):
+            out = out + self[end : m.start()]
+            out = out + Styled(
+                replacement, [self.classes[m.start()]] * len(replacement)
+            )
+            end = m.end()
+        return out + self[end:]
+
+    def spans(self):
+        """Each stretch of one class: its start, end and class."""
+        out = []
+        start = 0
+        for i in range(1, len(self.classes) + 1):
+            if i < len(self.classes) and self.classes[i] == self.classes[start]:
+                continue
+            if self.classes[start] is not None:
+                out.append((start, i, self.classes[start]))
+            start = i
+        return out
+
+
+def styled_lines(output):
+    """`output`, which may color with SGR escapes, as Styled lines."""
+    attributes = set()
+    foreground = None
+    text = []
+    classes = []
+    pos = 0
+    for m in [*SGR.finditer(output), None]:
+        # The text before this escape, in the style so far.
+        chunk = output[pos : m.start() if m else len(output)]
+        if ESCAPE in chunk:
+            raise Failed(f"an escape the site cannot paint: {chunk!r}")
+        names = sorted(attributes) + ([foreground] if foreground else [])
+        style = " ".join(names) or None
+        text.append(chunk)
+        classes.extend([style] * len(chunk))
+        if m is None:
+            break
+        pos = m.end()
+
+        # The escape's parameters change the style.
+        for code in m.group(1).split(";"):
+            if code in SGR_RESET:
+                attributes.clear()
+                foreground = None
+            elif code in SGR_ATTRIBUTES:
+                attributes.add(SGR_ATTRIBUTES[code])
+            elif code == SGR_NORMAL_INTENSITY:
+                attributes -= {"bold", "dim"}
+            elif code == SGR_NO_UNDERLINE:
+                attributes.discard("underline")
+            elif code == SGR_DEFAULT_FOREGROUND:
+                foreground = None
+            elif code in SGR_FOREGROUNDS:
+                foreground = SGR_FOREGROUNDS[code]
+            else:
+                raise Failed(f"an SGR parameter the site cannot paint: {m.group(0)!r}")
+
+    # Split into lines, each keeping its characters' classes.
+    whole = Styled("".join(text), classes)
+    lines = []
+    start = 0
+    for i, c in enumerate(whole.text):
+        if c == "\n":
+            lines.append(whole[start:i])
+            start = i + 1
+    if start < len(whole.text):
+        lines.append(whole[start:])
+    return lines
+
+
+def pipes_rewind(command):
+    """Whether `command` pipes rewind's output into another program, so a
+    reader's rewind writes plain text."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    seen = False
+    for token in lexer:
+        if token == "rewind":
+            seen = True
+        elif seen and token == "|":
+            return True
+    return False
 
 
 def build(rev):
@@ -174,6 +331,8 @@ class Recording:
         self.app = f"{paths['app']}/bin/rewind-app"
         self.last = ""
         self.out = []
+        # Each shown block's colored stretches, for the site.
+        self.colors = []
 
     def fill(self, text):
         """`text` with its values put in."""
@@ -226,10 +385,18 @@ class Recording:
 
         return GITHUB_FLAKE.sub(one, command)
 
-    def shell(self, command, check=True):
+    def env_for(self, color):
+        """The commands' environment, asking rewind for color when `color`
+        is Color.SHOWN."""
+        if color == Color.SHOWN:
+            return self.env | COLOR_ENV
+        return self.env
+
+    def shell(self, command, check=True, color=Color.PLAIN):
         """Runs `command` the way the page's reader would, returning what it
-        printed, standard error included. `cd` changes the directory for the
-        commands after it, as in the reader's shell."""
+        printed, standard error included, colored when `color` is
+        Color.SHOWN. `cd` changes the directory for the commands after it, as
+        in the reader's shell."""
         command = self.localize(command)
         if m := re.fullmatch(r"cd (\S+)", command):
             self.cwd = (self.cwd / m.group(1)).resolve()
@@ -237,7 +404,7 @@ class Recording:
         done = subprocess.run(
             ["bash", "-c", command],
             cwd=self.cwd,
-            env=self.env,
+            env=self.env_for(color),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -246,14 +413,14 @@ class Recording:
             raise Failed(f"exit {done.returncode}: {command}\n{done.stdout}")
         return done.stdout
 
-    def background(self, command, until, after):
+    def background(self, command, until, after, color=Color.PLAIN):
         """Runs `command` until its output matches `until`, then `after`,
-        then waits for it."""
+        then waits for it; colored when `color` is Color.SHOWN."""
         command = self.localize(command)
         proc = subprocess.Popen(
             ["bash", "-c", command],
             cwd=self.cwd,
-            env=self.env,
+            env=self.env_for(color),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -262,7 +429,7 @@ class Recording:
         lines = []
         for line in proc.stdout:
             lines.append(line)
-            if re.search(until, line):
+            if re.search(until, SGR.sub("", line)):
                 break
         else:
             raise Failed(f"never printed {until!r}: {command}\n{''.join(lines)}")
@@ -279,35 +446,46 @@ class Recording:
         raw = []
         for command in [c[2:] for c in body if c.startswith("$ ")]:
             command = self.fill(command)
+            color = Color.PLAIN if pipes_rewind(command) else Color.SHOWN
             if "bg" in opts:
                 if after is None:
                     raise Failed("a bg block needs an after directive")
-                output = self.background(command, opts["bg"], self.fill(after))
+                output = self.background(command, opts["bg"], self.fill(after), color)
             else:
-                output = self.shell(command, check=False)
-            raw.append(output)
-            lines = [line.rstrip() for line in output.splitlines()]
+                output = self.shell(command, check=False, color=color)
+            raw.append(SGR.sub("", output))
+            lines = [line.rstrip() for line in styled_lines(output)]
             if "hide" in opts:
                 lines = []
             if "elide" in opts:
-                lines = [STORE_HASH.sub("/nix/store/...-", line) for line in lines]
+                lines = [line.sub(STORE_HASH, ELIDED_STORE) for line in lines]
             if "show" in opts:
-                lines = slices(lines, opts["show"])
+                lines = [
+                    Styled(line) if isinstance(line, str) else line
+                    for line in slices(lines, opts["show"])
+                ]
             if "cut" in opts:
                 n = int(opts["cut"])
                 lines = [
-                    line if len(line) <= n else line[:n] + " ..." for line in lines
+                    line if len(line) <= n else line[:n] + Styled(CUT_MARK)
+                    for line in lines
                 ]
-            if shown and shown[-1] != "" and not shown[-1].startswith("$ "):
-                shown.append("")
-            shown.append(f"$ {command}")
+            if shown and shown[-1].text != "" and not shown[-1].text.startswith("$ "):
+                shown.append(Styled(""))
+            shown.append(Styled(f"$ {command}"))
             shown.extend(lines)
         self.last = "".join(raw)
         if "name" in opts:
             (self.work / f"{opts['name']}.out").write_text(self.last)
         if "time" in opts:
             self.values[opts["time"]] = str(round(time.monotonic() - start))
-        return ["```console", *shown, "```"]
+
+        # The block's colored stretches, by line within the block.
+        spans = [[i, *span] for i, line in enumerate(shown) for span in line.spans()]
+        text = [line.text for line in shown]
+        if spans:
+            self.colors.append({"text": "\n".join(text), "spans": spans})
+        return ["```console", *text, "```"]
 
     def directive(self, kind, rest):
         if kind == "let":
@@ -515,11 +693,24 @@ def record(name, work, home, paths, commit=None):
     out = REPO / "docs" / f"tutorial-{name}.md"
     out.write_text("\n".join(collapse(page)) + "\n")
 
+    # The colored stretches beside it, or none for a page without color.
+    colors = COLORS / f"tutorial-{name}.json"
+    colors.unlink(missing_ok=True)
+    written = [out]
+    if rec.colors:
+        COLORS.mkdir(exist_ok=True)
+        colors.write_text(json.dumps(rec.colors, indent=1) + "\n")
+        written.append(colors)
+
     # Formatted as CI checks it, so a recording commits as it is.
     subprocess.run(
-        ["nix", "fmt", "--", str(out)], cwd=REPO, check=True, capture_output=True
+        ["nix", "fmt", "--", *map(str, written)],
+        cwd=REPO,
+        check=True,
+        capture_output=True,
     )
-    print(f"wrote {out.relative_to(REPO)}")
+    for path in written:
+        print(f"wrote {path.relative_to(REPO)}")
 
 
 def main():
