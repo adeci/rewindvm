@@ -345,7 +345,31 @@ impl Memory {
         self.apply(parent, pages);
     }
 
-    fn apply(&mut self, parent: Option<u64>, pages: &[(u32, [u8; 32])]) {
+    /// The pages whose contents differ between this memory and `other`,
+    /// in page order, with each side's hash: the zero page's where a
+    /// side holds none.
+    pub fn differing(&self, other: &Memory) -> Vec<(u32, [u8; 32], [u8; 32])> {
+        let mut pages: Vec<u32> = self
+            .pages
+            .keys()
+            .chain(other.pages.keys())
+            .copied()
+            .collect();
+        pages.sort_unstable();
+        pages.dedup();
+        pages
+            .into_iter()
+            .filter_map(|page| {
+                let ours = *self.pages.get(&page).unwrap_or(&ZERO_PAGE);
+                let theirs = *other.pages.get(&page).unwrap_or(&ZERO_PAGE);
+                (ours != theirs).then_some((page, ours, theirs))
+            })
+            .collect()
+    }
+
+    /// Writes a keyframe's `pages` over this memory, as restoring the
+    /// keyframe, whose parent is `parent`, would.
+    pub fn apply(&mut self, parent: Option<u64>, pages: &[(u32, [u8; 32])]) {
         // A full keyframe starts from zeroed memory.
         if parent.is_none() {
             self.pages.clear();

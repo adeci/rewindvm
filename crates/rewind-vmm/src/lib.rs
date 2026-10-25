@@ -20,6 +20,7 @@ pub mod memory;
 pub mod pmu;
 pub mod pv;
 pub mod snapshot;
+pub mod state;
 mod watchdog;
 
 use std::path::PathBuf;

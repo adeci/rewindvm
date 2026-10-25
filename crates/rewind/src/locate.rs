@@ -258,6 +258,10 @@ struct Place {
     file: Option<String>,
     line: Option<u32>,
     object: Option<String>,
+    /// Whether the address is in a variable, `function` naming it and
+    /// `line` its definition, rather than in code.
+    #[serde(default)]
+    variable: bool,
     error: Option<String>,
 }
 
@@ -281,6 +285,31 @@ fn place(home: &Home, run: &Run, step: u64, pid: u32, address: u64) -> Result<Pl
         bail!("gdb could not place {address:#x}: {error}");
     }
     Ok(place)
+}
+
+/// Where `address` is in process `pid`'s memory at `step` of `run`, in
+/// words: the variable and the line defining it, or the function and its
+/// source line. None when no symbol has it.
+pub(crate) fn address_words(
+    home: &Home,
+    run: &Run,
+    step: u64,
+    pid: u32,
+    address: u64,
+) -> Option<String> {
+    let place = place(home, run, step, pid, address).ok()?;
+    if !place.variable {
+        return place_words(&place);
+    }
+    let name = place.function.as_ref()?;
+    let at = match place.offset {
+        Some(offset) if offset > 0 => format!("{name}+{offset}"),
+        _ => name.clone(),
+    };
+    Some(match (&place.file, place.line) {
+        (Some(file), Some(line)) => format!("{at}, a variable ({}:{line})", file_name(file)),
+        _ => format!("{at}, a variable"),
+    })
 }
 
 /// How sure a timeout's message is of the process it names.

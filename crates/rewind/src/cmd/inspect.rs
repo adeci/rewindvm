@@ -38,6 +38,7 @@ pub(crate) fn cat(home: &Home, args: CatArgs) -> Result<ExitCode> {
     } = args;
     let run = Run::find(home, &run)?;
     let step = run.check_step(step)?;
+    warn_of_machine(&run, step);
     match rewind_core::inspect::cat(home, &run, step, pid, &path)? {
         Inspection::Contents(bytes) => {
             use std::io::Write;
@@ -85,6 +86,7 @@ pub(crate) fn shell(home: &Home, args: ShellArgs) -> Result<ExitCode> {
 
     let run = Run::find(home, &run)?;
     let step = run.check_step(step)?;
+    warn_of_machine(&run, step);
 
     // A pid is checked against the run: one it never had is a
     // mistake, and one gone by the step falls back to its parent.
@@ -186,6 +188,7 @@ pub(crate) fn gdb(home: &Home, args: GdbArgs) -> Result<ExitCode> {
     } = args;
     let run = Run::find(home, &run)?;
     let step = run.check_step(step)?;
+    warn_of_machine(&run, step);
     let start = gdb::Start { pid, tid, frame };
     gdb::gdb(home, &run, step, start, listen.as_deref(), &gdb_args)
 }
@@ -226,6 +229,7 @@ pub(crate) fn r#where(home: &Home, args: WhereArgs) -> Result<ExitCode> {
     } = args;
     let run = Run::find(home, &run)?;
     let step = run.check_step(step)?;
+    warn_of_machine(&run, step);
     let format = if json {
         locate::Format::Json
     } else {
@@ -298,4 +302,19 @@ fn slice_line(slice: &Slice) -> String {
         "{:>10} {:>10}  {who:>12}  {}",
         slice.from, slice.to, slice.name
     )
+}
+
+/// Says, before a look inside `run` at `step`, when a replay found the
+/// machine different from the recording at a keyframe after the step and
+/// the look replays the stretch where it changed.
+fn warn_of_machine(run: &Run, step: u64) {
+    let Some(warning) = run.machine_warning(step) else {
+        return;
+    };
+    let paint = crate::color::stderr();
+    eprintln!(
+        "{} {}",
+        paint.prefix(),
+        paint.paint(crate::color::Style::Warn, warning)
+    );
 }

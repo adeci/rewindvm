@@ -152,11 +152,17 @@ impl<'a, M: Memory + ?Sized> Tasks<'a, M> {
         Ok(String::from_utf8_lossy(&comm[..len]).into_owned())
     }
 
+    /// The task of every process's first thread, in the list of processes
+    /// that starts at init_task, in the kernel's order.
+    pub fn processes(&self) -> Result<Vec<u64>> {
+        let head = self.layout.init_task + self.layout.tasks;
+        self.entries(head, self.layout.tasks)
+    }
+
     /// The task of process `tgid`'s first thread, found in the list of
     /// processes that starts at init_task; None when it has none.
     pub fn process(&self, tgid: u32) -> Result<Option<u64>> {
-        let head = self.layout.init_task + self.layout.tasks;
-        for task in self.entries(head, self.layout.tasks)? {
+        for task in self.processes()? {
             if self.tgid(task)? == tgid {
                 return Ok(Some(task));
             }

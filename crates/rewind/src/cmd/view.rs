@@ -345,136 +345,280 @@ pub(crate) struct ReplayArgs {
     #[arg(long, value_name = "STEP")]
     pub(crate) from: Option<u64>,
     /// Print one JSON object on standard output, for programs: whether
-    /// the trace came out identical, the keyframe it started from, and
-    /// where it first differed.
+    /// the trace came out identical, the keyframe it started from, where
+    /// it first differed, and what comparing the machine at the run's
+    /// keyframes found.
     #[arg(long)]
     pub(crate) json: bool,
+    /// Where to compare the whole machine with the recording: at every
+    /// keyframe after the start, only at the last, or nowhere, comparing
+    /// only events and records.
+    ///
+    /// Each comparison hashes the pages the guest wrote since the last
+    /// one, as recording does when it takes the keyframe, without storing
+    /// them. `last` takes no capture before the last keyframe, so the
+    /// replay runs as one without keyframes would.
+    #[arg(long, value_enum, default_value_t = MachineArg::Every, value_name = "WHERE")]
+    pub(crate) machine: MachineArg,
+}
+
+/// Where `rewind replay` compares the machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum MachineArg {
+    Every,
+    Last,
+    None,
+}
+
+impl From<MachineArg> for rewind_core::run::CompareMachine {
+    fn from(arg: MachineArg) -> Self {
+        match arg {
+            MachineArg::Every => rewind_core::run::CompareMachine::Every,
+            MachineArg::Last => rewind_core::run::CompareMachine::Last,
+            MachineArg::None => rewind_core::run::CompareMachine::Never,
+        }
+    }
 }
 
 /// The words `rewind replay` starts its verdict with.
 const IDENTICAL: &str = "identical";
 const DIFFERENT: &str = "DIFFERENT";
 
+/// How many places of differing pages `rewind replay` names by symbol,
+/// each of which asks gdb.
+const NAMED_PLACES: usize = 4;
+
 pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
-    match args {
-        ReplayArgs {
-            run,
-            from: Some(step),
-            json,
-        } => {
-            let run = Run::find(home, &run)?;
-            let step = run.check_step(step)?;
-            let started = std::time::Instant::now();
-            let replayed = run.replay_from(home, step)?;
-            let kf = replayed.keyframe;
-            let (original, again) = (&replayed.original, &replayed.again);
-            let identical = replayed.divergence.is_none();
-            if json {
-                let divergence = match &replayed.divergence {
-                    Some(d) if d.part == Part::IoRecords => json::io_divergence(d),
-                    _ => json::divergence(original, again),
-                };
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "identical": identical,
-                        "keyframe": kf,
-                        "divergence": divergence,
-                    })
-                );
-                return Ok(if identical {
-                    ExitCode::SUCCESS
-                } else {
-                    ExitCode::FAILURE
-                });
-            }
-            let paint = color::stdout();
-            let identical_word = paint.verdict(Same::Yes, IDENTICAL);
-            let different_word = paint.verdict(Same::No, DIFFERENT);
-            match &replayed.divergence {
-                None => {
-                    println!(
-                        "{identical_word} to the recording from the snapshot at step {kf} to the end ({:.2}s)",
-                        started.elapsed().as_secs_f64()
-                    );
-                    Ok(ExitCode::SUCCESS)
-                }
-                Some(d) if d.part == Part::IoRecords => {
-                    println!(
-                        "{different_word} from the recording after the snapshot at step {kf}:"
-                    );
-                    println!("{}", show::io_divergence(d));
-                    Ok(ExitCode::FAILURE)
-                }
-                Some(_) => {
-                    println!(
-                        "{different_word} from the recording after the snapshot at step {kf}:"
-                    );
-                    print!("{}", show::divergence(original, again, paint));
-                    Ok(ExitCode::FAILURE)
-                }
-            }
+    let ReplayArgs {
+        run,
+        from,
+        json,
+        machine,
+    } = args;
+    let run = Run::find(home, &run)?;
+    let from = from.map(|s| run.check_step(s)).transpose()?;
+    let started = std::time::Instant::now();
+    let replayed = run.replay_machine(home, from, machine.into())?;
+    let machine = &replayed.machine;
+    if let Some(first) = &machine.first {
+        run.note_machine_difference(first)?;
+    }
+    let identical = replayed.divergence.is_none() && machine.first.is_none();
+    let exit = if identical {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    };
+
+    if json {
+        let (original, again) = (&replayed.original, &replayed.again);
+        let divergence = match &replayed.divergence {
+            None => serde_json::Value::Null,
+            Some(d) if d.part == Part::IoRecords => json::io_divergence(d),
+            Some(_) => json::divergence(original, again),
+        };
+        println!(
+            "{}",
+            serde_json::json!({
+                "identical": identical,
+                "keyframe": replayed.keyframe,
+                "divergence": divergence,
+                "machine": machine,
+            })
+        );
+        return Ok(exit);
+    }
+
+    // The events' verdict, as replay has always given it.
+    let paint = color::stdout();
+    let identical_word = paint.verdict(Same::Yes, IDENTICAL);
+    let different_word = paint.verdict(Same::No, DIFFERENT);
+    let at_keyframes = |n: usize| match n {
+        0 => String::new(),
+        1 => ", and the whole machine at its keyframe".to_string(),
+        n => format!(", and the whole machine at its {n} keyframes"),
+    };
+    let compared = match &machine.first {
+        Some(_) => String::new(),
+        None => at_keyframes(machine.compared.len()),
+    };
+    match (&replayed.divergence, replayed.keyframe) {
+        (None, Some(kf)) => println!(
+            "{identical_word} to the recording from the snapshot at step {kf} to the end{compared} ({:.2}s)",
+            started.elapsed().as_secs_f64()
+        ),
+        (None, None) => println!(
+            "{identical_word} to the recording: {} events and {} read and write records over {} steps{compared}",
+            run.trace()?.events.len(),
+            run.io()?.records.len(),
+            run.manifest.outcome.as_ref().map_or(0, |o| o.step)
+        ),
+        (Some(d), Some(kf)) if d.part == Part::IoRecords => {
+            println!("{different_word} from the recording after the snapshot at step {kf}:");
+            println!("{}", show::io_divergence(d));
         }
-        ReplayArgs {
-            run,
-            from: None,
-            json,
-        } => {
-            let run = Run::find(home, &run)?;
-            let replayed = run.replay()?;
-            if json {
-                let divergence = replayed.as_ref().map(|d| match d.part {
-                    Part::IoRecords => json::io_divergence(d),
-                    Part::Events => serde_json::json!({
-                        "index": d.index,
-                        "left_step": d.left_step,
-                        "right_step": d.right_step,
-                    }),
-                });
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "identical": replayed.is_none(),
-                        "keyframe": null,
-                        "divergence": divergence,
-                    })
-                );
-                return Ok(if replayed.is_none() {
-                    ExitCode::SUCCESS
-                } else {
-                    ExitCode::FAILURE
-                });
+        (Some(_), Some(kf)) => {
+            println!("{different_word} from the recording after the snapshot at step {kf}:");
+            print!(
+                "{}",
+                show::divergence(&replayed.original, &replayed.again, paint)
+            );
+        }
+        (Some(d), None) if d.part == Part::IoRecords => println!(
+            "{different_word} from the recording: {}: the run was not deterministic",
+            show::io_divergence(d)
+        ),
+        (Some(d), None) => println!(
+            "{different_word} from the recording at event {} (step {} recorded, step {} replayed): the run was not deterministic",
+            d.index, d.left_step, d.right_step
+        ),
+    }
+
+    // The machine's, when it differed at a keyframe.
+    if let Some(first) = &machine.first {
+        print!("{}", machine_words(home, &run, first, &replayed, paint));
+    }
+    if !identical {
+        println!(
+            "\nto find the instruction that made the difference: rewind replay {} --bisect",
+            run.manifest.id
+        );
+    }
+    Ok(exit)
+}
+
+/// What a replay found of the machine at a keyframe, for a person: where
+/// it first differed, what differs there, and what that means for a look
+/// inside the run.
+fn machine_words(
+    home: &Home,
+    run: &Run,
+    first: &rewind_core::state::MachineDifference,
+    replayed: &rewind_core::run::Replayed,
+    paint: color::Paint,
+) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let different_word = paint.verdict(Same::No, DIFFERENT);
+    let matched = match first.matched.or(replayed.keyframe) {
+        Some(step) => format!(" It matched at step {step}."),
+        None => String::new(),
+    };
+    let _ = writeln!(
+        out,
+        "the machine is {different_word} from the recording at the keyframe at step {}.{matched}",
+        first.step
+    );
+
+    // The pages, each where the replayed machine has it, the first few
+    // named by their symbol.
+    let mut named = 0;
+    if !first.pages.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n{} {}{}:",
+            first.pages_differing,
+            if first.pages_differing == 1 {
+                "page of memory differs"
+            } else {
+                "pages of memory differ"
+            },
+            if first.pages_differing > first.pages.len() {
+                format!(", the first {} shown", first.pages.len())
+            } else {
+                String::new()
             }
-            let paint = color::stdout();
-            let identical_word = paint.verdict(Same::Yes, IDENTICAL);
-            let different_word = paint.verdict(Same::No, DIFFERENT);
-            match replayed {
-                None => {
-                    println!(
-                        "{identical_word} to the recording: {} events and {} read and write records over {} steps",
-                        run.trace()?.events.len(),
-                        run.io()?.records.len(),
-                        run.manifest.outcome.as_ref().map_or(0, |o| o.step)
-                    );
-                    Ok(ExitCode::SUCCESS)
+        );
+    }
+    for page in &first.pages {
+        let physical = page.page as u64 * 4096;
+        for place in &page.places {
+            let words = match place {
+                rewind_core::state::Place::Process { pid, name, address } => {
+                    // The address of the first differing byte, by symbol.
+                    let offset = page.bytes.first().map_or(0, |b| b.offset as u64);
+                    let at = address + offset;
+                    let symbol = if named < NAMED_PLACES {
+                        named += 1;
+                        crate::locate::address_words(home, run, first.step, *pid, at)
+                    } else {
+                        None
+                    };
+                    match symbol {
+                        Some(symbol) => format!("process {pid} ({name}) at {at:#x}: {symbol}"),
+                        None => format!("process {pid} ({name}) at {at:#x}"),
+                    }
                 }
-                Some(d) if d.part == Part::IoRecords => {
-                    println!(
-                        "{different_word} from the recording: {}: the run was not deterministic",
-                        show::io_divergence(&d)
-                    );
-                    Ok(ExitCode::FAILURE)
+                rewind_core::state::Place::KernelImage { address, symbol } => match symbol {
+                    Some(symbol) => format!("the kernel at {address:#x}: {symbol}"),
+                    None => format!("the kernel at {address:#x}"),
+                },
+                rewind_core::state::Place::Kernel => {
+                    format!("kernel memory at physical {physical:#x}")
                 }
-                Some(d) => {
-                    println!(
-                        "{different_word} from the recording at event {} (step {} recorded, step {} replayed): the run was not deterministic",
-                        d.index, d.left_step, d.right_step
-                    );
-                    Ok(ExitCode::FAILURE)
-                }
-            }
+            };
+            let _ = writeln!(out, "  {words}");
+        }
+        for bytes in &page.bytes {
+            let hex = |b: &[u8]| {
+                b.iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            let recorded = bytes
+                .recorded
+                .as_deref()
+                .map_or_else(|| "not in the page store".to_string(), &hex);
+            let _ = writeln!(
+                out,
+                "    {:#06x}  {}  {}\n            {}  {}",
+                bytes.offset,
+                paint.padded(color::Style::Left, "recorded", 8),
+                recorded,
+                paint.padded(color::Style::Right, "replayed", 8),
+                hex(&bytes.replayed)
+            );
         }
     }
+
+    // Registers and the rest of the machine's state.
+    if !first.state.is_empty() {
+        let _ = writeln!(out, "\nstate that differs:");
+    }
+    for d in &first.state {
+        let _ = writeln!(
+            out,
+            "  {}: {} {}, {} {}",
+            d.name,
+            paint.paint(color::Style::Left, "recorded"),
+            d.left,
+            paint.paint(color::Style::Right, "replayed"),
+            d.right
+        );
+    }
+
+    // What it means for a look inside the run.
+    let since = first.matched.or(replayed.keyframe);
+    let stretch = match since {
+        Some(matched) => format!(
+            "gdb, shell and cat at steps {} to {} start from the keyframe at {matched}",
+            matched + 1,
+            first.step - 1
+        ),
+        None => format!(
+            "gdb, shell and cat at steps before {} start from boot or a keyframe before it",
+            first.step
+        ),
+    };
+    if replayed.divergence.is_none() {
+        let _ = writeln!(out, "\nnothing the run printed or wrote differs.");
+    }
+    let _ = writeln!(
+        out,
+        "{stretch}, so they can show values the recording never had there."
+    );
+    out
 }
 
 /// The arguments of `rewind diff`.

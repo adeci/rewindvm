@@ -718,6 +718,60 @@ in
         touch $out
       '';
 
+  # checks.state-replay: a replay is the recording's whole machine, not
+  # only its events. From boot, the machine matches at every keyframe;
+  # from each keyframe, at every later one, which shows restoring leaves
+  # nothing out; and comparing only at the last keyframe, with no capture
+  # before it, it matches there too, which shows taking keyframes changes
+  # nothing the guest sees. A fork matches at the keyframes it shares
+  # with its parent and its own. A keyframe whose last page is made to
+  # name other contents must make the replay differ, or the comparison
+  # could be comparing nothing. Needs /dev/kvm.
+  state-replay =
+    pkgs.runCommand "rewind-state-replay"
+      {
+        nativeBuildInputs = [ rewind ];
+        requiredSystemFeatures = [ "kvm" ];
+      }
+      ''
+        export REWIND_HOME=$TMPDIR/rewind
+        rewind run -q --name a --root ${busyboxRoot} -- sh -c 'for i in $(seq 1500); do echo $i; done; head -c 64 /dev/urandom | od -An -tx1'
+        a=$(dirname "$(grep -l '"name": "a"' $REWIND_HOME/runs/*/manifest.json)")
+        keyframes() { ls "$a/keyframes" | grep '\.kf$' | sed 's/\.kf$//; s/^0*//'; }
+        echo "keyframes: $(keyframes | tr '\n' ' ')"
+        test "$(keyframes | wc -l)" -ge 3
+
+        rewind replay a | tee from-boot
+        grep -q "^identical to the recording: .*, and the whole machine at its $(keyframes | wc -l) keyframes$" from-boot
+
+        for k in $(keyframes | sed '$d'); do
+          rewind replay a --from "$k" | tee from-$k
+          grep -q "^identical to the recording from the snapshot at step $k to the end, and the whole machine" from-$k
+        done
+
+        rewind replay a --machine last | tee last
+        grep -q '^identical to the recording: .*, and the whole machine at its keyframe$' last
+
+        fork=$(rewind fork a 400 --schedule 3 --json | sed -n 's/.*"id":"\([0-9a-f]*\)".*/\1/p')
+        rewind replay $fork | tee fork
+        grep -q '^identical to the recording: .*, and the whole machine at its' fork
+
+        # The negative test: the last keyframe names other contents for
+        # its last page, the last 32 bytes of its file. Its events stay
+        # the same, the machine does not, and a look before it warns.
+        last=$(ls "$a/keyframes" | grep '\.kf$' | tail -1)
+        size=$(stat -c %s "$a/keyframes/$last")
+        head -c 32 /dev/zero | tr '\0' '\377' |
+          dd of="$a/keyframes/$last" bs=1 seek=$((size - 32)) conv=notrunc 2> /dev/null
+        ! rewind replay a --machine last > tampered
+        cat tampered
+        grep -q '^identical to the recording: ' tampered
+        grep -q '^the machine is DIFFERENT from the recording at the keyframe at step ' tampered
+        grep -q 'not in the page store' tampered
+        grep -q 'rewind replay [0-9a-f]* --bisect' tampered
+        touch $out
+      '';
+
   # checks.determinism-sources: each probe in nix/determinism reaches for
   # something a guest could read from the host past the monitor, and is
   # recorded and replayed. The hardware counters perf_event_open offers
@@ -755,6 +809,21 @@ in
           ! rewind replay rdrand > rdrand.replay
           cat rdrand.replay
           grep -q '^DIFFERENT' rdrand.replay
+
+          # hidden keeps the number it drew and prints a fixed word: its
+          # events replay identically, its machine does not, and the
+          # replay names the variable that holds the number. A look
+          # before that keyframe warns that it may show values the
+          # recording never had.
+          rewind run -q --name hidden --root ${determinismRoot} -- /bin/hidden
+          ! rewind replay hidden > hidden.replay
+          cat hidden.replay
+          grep -q '^identical to the recording: ' hidden.replay
+          grep -q '^the machine is DIFFERENT from the recording at the keyframe at step ' hidden.replay
+          grep -q 'secret, a variable (hidden.c:' hidden.replay
+          differs=$(sed -n 's/^the machine is DIFFERENT from the recording at the keyframe at step \([0-9]*\)\..*/\1/p' hidden.replay)
+          rewind cat hidden $((differs - 1)) /bin/hidden 2> look.err > /dev/null
+          grep -q 'can be values the recording never had' look.err
 
           # Executing the run's inputs again keeps its keyframes, makes
           # another trace, and blames the host rather than the build.

@@ -470,6 +470,28 @@ impl Machine {
         Ok(walk(read, page_table, address, levels))
     }
 
+    /// The user addresses the page table at physical address `page_table`
+    /// maps to each of `frames`, physical page addresses, as (frame,
+    /// virtual address) in address order: where in a process the guest
+    /// memory at those frames is.
+    pub fn mappings_in(
+        &self,
+        page_table: u64,
+        frames: &std::collections::BTreeSet<u64>,
+    ) -> Result<Vec<(u64, u64)>> {
+        let levels = if self.vcpu.get_sregs()?.cr4 & CR4_LA57 != 0 {
+            Levels::Five
+        } else {
+            Levels::Four
+        };
+        let read = |physical: u64| {
+            let mut entry = [0u8; PTE_SIZE as usize];
+            self.dev.ram.read(physical, &mut entry).ok()?;
+            Some(u64::from_le_bytes(entry))
+        };
+        Ok(mappings(read, page_table, levels, frames))
+    }
+
     /// Reads the VM's memory at a physical address, as the guest wrote it.
     pub fn read_physical(&self, physical: u64, buf: &mut [u8]) -> Result<()> {
         self.read_ram(physical, buf)
@@ -561,6 +583,55 @@ fn dr7(traps: &[Trap]) -> Result<u64> {
         dr7 |= condition << (DR7_CONDITIONS + DR7_BITS_PER_CONDITION * i as u32);
     }
     Ok(dr7)
+}
+
+/// The entries of the top table that map user space: its lower half.
+const USER_ENTRIES: u64 = 1 << (INDEX_BITS - 1);
+
+/// Every user page the page tables rooted at `root` map to one of
+/// `frames`, physical page addresses, as (frame, virtual address) in
+/// address order, reading each entry with `read`. A large page maps each
+/// of the frames inside it at its offset.
+fn mappings(
+    read: impl Fn(u64) -> Option<u64>,
+    root: u64,
+    levels: Levels,
+    frames: &std::collections::BTreeSet<u64>,
+) -> Vec<(u64, u64)> {
+    let mut found = Vec::new();
+    let top = levels.count() - 1;
+    let mut tables = vec![(root & PTE_ADDRESS, top, 0u64, USER_ENTRIES)];
+
+    // Depth first, each table's entries in order, so the addresses come
+    // out in order.
+    while let Some((table, level, base, entries)) = tables.pop() {
+        let shift = PAGE_SHIFT + INDEX_BITS * level;
+        let mut below = Vec::new();
+        for index in 0..entries {
+            let Some(entry) = read(table + index * PTE_SIZE) else {
+                continue;
+            };
+            if entry & PTE_PRESENT == 0 {
+                continue;
+            }
+            let address = base | (index << shift);
+            let large = matches!(level, 1 | 2) && entry & PTE_LARGE != 0;
+            if level > 0 && !large {
+                below.push((entry & PTE_ADDRESS, level - 1, address, 1 << INDEX_BITS));
+                continue;
+            }
+
+            // A page of 4 KiB, or a large one holding many frames.
+            let size = 1u64 << shift;
+            let start = entry & PTE_ADDRESS & !(size - 1);
+            for frame in frames.range(start..start + size) {
+                found.push((*frame, address + (frame - start)));
+            }
+        }
+        tables.extend(below.into_iter().rev());
+    }
+    found.sort_by_key(|(_, address)| *address);
+    found
 }
 
 /// How many bytes from `address` to the end of its page.
@@ -836,6 +907,34 @@ mod tests {
         let read = |p| t.read(p);
         assert_eq!(walk(read, 0x1000, address, Levels::Five), Some(0x9234));
         assert_eq!(walk(read, 0x1000, address, Levels::Four), None);
+    }
+
+    /// The reverse of a walk: the user addresses that map each of a set of
+    /// frames, through 4 KiB pages and a 2 MiB one, in address order.
+    /// Frames nothing maps are not listed, and neither is the kernel's
+    /// half of the table.
+    #[test]
+    fn the_user_addresses_that_map_a_frame_are_found() {
+        let small = 0x40_5000;
+        let large = 0x7f00_0020_0000;
+        let mut t = Tables::default();
+        t.entry(0x1000, index(small, 3), 0x2000, 0);
+        t.entry(0x2000, index(small, 2), 0x3000, 0);
+        t.entry(0x3000, index(small, 1), 0x4000, 0);
+        t.entry(0x4000, index(small, 0), 0x9000, 0);
+        t.entry(0x4000, index(small, 0) + 1, 0xa000, 0);
+        t.entry(0x1000, index(large, 3), 0x5000, 0);
+        t.entry(0x5000, index(large, 2), 0x6000, 0);
+        t.entry(0x6000, index(large, 1), 0x20_0000, PTE_LARGE);
+        t.entry(0x1000, 256, 0x7000, 0);
+        t.entry(0x7000, 0, 0x8000, PTE_LARGE);
+        let frames: std::collections::BTreeSet<u64> =
+            [0x9000, 0x20_3000, 0xb000, 0x8000].into_iter().collect();
+        let read = |p| t.read(p);
+        assert_eq!(
+            mappings(read, 0x1000, Levels::Four, &frames),
+            vec![(0x9000, small), (0x20_3000, large + 0x3000)]
+        );
     }
 
     #[test]

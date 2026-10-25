@@ -4,7 +4,7 @@
 # whatever else gdb prints. With $rewind_tid set, gdb is connected to a fork
 # of the run, and the object lists that thread's frames, innermost first.
 # With $rewind_address set, gdb has only the symbol files, and the object
-# names the function, source line and file the address is in.
+# names the function or variable, source line and file the address is in.
 
 import json
 import re
@@ -95,10 +95,29 @@ def frames_of(tid):
     return {"frames": frames}
 
 
+def variable_named(name):
+    """The global or static variable called name, or None."""
+    for lookup in (gdb.lookup_global_symbol, gdb.lookup_static_symbol):
+        found = lookup(name)
+        if found is not None and found.is_variable and found.symtab is not None:
+            return found
+    return None
+
+
 def place_of(address):
-    """The function, offset, source line and file of an address."""
+    """The function or variable, offset, source line and file of an
+    address. A variable's line is where it is defined."""
     symbol = info_symbol(address)
     filename, fullname, line = source_of(gdb.find_pc_line(address))
+    variable = None
+    if symbol is not None and line is None:
+        variable = variable_named(symbol.group("name"))
+    if variable is not None:
+        filename, fullname, line = (
+            variable.symtab.filename,
+            variable.symtab.fullname(),
+            variable.line,
+        )
     return {
         "address": "{:#x}".format(address),
         "function": symbol.group("name") if symbol is not None else None,
@@ -107,6 +126,7 @@ def place_of(address):
         "fullname": fullname,
         "line": line,
         "object": object_of(address),
+        "variable": variable is not None,
     }
 
 

@@ -17,7 +17,7 @@ use rewind_trace::schedule::Timer;
 use rewind_trace::stop::StalledThread;
 use rewind_trace::{Event, EventKind, Trace, TraceWriter};
 use rewind_vmm::{Config, Machine, Observer, Outcome, Stop};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cpio;
 use crate::home::Home;
@@ -337,17 +337,32 @@ impl Observer for Recorder {
     }
 }
 
-/// A replay from a keyframe, as [`Run::replay_from`] made it.
+/// At which of a run's keyframes a replay compares the whole machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompareMachine {
+    /// At every keyframe after where the replay starts.
+    Every,
+    /// Only at the last: the replay takes no capture before it, so it
+    /// runs as the recording would have without keyframes, which shows
+    /// that taking them changes nothing the guest sees.
+    Last,
+    /// Nowhere: only the events and records are compared.
+    Never,
+}
+
+/// A replay of a run, as [`Run::replay_machine`] made it.
 #[derive(Debug)]
-pub struct ReplayedFrom {
-    /// The step of the keyframe it started from.
-    pub keyframe: u64,
-    /// The run's events after the keyframe, and the replay's.
+pub struct Replayed {
+    /// The step of the keyframe it started from, or None from boot.
+    pub keyframe: Option<u64>,
+    /// The run's events from where the replay started, and the replay's.
     pub original: Trace,
     pub again: Trace,
     /// Where the replay first differed from the run, events or read and
     /// write records; None when it made the same records.
     pub divergence: Option<rewind_trace::Divergence>,
+    /// What comparing the whole machine at the run's keyframes found.
+    pub machine: crate::state::Compared,
 }
 
 /// A trace an execution writes beside the run's recorded one. The new
@@ -408,6 +423,18 @@ impl Drop for NewTrace {
 /// What a replay's trace is named after in the run's directory, before
 /// `temp_beside` makes the name its own.
 const REPLAY_TRACE: &str = "replay.bin";
+
+/// The file in a run's directory that says a replay found the run's
+/// machine different from its recording at a keyframe.
+const MACHINE_DIFFERS: &str = "machine-differs.json";
+
+/// What [`MACHINE_DIFFERS`] holds: the step of the keyframe that differed,
+/// and of the last one before it that matched.
+#[derive(Debug, Serialize, Deserialize)]
+struct MachineMark {
+    step: u64,
+    matched: Option<u64>,
+}
 
 /// A trace a replay writes to compare with the recording. Each replay
 /// gets its own file, so replays of one run can run at once, and the
@@ -891,6 +918,12 @@ impl Run {
             .map(|(hash, recorded_by)| Kept { hash, recorded_by });
         replaces(&manifest.id, kept, &trace_hash, crate::VERSION)?;
         new_trace.keep()?;
+
+        // What a replay found of the recording this one replaces is not
+        // this one's.
+        if !keep {
+            let _ = fs::remove_file(dir.join(MACHINE_DIFFERS));
+        }
         manifest.trace_hash = Some(trace_hash);
 
         // Where a fork parts from its parent, while the parent is here to
@@ -1247,18 +1280,31 @@ impl Run {
         Ok(records[after..].to_vec())
     }
 
-    /// Restores the keyframe at or before `step` and runs to the end.
-    /// Returns the keyframe's step, the original trace after it and the
-    /// new one, which should be the same, read and write records included:
-    /// the claim every keyframe makes.
-    pub fn replay_from(&self, home: &Home, step: u64) -> Result<ReplayedFrom> {
+    /// Runs the same inputs again, from boot or from the keyframe at or
+    /// before `from`, to the end, and compares: the events and read and
+    /// write records with the run's, and at each keyframe of the run after
+    /// the start the whole machine with the keyframe's (see
+    /// [`crate::state`]). The claim every run and every keyframe makes is
+    /// that both come out the same.
+    pub fn replay_machine(
+        &self,
+        home: &Home,
+        from: Option<u64>,
+        compare: CompareMachine,
+    ) -> Result<Replayed> {
         let original = self.trace()?;
-        let kf = self
-            .keyframes()?
-            .steps()
-            .into_iter()
-            .rfind(|s| *s <= step)
-            .context("the run has no keyframe at or before that step")?;
+        let layers = self.keyframes()?;
+        let steps = layers.steps();
+        let start = match from {
+            None => None,
+            Some(step) => Some(
+                steps
+                    .iter()
+                    .copied()
+                    .rfind(|s| *s <= step)
+                    .context("the run has no keyframe at or before that step")?,
+            ),
+        };
         let (tmp, file) = ReplayTrace::create(&self.dir)?;
         let mut recorder = Recorder {
             trace: TraceWriter::new(file),
@@ -1268,27 +1314,104 @@ impl Run {
             error: None,
             pause_at_exit: false,
         };
-        let mut machine = self.machine_at(home, kf, Keep::Nothing, &mut recorder)?;
+        let mut machine = match start {
+            Some(kf) => self.machine_at(home, kf, Keep::Nothing, &mut recorder)?,
+            None => Machine::boot(&self.manifest.spec.config()?)?,
+        };
+
+        // To each keyframe after the start, comparing the machine there,
+        // then to the end. The recording's pages are read from the store
+        // to show the bytes that differ, when it still has them.
+        let store = rewind_store::Store::open(&home.store()).ok();
+        let system_map =
+            fs::read_to_string(self.manifest.spec.kernel.with_file_name(SYSTEM_MAP)).ok();
+        let mut watch = crate::state::Watch::new(&layers, store.as_ref(), system_map, start)?;
+        let after: Vec<u64> = steps
+            .iter()
+            .copied()
+            .filter(|s| start.is_none_or(|kf| *s > kf))
+            .collect();
+        let at = match compare {
+            CompareMachine::Every => after,
+            CompareMachine::Last => after.last().copied().into_iter().collect(),
+            CompareMachine::Never => Vec::new(),
+        };
+        for step in at {
+            let outcome = machine.run(Some(step), &mut recorder)?;
+            if !matches!(outcome, Outcome::Paused) || machine.step() != step {
+                break;
+            }
+            watch.at_keyframe(&mut machine)?;
+        }
         machine.run(None, &mut recorder)?;
         recorder.trace.finish()?;
         let records = rewind_trace::records(tmp.path())?;
         let again = Trace::decode(&records)?;
-        let suffix = Trace {
-            events: original.events[original.index_after(kf)..].to_vec(),
+        let original = match start {
+            Some(kf) => Trace {
+                events: original.events[original.index_after(kf)..].to_vec(),
+            },
+            None => original.clone(),
         };
 
-        // The events first, then the read and write records after the
-        // keyframe.
-        let divergence = suffix.divergence(&again).or_else(|| {
-            let made = self.records_after(kf).ok()?;
-            rewind_trace::io_records::divergence(&made, &records)
-        });
-        Ok(ReplayedFrom {
-            keyframe: kf,
-            original: suffix,
+        // The events first, then the read and write records.
+        let made = match start {
+            Some(kf) => self.records_after(kf)?,
+            None => self.records()?.to_vec(),
+        };
+        let divergence = original
+            .divergence(&again)
+            .or_else(|| rewind_trace::io_records::divergence(&made, &records));
+        Ok(Replayed {
+            keyframe: start,
+            original,
             again,
             divergence,
+            machine: watch.finish(),
         })
+    }
+
+    /// Notes in the run's directory that a replay found its machine
+    /// different from the recording at the keyframe `difference` names,
+    /// so a later look between the last keyframe that matched and that one
+    /// warns (see [`Run::machine_warning`]).
+    pub fn note_machine_difference(
+        &self,
+        difference: &crate::state::MachineDifference,
+    ) -> Result<()> {
+        let mark = MachineMark {
+            step: difference.step,
+            matched: difference.matched,
+        };
+        crate::image::write_atomic(
+            &self.dir.join(MACHINE_DIFFERS),
+            &serde_json::to_vec_pretty(&mark)?,
+        )
+    }
+
+    /// What a look inside the run at `step` should warn of: a replay
+    /// found the machine at a later keyframe different from the
+    /// recording, and a look before that keyframe starts from an earlier
+    /// one and replays the stretch where it changed, so it can show
+    /// values the recording never had. None for a step no replay has
+    /// found such a stretch around.
+    pub fn machine_warning(&self, step: u64) -> Option<String> {
+        let bytes = fs::read(self.dir.join(MACHINE_DIFFERS)).ok()?;
+        let mark: MachineMark = serde_json::from_slice(&bytes).ok()?;
+        let after = mark.matched.unwrap_or(0);
+        if step <= after || step >= mark.step {
+            return None;
+        }
+        let since = match mark.matched {
+            Some(matched) => format!("matched at step {matched}"),
+            None => "had matched at no keyframe before it".to_string(),
+        };
+        Some(format!(
+            "a replay of run {} found its machine at the keyframe at step {} different from \
+             the recording, and it {since}: step {step} is replayed through that stretch, and \
+             what it shows there can be values the recording never had",
+            self.manifest.id, mark.step
+        ))
     }
 
     /// The runs in a home, newest first.
@@ -1618,11 +1741,11 @@ fn thread_on_cpu(machine: &Machine) -> Option<StalledThread> {
 }
 
 /// The kernel's symbol table, beside its bzImage.
-const SYSTEM_MAP: &str = "System.map";
+pub(crate) const SYSTEM_MAP: &str = "System.map";
 
 /// `addr` as `symbol+0xoffset`, from the System.map text `map`: the symbol
 /// at the highest address not above it.
-fn kernel_symbol(map: &str, addr: u64) -> Option<String> {
+pub(crate) fn kernel_symbol(map: &str, addr: u64) -> Option<String> {
     map.lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
@@ -1633,6 +1756,15 @@ fn kernel_symbol(map: &str, addr: u64) -> Option<String> {
         .filter(|(start, _)| *start <= addr)
         .max_by_key(|(start, _)| *start)
         .map(|(start, name)| format!("{name}+{:#x}", addr - start))
+}
+
+/// The address of the symbol `name` in the System.map text `map`.
+pub(crate) fn kernel_symbol_address(map: &str, name: &str) -> Option<u64> {
+    map.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let start = fields.next()?;
+        (fields.nth(1)? == name).then(|| u64::from_str_radix(start, 16).ok())?
+    })
 }
 
 /// How a run stopped, for its manifest. `kernel` is the guest kernel the

@@ -27,6 +27,7 @@ pub mod run;
 #[cfg(test)]
 mod settle;
 pub mod source_cache;
+pub mod state;
 pub mod threads;
 
 pub use home::{Guest, Home};

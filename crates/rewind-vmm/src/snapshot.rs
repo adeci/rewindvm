@@ -42,46 +42,46 @@ pub struct Keyframe {
     /// The step of the keyframe whose memory this one's pages are written
     /// over, or None when this one holds every non-zero page.
     pub parent: Option<u64>,
-    cpu: CpuState,
-    irqchips: Vec<Vec<u8>>,
-    devices: DeviceState,
+    pub(crate) cpu: CpuState,
+    pub(crate) irqchips: Vec<Vec<u8>>,
+    pub(crate) devices: DeviceState,
     /// Guest page numbers and the hashes of their contents.
     pub pages: Vec<(u32, [u8; 32])>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct CpuState {
-    regs: Vec<u8>,
-    sregs: Vec<u8>,
-    xsave: Vec<u8>,
-    xcrs: Vec<u8>,
-    lapic: Vec<u8>,
-    msrs: Vec<(u32, u64)>,
-    events: Vec<u8>,
-    debugregs: Vec<u8>,
-    mp_state: Vec<u8>,
+pub(crate) struct CpuState {
+    pub(crate) regs: Vec<u8>,
+    pub(crate) sregs: Vec<u8>,
+    pub(crate) xsave: Vec<u8>,
+    pub(crate) xcrs: Vec<u8>,
+    pub(crate) lapic: Vec<u8>,
+    pub(crate) msrs: Vec<(u32, u64)>,
+    pub(crate) events: Vec<u8>,
+    pub(crate) debugregs: Vec<u8>,
+    pub(crate) mp_state: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct DeviceState {
-    now: u64,
-    deadline: Option<u64>,
-    shared: Option<u64>,
-    epoch: u64,
-    step: u64,
+pub(crate) struct DeviceState {
+    pub(crate) now: u64,
+    pub(crate) deadline: Option<u64>,
+    pub(crate) shared: Option<u64>,
+    pub(crate) epoch: u64,
+    pub(crate) step: u64,
     /// Guest branches counted so far, when virtual time follows them.
-    branches: u64,
+    pub(crate) branches: u64,
 }
 
 /// The bytes of a plain KVM structure.
-fn pod<T>(value: &T) -> Vec<u8> {
+pub(crate) fn pod<T>(value: &T) -> Vec<u8> {
     // SAFETY: the KVM structures saved here are plain C structs with no
     // pointers, so their bytes are their value.
     unsafe { std::slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) }.to_vec()
 }
 
 /// A plain KVM structure back from its bytes.
-fn unpod<T: Default>(bytes: &[u8]) -> Result<T> {
+pub(crate) fn unpod<T: Default>(bytes: &[u8]) -> Result<T> {
     if bytes.len() != size_of::<T>() {
         bail!(
             "keyframe holds {} bytes for a {}-byte {}",
@@ -341,9 +341,28 @@ fn final_pages(chain: &[Keyframe], ram_pages: usize) -> Result<Vec<(u32, &[u8; 3
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     // Keyframe chains as restoring reads them, with no VM.
     use super::*;
+
+    /// A keyframe whose vCPU has `regs`, `msrs` and every other structure
+    /// at KVM's zero value, for tests of what reads its state by name.
+    pub(crate) fn with_cpu(regs: &kvm_regs, msrs: &[(u32, u64)]) -> Keyframe {
+        Keyframe {
+            cpu: CpuState {
+                regs: pod(regs),
+                sregs: pod(&kvm_sregs::default()),
+                xsave: pod(&kvm_xsave::default()),
+                xcrs: pod(&kvm_xcrs::default()),
+                lapic: pod(&kvm_lapic_state::default()),
+                msrs: msrs.to_vec(),
+                events: pod(&kvm_vcpu_events::default()),
+                debugregs: pod(&kvm_debugregs::default()),
+                mp_state: pod(&kvm_mp_state::default()),
+            },
+            ..Keyframe::default()
+        }
+    }
 
     /// A keyframe at `step` over the one at `parent`, listing `pages`.
     fn kf(step: u64, parent: Option<u64>, pages: &[(u32, u8)]) -> Keyframe {
