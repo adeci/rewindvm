@@ -117,9 +117,9 @@ inside a read transaction, and nothing else is in its way.
 
 `rewind shell` opens a shell in a throwaway fork of the run at a step. gdb
 attaches to {{hung}} there and catches its next retry. The shell reads these
-lines from `gdb.sh`; typed in, they do the same:
+lines from [gdb.sh](../templates/nix-schema-migration-hang-gdb.sh); typed in, they do the same:
 
-```console run name=gdb elide cut=220 keep=^rewind:|^\[rewind\]|^>|^\[New|^#[0-7]\s|^Breakpoint|^Thread|^statement|^insert|^sqlite3_exec|^extended|^errmsg|^autocommit|^\[Inferior
+```console run name=gdb elide cut=220 keep=^rewind:|^\x5brewind]|^>|^\x5bNew|^#[0-7]\s|^Breakpoint|^Thread|^statement|^insert|^sqlite3_exec|^extended|^errmsg|^autocommit|^\x5bInferior
 $ rewind shell {{run|short}} {{shell_step}} --pid {{hung}} < gdb.sh
 ```
 

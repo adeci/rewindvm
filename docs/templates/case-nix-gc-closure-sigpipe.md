@@ -34,7 +34,7 @@ narrowed to this one test
 clock, which seeds its randomness, so these are the runs you get. It fails on
 schedule 0:
 
-```console run name=first cut=170 keep=^rewind:|^\+\(gc-closure.sh:45\)|^\+\+\(gc-closure.sh:14\)\snix|^\+*\(gc-closure.sh:1[45]\)\s(input2=|input2_out=|printf|head)|^1/1\smain\s-\s\S+\sFAIL
+```console run name=first cut=170 keep=^rewind:|^[+][(]gc-closure.sh:45[)]|^[+][+][(]gc-closure.sh:14[)]\snix|^[+]*[(]gc-closure.sh:1[45][)]\s(input2=|input2_out=|printf|head)|^1/1\smain\s-\s\S+\sFAIL
 $ rewind nix --epoch {{epoch}} '{{flake}}#nix-git-gc-closure'
 ```
 

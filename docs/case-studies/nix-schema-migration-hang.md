@@ -148,7 +148,7 @@ inside a read transaction, and nothing else is in its way.
 
 `rewind shell` opens a shell in a throwaway fork of the run at a step. gdb
 attaches to 220 there and catches its next retry. The shell reads these
-lines from `gdb.sh`; typed in, they do the same:
+lines from [gdb.sh](../templates/nix-schema-migration-hang-gdb.sh); typed in, they do the same:
 
 ```console
 $ rewind shell 0450b377 200000 --pid 220 < gdb.sh

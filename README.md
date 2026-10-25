@@ -256,7 +256,7 @@ licenses.
   Rewind's first run of Nix's functional tests failed in `gc-closure.sh`, a
   flake nobody had reported. A two-line `printf` piped into `head -n1` under
   `pipefail` is two writes, and when `head` exits between them the writer
-  dies of SIGPIPE. Rewind narrows the failure to the two steps between those
+  dies of SIGPIPE. `rewind threads` shows `head` taking the CPU between those
   writes; on the host the test never failed in 200 runs.
 - [A hang in Nix's store schema migration](docs/case-studies/nix-schema-migration-hang.md):
   a known, fixed bug, [NixOS/nix#15693](https://github.com/NixOS/nix/issues/15693),
