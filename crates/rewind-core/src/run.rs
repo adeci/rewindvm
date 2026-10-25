@@ -439,23 +439,40 @@ impl Drop for ReplayTrace {
     }
 }
 
-/// Whether a new execution's trace, hashed `new`, may replace the run's
-/// recording. An execution that kept an earlier one's keyframes, whose
-/// trace hashed `kept`, may replace it only with the same trace: those
-/// keyframes are of the earlier execution, and seeking with them in
-/// another trace goes another way.
-fn replaces(kept: Option<&str>, new: &str) -> Result<()> {
+/// The recording an execution kept the keyframes of: its trace's hash and
+/// the build of rewind that recorded it.
+struct Kept<'a> {
+    hash: &'a str,
+    recorded_by: &'a str,
+}
+
+/// Whether a new execution of run `id` by the build `this_build`, its
+/// trace hashed `new`, may replace the run's recording. An execution that
+/// kept an earlier one's keyframes may replace it only with the same
+/// trace: those keyframes are of the earlier execution, and seeking with
+/// them in another trace goes another way. A different trace from the
+/// build that made the recording means the run is not deterministic on
+/// this host.
+fn replaces(id: &RunId, kept: Option<Kept>, new: &str, this_build: &str) -> Result<()> {
     let Some(kept) = kept else {
         return Ok(());
     };
-    if kept != new {
+    if kept.hash == new {
+        return Ok(());
+    }
+    if kept.recorded_by == this_build {
         bail!(
-            "this build of rewind runs the inputs differently from the build that recorded \
-             the run, and the run's keyframes are of that recording; the recording stays as \
-             it was. Remove the run to record it with this build"
+            "executing run {id}'s inputs again made a different trace than its recording, by \
+             the same build of rewind, {this_build}: the run is not deterministic on this host. \
+             The recording and its keyframes stay as they were; `rewind replay {id} --bisect` \
+             finds the instruction that read something from the host"
         );
     }
-    Ok(())
+    bail!(
+        "this build of rewind runs the inputs differently from the build that recorded \
+         the run, and the run's keyframes are of that recording; the recording stays as \
+         it was. Remove the run to record it with this build"
+    )
 }
 
 /// How long taking a run's executing lock waits out a hold before refusing.
@@ -719,10 +736,12 @@ impl Run {
         let recorded = previous
             .as_ref()
             .is_some_and(|p| p.manifest.outcome.is_some());
-        let kept_hash = previous
-            .as_ref()
-            .filter(|_| keep)
-            .and_then(|p| p.manifest.trace_hash.clone());
+        let kept_by = previous.as_ref().filter(|_| keep).and_then(|p| {
+            Some((
+                p.manifest.trace_hash.clone()?,
+                p.manifest.recorded_by.clone(),
+            ))
+        });
 
         // A run that takes no keyframes of its own replays from boot, so it
         // reads none of another run's either: starting from them only made
@@ -867,7 +886,10 @@ impl Run {
 
         // The new trace replaces the recording, if it may.
         let trace_hash = crate::image::hash_file(new_trace.tmp())?;
-        replaces(kept_hash.as_deref(), &trace_hash)?;
+        let kept = kept_by
+            .as_ref()
+            .map(|(hash, recorded_by)| Kept { hash, recorded_by });
+        replaces(&manifest.id, kept, &trace_hash, crate::VERSION)?;
         new_trace.keep()?;
         manifest.trace_hash = Some(trace_hash);
 
@@ -1046,15 +1068,12 @@ impl Run {
     /// The error for a replay of this run that made a record other than
     /// the run's at step `differs`.
     fn went_another_way(&self, differs: u64) -> anyhow::Error {
-        anyhow::anyhow!(
-            "replaying run {} {} {differs} than when it was recorded, so this build of \
-             rewind, {}, runs its inputs differently from rewind {}, which recorded it; use \
-             that build, or record the run again with this one",
-            self.manifest.id,
-            rewind_trace::WENT_ANOTHER_WAY,
-            crate::VERSION,
-            self.manifest.recorded_by
-        )
+        anyhow::anyhow!(went_another_way_words(
+            &self.manifest.id,
+            differs,
+            &self.manifest.recorded_by,
+            crate::VERSION
+        ))
     }
 
     /// A machine at `step` of this run: the latest keyframe at or before
@@ -1657,6 +1676,34 @@ fn stop_of(
     })
 }
 
+/// Why a replay of run `id` made a record other than the run's at step
+/// `differs`, by the build `this_build`, of a run `recorded_by` recorded.
+/// Another build may run the same inputs another way. The same build
+/// running them another way means the run read something from this host
+/// that its inputs do not decide, and `rewind replay --bisect` finds the
+/// instruction that did.
+pub fn went_another_way_words(
+    id: &RunId,
+    differs: u64,
+    recorded_by: &str,
+    this_build: &str,
+) -> String {
+    let went = rewind_trace::WENT_ANOTHER_WAY;
+    if recorded_by == this_build {
+        return format!(
+            "replaying run {id} {went} {differs} than when it was recorded, by the same build \
+             of rewind, {this_build}: the run is not deterministic on this host. Something it \
+             read came from the host rather than from its inputs; `rewind replay {id} \
+             --bisect` finds the instruction that read it"
+        );
+    }
+    format!(
+        "replaying run {id} {went} {differs} than when it was recorded, so this build of \
+         rewind, {this_build}, runs its inputs differently from rewind {recorded_by}, which \
+         recorded it; use that build, or record the run again with this one"
+    )
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     // Specs and manifests without running anything: how far two schedules
@@ -1779,10 +1826,28 @@ pub(crate) mod tests {
     fn a_trace_that_differs_from_its_kept_keyframes_recording_is_refused() {
         // A new execution that kept the keyframes of an earlier one may
         // replace that one's trace only with the same trace; with none
-        // kept, any trace replaces it.
-        assert!(replaces(Some("aa"), "aa").is_ok());
-        assert!(replaces(Some("aa"), "bb").is_err());
-        assert!(replaces(None, "bb").is_ok());
+        // kept, any trace replaces it. A different trace from the build
+        // that recorded the run blames the host, and from another build
+        // blames the builds.
+        let id = id("a");
+        let by = |recorded_by| Kept {
+            hash: "aa",
+            recorded_by,
+        };
+        assert!(replaces(&id, Some(by("0.9.0 (x)")), "aa", "0.9.0 (x)").is_ok());
+        assert!(replaces(&id, None, "bb", "0.9.0 (x)").is_ok());
+        let same = replaces(&id, Some(by("0.9.0 (x)")), "bb", "0.9.0 (x)")
+            .unwrap_err()
+            .to_string();
+        assert!(same.contains("not deterministic on this host"), "{same}");
+        assert!(same.contains("--bisect"), "{same}");
+        let other = replaces(&id, Some(by("0.8.0 (y)")), "bb", "0.9.0 (x)")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            other.contains("Remove the run to record it with this build"),
+            "{other}"
+        );
     }
 
     #[test]
@@ -2506,6 +2571,23 @@ pub(crate) mod tests {
              and 2 more"
         );
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_replay_by_the_recording_build_blames_the_host() {
+        // A replay that went another way under the build that recorded
+        // the run says the run is not deterministic on this host and how
+        // to find out why; under another build it blames the builds.
+        let id = id("a");
+        let same = went_another_way_words(&id, 311, "0.9.0 (abc)", "0.9.0 (abc)");
+        assert!(same.contains(rewind_trace::WENT_ANOTHER_WAY), "{same}");
+        assert!(same.contains("not deterministic on this host"), "{same}");
+        assert!(same.contains("--bisect"), "{same}");
+        assert!(!same.contains("this build"), "{same}");
+        let other = went_another_way_words(&id, 311, "0.8.1 (def)", "0.9.0 (abc)");
+        assert!(other.contains(rewind_trace::WENT_ANOTHER_WAY), "{other}");
+        assert!(other.contains("0.8.1 (def)"), "{other}");
+        assert!(other.contains("record the run again"), "{other}");
     }
 
     #[test]

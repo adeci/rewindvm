@@ -941,6 +941,41 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         }
         return Ok(ExitCode::SUCCESS);
     };
+    // The runs on both sides of the difference must each replay exactly
+    // here before the search says what decides it. One that does not
+    // differs for a reason no schedule, seed or directory order holds:
+    // something it read came from the host. A search where every run
+    // agreed never gets here, so only one that found a difference pays
+    // for the two replays, a small part of what narrowing it costs.
+    let (found_words, found_run, base_side) = match &found {
+        Found::Seed(i) => (name(seeded[*i].seed, STOCK_DIRENTS, 0), &seeded[*i].base, 0),
+        Found::Key(run) => (
+            format!("dirents {}", dirents_of(&run.manifest.spec.cmdline)),
+            &**run,
+            0,
+        ),
+        Found::Schedule(i, worst) => (
+            name(seeded[*i].seed, STOCK_DIRENTS, worst.manifest.spec.schedule),
+            &**worst,
+            *i,
+        ),
+    };
+    let base_side_words = if seeded[base_side].seed == first_seed {
+        base_words.clone()
+    } else {
+        name(seeded[base_side].seed, STOCK_DIRENTS, 0)
+    };
+    status(&format!(
+        "{} replaying {base_side_words} and {found_words}, each of which must replay exactly",
+        color::stderr().prefix()
+    ));
+    let replayed = replays_exactly(&[
+        (base_side_words.as_str(), &seeded[base_side].base),
+        (found_words.as_str(), found_run),
+    ]);
+    clear_status();
+    replayed?;
+
     if no_narrow {
         if json {
             println!("{}", search(serde_json::Value::Null));
@@ -1274,6 +1309,37 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
     );
     println!("\nopen both in the desktop app: {open}");
     Ok(ExitCode::FAILURE)
+}
+
+/// Replays each of `runs`, named by the words a search calls it, from boot
+/// on a thread each, and fails on the first that does not make its
+/// recording again, naming it and saying why: another build recorded it,
+/// or it is not deterministic on this host. Either way no schedule, seed
+/// or directory order decides how it ends.
+fn replays_exactly(runs: &[(&str, &Run)]) -> Result<()> {
+    let replays: Vec<_> = std::thread::scope(|scope| {
+        let handles: Vec<_> = runs
+            .iter()
+            .map(|(_, run)| scope.spawn(move || run.replay()))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("replaying a run panicked"))
+            .collect()
+    });
+    for ((words, run), replayed) in runs.iter().zip(replays) {
+        let Some(d) = replayed? else {
+            continue;
+        };
+        let why = rewind_core::run::went_another_way_words(
+            &run.manifest.id,
+            d.left_step.min(d.right_step),
+            &run.manifest.recorded_by,
+            rewind_core::VERSION,
+        );
+        bail!("no schedule decides this, since {words} does not replay exactly: {why}");
+    }
+    Ok(())
 }
 
 /// One seed of a search: the seed, its unperturbed run, how its perturbed

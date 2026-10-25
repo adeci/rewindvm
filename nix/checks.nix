@@ -755,6 +755,22 @@ in
           ! rewind replay rdrand > rdrand.replay
           cat rdrand.replay
           grep -q '^DIFFERENT' rdrand.replay
+
+          # Executing the run's inputs again keeps its keyframes, makes
+          # another trace, and blames the host rather than the build.
+          ! rewind run --name rdrand --root ${determinismRoot} -- /bin/rdrand 2> again.err
+          cat again.err
+          grep -q 'not deterministic on this host' again.err
+
+          # rewind check sees schedules of draw, whose exit status rdrand
+          # picks, end differently, and before it blames one it replays
+          # both sides, which do not replay exactly: the check stops there
+          # and blames the host.
+          ! rewind check --schedules 16 --root ${determinismRoot} -- /bin/draw > rdrand.check 2>&1
+          cat rdrand.check
+          grep -q 'no schedule decides this' rdrand.check
+          grep -q 'not deterministic on this host' rdrand.check
+          ! grep -q 'step .* decides it' rdrand.check
         else
           ! rewind run --name rdrand --root ${determinismRoot} -- /bin/rdrand 2> rdrand.err
           cat rdrand.err
