@@ -891,7 +891,9 @@ in
 
   # checks.cores: with --cores 4, the affinity system call busybox's nproc
   # reads, the sysfs list glibc reads and /proc/cpuinfo all say 4. Pinning to one of the four succeeds and to
-  # a fifth fails, as on a machine with four. With the default, all say 1.
+  # a fifth fails, as on a machine with four. A pinned task reads back the
+  # CPUs it was pinned to, and so does a child it starts, as libuv's
+  # thread_affinity test expects. With the default, all say 1.
   # Boots the VM, so it needs /dev/kvm.
   cores =
     pkgs.runCommand "rewind-cores"
@@ -907,6 +909,8 @@ in
           echo "cpuinfo $(grep -c ^processor /proc/cpuinfo)"
           taskset -c 3 echo "pinned 3" || echo "refused 3"
           taskset -c 4 echo "pinned 4" || echo "refused 4"
+          echo "nproc pinned $(taskset -c 2 nproc)"
+          taskset -c 1,2 sh -c "taskset -p \$\$" | grep -o "mask: [0-9a-f]*"
         '
         rewind run -q --name four --cores 4 --root ${busyboxRoot} -- sh -c "$probe"
         rewind log four | tee four
@@ -915,6 +919,8 @@ in
         grep -qx 'cpuinfo 4' four
         grep -qx 'pinned 3' four
         grep -qx 'refused 4' four
+        grep -qx 'nproc pinned 1' four
+        grep -qx 'mask: 6' four
 
         rewind run -q --name one --root ${busyboxRoot} -- sh -c "$probe"
         rewind log one | tee one
