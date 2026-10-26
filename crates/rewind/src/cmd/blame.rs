@@ -245,14 +245,23 @@ pub(crate) struct BlameArgs {
 /// What made a file's bytes in one run: the copies back to the process
 /// that wrote them.
 struct Chain {
-    hops: Vec<Writer>,
+    hops: Vec<Link>,
 }
 
 impl Chain {
     /// The `k`th writer, counting from the first.
     fn at(&self, k: usize) -> &Writer {
-        &self.hops[self.hops.len() - 1 - k]
+        &self.hops[self.hops.len() - 1 - k].writer
     }
+}
+
+/// One writer of a chain, and what it did with the file before it. The
+/// listing words each writer from `source`: a writer that renamed its
+/// file into place, as Cabal's copy does, opened another path than the
+/// writer after it, and comparing paths would call that writer a copier.
+struct Link {
+    writer: Writer,
+    source: Source,
 }
 
 /// Whether a writer's file was the same in both runs once it was done.
@@ -542,7 +551,12 @@ pub(crate) fn blame(home: &Home, args: BlameArgs) -> Result<ExitCode> {
 
     // Who wrote the file, from the last writer back.
     print_chain(&chains[0], &verdicts, origin_k, &path, ids[0]);
-    let programs = |c: &Chain| c.hops.iter().map(|h| label(&h.process)).collect::<Vec<_>>();
+    let programs = |c: &Chain| {
+        c.hops
+            .iter()
+            .map(|h| label(&h.writer.process))
+            .collect::<Vec<_>>()
+    };
     if programs(&chains[0]) == programs(&chains[1]) {
         println!(
             "Run {} made the file the same way, with the same programs.",
@@ -708,22 +722,9 @@ fn print_chain(chain: &Chain, verdicts: &[Option<Verdict>], origin_k: usize, pat
     let n = chain.hops.len();
     for (i, hop) in chain.hops.iter().enumerate() {
         let k = n - 1 - i;
-        let name = format!("{} (pid {})", label(&hop.process), hop.process.pid);
-        let step = grouped(hop.open);
-        let what = match chain.hops.get(i + 1) {
-            Some(earlier) if earlier.path != hop.path => {
-                format!(
-                    "{name} copied it from {}, starting at step {step}.",
-                    earlier.path
-                )
-            }
-            Some(_) => format!("{name} changed it in place, starting at step {step}."),
-            None if hop.path != path => {
-                format!("{name} wrote {}, starting at step {step}.", hop.path)
-            }
-            None => format!("{name} wrote it, starting at step {step}."),
-        };
-        let copy = chain.hops.get(i + 1).is_some_and(|e| e.path != hop.path);
+        let earlier = chain.hops.get(i + 1);
+        let what = what_it_did(hop, earlier, path);
+        let copy = matches!(hop.source, Source::Copied(_));
         let then = match (verdicts.get(k).copied().flatten(), k == origin_k) {
             (Some(Verdict::Differs), true) if k == 0 => {
                 "It is the first writer, and the file already differs when it is done."
@@ -744,6 +745,24 @@ fn print_chain(chain: &Chain, verdicts: &[Option<Verdict>], origin_k: usize, pat
             (None, _) => "",
         };
         println!("  {what} {then}");
+    }
+}
+
+/// What one writer of a chain did, as a sentence: copied the file, changed
+/// it in place, or, as the first writer, wrote it.
+fn what_it_did(hop: &Link, earlier: Option<&Link>, path: &str) -> String {
+    let writer = &hop.writer;
+    let name = format!("{} (pid {})", label(&writer.process), writer.process.pid);
+    let step = grouped(writer.open);
+    match (&hop.source, earlier) {
+        (Source::Copied(from), _) => {
+            format!("{name} copied it from {from}, starting at step {step}.")
+        }
+        (_, Some(_)) => format!("{name} changed it in place, starting at step {step}."),
+        (_, None) if writer.path != path => {
+            format!("{name} wrote {}, starting at step {step}.", writer.path)
+        }
+        (_, None) => format!("{name} wrote it, starting at step {step}."),
     }
 }
 
@@ -1018,10 +1037,13 @@ fn reads_of(log: &IoLog, process: &Process, from: u64, until: u64) -> Vec<(u64, 
 /// records: copied a file of the run it read that it names in its
 /// arguments, as a copier does, or that has the same name, as an install
 /// step's copy has; rewrote it, having read it first or opened it without
-/// emptying it; or made it.
-fn source_by_records(made: &Made, log: &IoLog, writer: &Writer) -> Source {
+/// emptying it; or made it. `known_as` is the path blame asked about,
+/// which differs from `writer.path` when the writer wrote a temporary
+/// file and renamed it into place, as Cabal's copy does; the same name is
+/// the name it was renamed to.
+fn source_by_records(made: &Made, log: &IoLog, writer: &Writer, known_as: &str) -> Source {
     let reads = reads_of(log, &writer.process, writer.open, writer.close);
-    let name = writer.path.rsplit('/').next().unwrap_or(&writer.path);
+    let name = known_as.rsplit('/').next().unwrap_or(known_as);
     let program = writer.process.name();
     let copier = COPIERS.contains(&program.rsplit('/').next().unwrap_or(&program));
 
@@ -1236,19 +1258,19 @@ fn chain(side: &Side, path: &str) -> Result<Chain> {
         // writer may have read the file it rewrites, so its earlier writer
         // comes next.
         let source = match side.log {
-            Some(log) => source_by_records(&side.made, log, &writer),
-            None => match copied_from(side.home, side.run, trace, &writer)? {
+            Some(log) => source_by_records(&side.made, log, &writer, &path),
+            None => match copied_from(side.home, side.run, trace, &writer, &path)? {
                 Some(copied) => Source::Copied(copied),
                 None => Source::Rewritten,
             },
         };
         before = writer.open.saturating_sub(1);
-        let next = match source {
-            Source::Copied(copied) => Some(copied),
+        let next = match &source {
+            Source::Copied(copied) => Some(copied.clone()),
             Source::Rewritten => Some(writer.path.clone()),
             Source::Made => None,
         };
-        hops.push(writer);
+        hops.push(Link { writer, source });
         let Some(next) = next else {
             break;
         };
@@ -1267,8 +1289,16 @@ fn chain(side: &Side, path: &str) -> Result<Chain> {
 /// install or cp, an argument naming a file the run wrote before with the
 /// copy's bytes. For any other program, an earlier file of the same name
 /// with the same bytes, as meson install copies what meson setup
-/// generated.
-fn copied_from(home: &Home, run: &Run, trace: &Trace, writer: &Writer) -> Result<Option<String>> {
+/// generated. The same name is that of `known_as`, the path blame asked
+/// about, which a writer that renamed its temporary file into place wrote
+/// under another name.
+fn copied_from(
+    home: &Home,
+    run: &Run,
+    trace: &Trace,
+    writer: &Writer,
+    known_as: &str,
+) -> Result<Option<String>> {
     let program = writer.process.name();
     let base = program.rsplit('/').next().unwrap_or(&program);
     let copy = read(home, run, writer.close, &writer.path)?;
@@ -1295,7 +1325,7 @@ fn copied_from(home: &Home, run: &Run, trace: &Trace, writer: &Writer) -> Result
     // the same bytes, as cmake's install step copies a library it built.
     // A program that rewrote the file in place, as ranlib and strip do,
     // matches none of them, and its earlier writer comes next instead.
-    let name = writer.path.rsplit('/').next().unwrap_or(&writer.path);
+    let name = known_as.rsplit('/').next().unwrap_or(known_as);
     let mut tried = Vec::new();
     for e in trace.events.iter().rev().filter(|e| e.step < writer.open) {
         let EventKind::Open { path, .. } = &e.kind else {
@@ -1622,8 +1652,103 @@ mod tests {
         ]);
         let w = writer("/out/lib.so", install, 20, 22, O_TRUNC);
         assert_eq!(
-            source_by_records(&Made::of(&trace), &log, &w),
+            source_by_records(&Made::of(&trace), &log, &w, "/out/lib.so"),
             Source::Copied("/build/lib.so".into())
+        );
+    }
+
+    #[test]
+    fn a_copy_renamed_into_place_is_found_by_its_final_name() {
+        // Cabal's Setup copy, which is no copier blame knows by name, read
+        // the library the build made, wrote a temporary file beside the
+        // output and renamed it into place. The writer of /out/lib.so is
+        // the writer of the temporary file, whose name matches nothing;
+        // the name it was renamed to matches the library it read.
+        const TEMPORARY: u32 = 4;
+        let open = |step, pid, path: &str| Event {
+            step,
+            pid,
+            tid: pid,
+            kind: EventKind::Open {
+                path: path.into(),
+                flags: O_TRUNC,
+            },
+        };
+        let trace = Trace {
+            events: vec![
+                open(10, 10, "/build/lib.so"),
+                open(20, 20, "/out/.copyFile20-1.tmp"),
+                Event {
+                    step: 23,
+                    pid: 20,
+                    tid: 20,
+                    kind: EventKind::Rename {
+                        from: "/out/.copyFile20-1.tmp".into(),
+                        to: "/out/lib.so".into(),
+                    },
+                },
+            ],
+        };
+        let setup = process(20, &["Setup", "copy"], 18);
+        let mut log = log(vec![
+            (
+                19,
+                Io::ReadOpen {
+                    tid: 20,
+                    path: LIB_BUILT,
+                },
+            ),
+            (
+                21,
+                Io::WriteOpen {
+                    tid: 20,
+                    file: 1,
+                    path: TEMPORARY,
+                },
+            ),
+        ]);
+        log.paths.push("/out/.copyFile20-1.tmp".into());
+        let w = writer("/out/.copyFile20-1.tmp", setup, 20, 22, O_TRUNC);
+        assert_eq!(
+            source_by_records(&Made::of(&trace), &log, &w, "/out/lib.so"),
+            Source::Copied("/build/lib.so".into())
+        );
+    }
+
+    #[test]
+    fn a_writer_after_a_rename_changed_the_file_in_place() {
+        // Setup copied the library into a temporary file and renamed it to
+        // /out/lib.so, which strip then rewrote. The two writers' paths
+        // differ, but strip changed the file in place and Setup is the one
+        // that copied: the sentences follow what chain found each writer
+        // did, not the paths.
+        let setup = Link {
+            writer: writer(
+                "/out/.copyFile20-1.tmp",
+                process(20, &["Setup", "copy"], 18),
+                20,
+                22,
+                O_TRUNC,
+            ),
+            source: Source::Copied("/build/lib.so".into()),
+        };
+        let strip = Link {
+            writer: writer(
+                "/out/lib.so",
+                process(30, &["strip", "/out/lib.so"], 28),
+                31,
+                33,
+                O_TRUNC,
+            ),
+            source: Source::Rewritten,
+        };
+        assert_eq!(
+            what_it_did(&strip, Some(&setup), "/out/lib.so"),
+            "strip (pid 30) changed it in place, starting at step 31."
+        );
+        assert_eq!(
+            what_it_did(&setup, None, "/out/lib.so"),
+            "Setup copy (pid 20) copied it from /build/lib.so, starting at step 20."
         );
     }
 
@@ -1652,7 +1777,7 @@ mod tests {
         ]);
         let w = writer("/out/lib.so", strip, 31, 33, O_TRUNC);
         assert_eq!(
-            source_by_records(&Made::of(&trace), &log, &w),
+            source_by_records(&Made::of(&trace), &log, &w, "/out/lib.so"),
             Source::Rewritten
         );
     }
@@ -1688,7 +1813,10 @@ mod tests {
             ),
         ]);
         let w = writer("/build/lib.so", ld, 10, 12, O_TRUNC);
-        assert_eq!(source_by_records(&Made::of(&trace), &log, &w), Source::Made);
+        assert_eq!(
+            source_by_records(&Made::of(&trace), &log, &w, "/build/lib.so"),
+            Source::Made
+        );
     }
 
     #[test]
