@@ -50,9 +50,18 @@ const PERF_COUNT_HW_INSTRUCTIONS: u64 = 1;
 
 /// Flag bits in perf_event_attr.flags.
 const FLAG_DISABLED: u64 = 1 << 0;
+/// Always on the hardware while enabled: the kernel never takes a pinned
+/// event off to share the counters, and puts one that cannot fit in an
+/// error state, where a read gives nothing, rather than counting short.
+const FLAG_PINNED: u64 = 1 << 2;
 const FLAG_EXCLUDE_KERNEL: u64 = 1 << 5;
 const FLAG_EXCLUDE_HV: u64 = 1 << 6;
 const FLAG_EXCLUDE_HOST: u64 = 1 << 19;
+
+/// Bits in perf_event_attr.read_format: a read gives, after the count,
+/// how long the event was enabled and how long it was on the hardware.
+const PERF_FORMAT_TOTAL_TIME_ENABLED: u64 = 1 << 0;
+const PERF_FORMAT_TOTAL_TIME_RUNNING: u64 = 1 << 1;
 
 const PERF_EVENT_IOC_ENABLE: u64 = 0x2400;
 const PERF_EVENT_IOC_DISABLE: u64 = 0x2401;
@@ -212,14 +221,53 @@ pub(crate) fn install_signal_handler() {
     });
 }
 
+/// What a read of a counter opened with [`PERF_FORMAT_TOTAL_TIME_ENABLED`]
+/// and [`PERF_FORMAT_TOTAL_TIME_RUNNING`] gives.
+#[repr(C)]
+#[derive(Debug, Default)]
+struct Reading {
+    value: u64,
+    enabled_ns: u64,
+    running_ns: u64,
+}
+
+impl Reading {
+    /// The count, when the counter was on the hardware the whole time it
+    /// was enabled. The kernel takes a counter off the hardware to share
+    /// it among more events than fit, and a count from part of the time
+    /// is short by work the guest did, so a run read it would not replay.
+    fn count(&self) -> Result<u64> {
+        if self.running_ns != self.enabled_ns {
+            bail!(
+                "the host took the guest's counter off the hardware: it counted for {} of {} ns, \
+                 so its count is short. Another program on the host is using the performance \
+                 counters, as perf does; stop it, or run on another host",
+                self.running_ns,
+                self.enabled_ns
+            );
+        }
+        Ok(self.value)
+    }
+}
+
 fn read_count(fd: i32) -> Result<u64> {
-    let mut value = 0u64;
-    // SAFETY: reading eight bytes into a u64.
-    let n = unsafe { libc::read(fd, (&mut value as *mut u64).cast(), 8) };
-    if n != 8 {
+    let mut reading = Reading::default();
+    let len = size_of::<Reading>();
+    // SAFETY: reading at most `len` bytes into a repr(C) struct of u64s.
+    let n = unsafe { libc::read(fd, (&mut reading as *mut Reading).cast(), len) };
+
+    // A pinned counter that could not get the hardware reads as end of
+    // file.
+    if n == 0 {
+        bail!(
+            "the host gave the guest's counter no place on the hardware: another program on the \
+             host is using the performance counters, as perf does; stop it, or run on another host"
+        );
+    }
+    if n != len as isize {
         return Err(io::Error::last_os_error()).context("reading the counter");
     }
-    Ok(value)
+    reading.count()
 }
 
 /// Opens a guest-mode counter on the calling thread, disabled; with a
@@ -231,7 +279,7 @@ fn open_event(event: CounterEvent, modes: Modes, sample_period: u64) -> Result<i
             CounterEvent::IntelRetiredConditionalBranches => (PERF_TYPE_RAW, 0x01c4),
             CounterEvent::Instructions => (PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS),
         };
-        let mut flags = FLAG_DISABLED | FLAG_EXCLUDE_HV | FLAG_EXCLUDE_HOST;
+        let mut flags = FLAG_DISABLED | FLAG_PINNED | FLAG_EXCLUDE_HV | FLAG_EXCLUDE_HOST;
         if modes == Modes::UserOnly {
             flags |= FLAG_EXCLUDE_KERNEL;
         }
@@ -241,6 +289,7 @@ fn open_event(event: CounterEvent, modes: Modes, sample_period: u64) -> Result<i
             config,
             flags,
             sample_period,
+            read_format: PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING,
             ..Default::default()
         };
         // SAFETY: a valid attr for the duration of the call.
@@ -259,5 +308,33 @@ fn open_event(event: CounterEvent, modes: Modes, sample_period: u64) -> Result<i
             bail!("perf_event_open for {event:?}: {err}; see /proc/sys/kernel/perf_event_paranoid");
         }
         Ok(fd)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_count_off_the_hardware_part_of_the_time_is_refused() {
+        // A reading whose counter ran the whole time it was enabled gives
+        // its count, as does one never enabled. One the kernel took off
+        // the hardware for part of that time, as it does to share the
+        // counters among more events than fit, is short and is refused.
+        let whole = Reading {
+            value: 1234,
+            enabled_ns: 5000,
+            running_ns: 5000,
+        };
+        assert_eq!(whole.count().unwrap(), 1234);
+        assert_eq!(Reading::default().count().unwrap(), 0);
+
+        let short = Reading {
+            value: 1000,
+            enabled_ns: 5000,
+            running_ns: 4000,
+        };
+        let err = short.count().unwrap_err().to_string();
+        assert!(err.contains("4000 of 5000 ns"), "{err}");
     }
 }
