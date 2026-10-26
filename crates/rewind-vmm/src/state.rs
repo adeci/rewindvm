@@ -274,10 +274,19 @@ fn segment(name: &str, s: &kvm_segment, fields: &mut Vec<Field>) {
     push(fields, &format!("{name} base"), s.base);
     push(fields, &format!("{name} limit"), s.limit.into());
     push(fields, &format!("{name} selector"), s.selector.into());
-    let attributes = [
-        s.type_, s.present, s.dpl, s.db, s.s, s.l, s.g, s.avl, s.unusable,
-    ];
-    fields.push((format!("{name} attributes"), attributes.to_vec()));
+
+    // An unusable segment, such as a null selector in ds in 64-bit mode,
+    // has only its DPL defined: Intel saves the rest of its access rights
+    // as whatever the CPU left there, and KVM reports them as they are.
+    // The guest cannot read them, and on an Intel host a replay from a
+    // keyframe saw ds's type as 1 where the recording had 0.
+    let attributes = match s.unusable {
+        0 => vec![
+            s.type_, s.present, s.dpl, s.db, s.s, s.l, s.g, s.avl, s.unusable,
+        ],
+        _ => vec![s.dpl, s.unusable],
+    };
+    fields.push((format!("{name} attributes"), attributes));
 }
 
 fn sregs(s: &kvm_sregs, fields: &mut Vec<Field>) {
@@ -485,6 +494,35 @@ mod tests {
             .map(|d| d.name)
             .collect();
         assert_eq!(names, ["pending exception", "pending exception error code"]);
+    }
+
+    #[test]
+    fn an_unusable_segment_s_undefined_attributes_are_not_a_difference() {
+        // Two keyframes whose ds is unusable, a null selector in 64-bit
+        // mode, with type 0 in one and 1 in the other, as an Intel host
+        // left them in checks.state-replay: no difference, since VMX
+        // leaves those bits undefined and the guest cannot read them. The
+        // same types on a usable ds do differ.
+        let with_ds = |type_: u8, unusable: u8| {
+            let mut kf = with_cpu(&kvm_regs::default(), &[]);
+            let mut sregs = kvm_sregs::default();
+            sregs.ds.type_ = type_;
+            sregs.ds.db = 1;
+            sregs.ds.unusable = unusable;
+            sregs.ds.present = 1 - unusable;
+            kf.cpu.sregs = crate::snapshot::pod(&sregs);
+            kf
+        };
+        let (left, right) = (with_ds(0, 1), with_ds(1, 1));
+        assert!(left.state_differences(&right).unwrap().is_empty());
+        let (left, right) = (with_ds(0, 0), with_ds(1, 0));
+        let names: Vec<String> = left
+            .state_differences(&right)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(names, ["ds attributes"]);
     }
 
     #[test]
