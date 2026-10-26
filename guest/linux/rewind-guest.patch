@@ -118,7 +118,7 @@ diff -ruN a/arch/x86/kernel/cpu/Makefile b/arch/x86/kernel/cpu/Makefile
 diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 --- a/arch/x86/kernel/cpu/rewind.c	1969-12-31 16:00:00.000000000 -0800
 +++ b/arch/x86/kernel/cpu/rewind.c	1969-12-31 16:00:00.000000000 -0800
-@@ -0,0 +1,1454 @@
+@@ -0,0 +1,1456 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Rewind VM guest platform.
@@ -430,6 +430,8 @@ diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 + * another thread acts makes no exit at all: the scheduler's clock stands
 + * still, so the loop uses up none of its slice, and no timer or interrupt
 + * comes due for the thread it waits on. The loop then runs forever.
++ * io_uring's submission polling thread calls this on each poll for the
++ * same reason.
 + */
 +void rewind_yield(void)
 +{
@@ -1653,6 +1655,34 @@ diff -ruN a/include/linux/random.h b/include/linux/random.h
  void __init add_bootloader_randomness(const void *buf, size_t len);
  void add_input_randomness(unsigned int type, unsigned int code,
  			  unsigned int value) __latent_entropy;
+diff -ruN a/io_uring/sqpoll.c b/io_uring/sqpoll.c
+--- a/io_uring/sqpoll.c	2026-09-25 07:37:14.000000000 -0700
++++ b/io_uring/sqpoll.c	2026-10-25 20:25:01.351617323 -0700
+@@ -15,6 +15,9 @@
+ #include <linux/io_uring.h>
+ 
+ #include <uapi/linux/io_uring.h>
++#ifdef CONFIG_REWIND_GUEST
++#include <asm/hypervisor.h>
++#endif
+ 
+ #include "io_uring.h"
+ #include "tctx.h"
+@@ -352,6 +355,14 @@
+ 		if (sqt_spin || !time_after(jiffies, timeout)) {
+ 			if (sqt_spin)
+ 				timeout = jiffies + sqd->sq_thread_idle;
++#ifdef CONFIG_REWIND_GUEST
++			/*
++			 * Virtual time moves only at exits, and a poll makes
++			 * none: without one here the idle time never passes and
++			 * no tick asks this thread to give up the CPU.
++			 */
++			rewind_yield();
++#endif
+ 			if (unlikely(need_resched())) {
+ 				mutex_unlock(&sqd->lock);
+ 				cond_resched();
 diff -ruN a/kernel/sched/syscalls.c b/kernel/sched/syscalls.c
 --- a/kernel/sched/syscalls.c	2026-09-25 07:37:14.000000000 -0700
 +++ b/kernel/sched/syscalls.c	2026-10-02 15:54:32.286596879 -0700
