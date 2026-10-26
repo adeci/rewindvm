@@ -910,7 +910,7 @@ in
           taskset -c 3 echo "pinned 3" || echo "refused 3"
           taskset -c 4 echo "pinned 4" || echo "refused 4"
           echo "nproc pinned $(taskset -c 2 nproc)"
-          taskset -c 1,2 sh -c "taskset -p \$\$" | grep -o "mask: [0-9a-f]*"
+          taskset -c 1,2 sh -c "taskset -p \$\$" | grep -o "mask: [0-9a-f]*" || echo "refused 1,2"
         '
         rewind run -q --name four --cores 4 --root ${busyboxRoot} -- sh -c "$probe"
         rewind log four | tee four
@@ -928,6 +928,7 @@ in
         grep -qx 'online 0' one
         grep -qx 'cpuinfo 1' one
         grep -qx 'refused 3' one
+        grep -qx 'refused 1,2' one
 
         rewind replay four | grep '^identical'
         touch $out
