@@ -514,10 +514,16 @@ pub(crate) fn replay(home: &Home, args: ReplayArgs) -> Result<ExitCode> {
             "{different_word} from the recording: {}",
             show::io_divergence(d)
         ),
-        (Some(d), None) => println!(
-            "{different_word} from the recording at event {} (step {} recorded, step {} replayed)",
-            d.index, d.left_step, d.right_step
-        ),
+        (Some(d), None) => {
+            let names = ["recording", "replay"];
+            match show::ran_out(d, &replayed.original, &replayed.again, names) {
+                Some(words) => println!("{different_word} from the recording: {words}"),
+                None => println!(
+                    "{different_word} from the recording at event {} (step {} recorded, step {} replayed)",
+                    d.index, d.left_step, d.right_step
+                ),
+            }
+        }
     }
 
     // The machine's, when it differed at a keyframe.

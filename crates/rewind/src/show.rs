@@ -437,19 +437,51 @@ const LEFT: &str = "left";
 const RIGHT: &str = "right";
 const SIDE_WIDTH: usize = 5;
 
+/// Where two traces differ when one of them has no event at the index
+/// where they first differ: the last event of the trace that ended and the
+/// next event of the other, each trace named by `names`. None when both
+/// have an event there, as two traces that part at an event both took do.
+/// A divergence's step for a trace that ran out is its last event's step.
+pub(crate) fn ran_out(
+    d: &Divergence,
+    left: &Trace,
+    right: &Trace,
+    names: [&str; 2],
+) -> Option<String> {
+    let [left_name, right_name] = names;
+    let (ended, ended_trace, went_on, next_step) = if d.index >= left.events.len() {
+        (left_name, left, right_name, d.right_step)
+    } else if d.index >= right.events.len() {
+        (right_name, right, left_name, d.left_step)
+    } else {
+        return None;
+    };
+
+    // The trace that ended, by its last event, or by having none.
+    let last = match d.index.checked_sub(1) {
+        Some(i) => format!("ends at event {i}, step {}", ended_trace.last_step()),
+        None => "has no events".to_string(),
+    };
+    Some(format!(
+        "the {ended} {last}, and the {went_on} goes on to event {} at step {next_step}",
+        d.index
+    ))
+}
+
 /// Where two runs first differ, with the events on each side, the left
 /// run's amber and the right run's blue.
 pub(crate) fn divergence(left: &Trace, right: &Trace, paint: Paint) -> String {
     let Some(d) = left.divergence(right) else {
         return format!("{}\n", paint.verdict(Same::Yes, "identical"));
     };
-    let mut out = format!(
-        "{} at event {}: step {} on the left, step {} on the right\n",
-        paint.verdict(Same::No, "first difference"),
-        d.index,
-        d.left_step,
-        d.right_step
-    );
+    let first = paint.verdict(Same::No, "first difference");
+    let mut out = match ran_out(&d, left, right, [LEFT, RIGHT]) {
+        Some(words) => format!("{first}: {words}\n"),
+        None => format!(
+            "{first} at event {}: step {} on the left, step {} on the right\n",
+            d.index, d.left_step, d.right_step
+        ),
+    };
     let context = d.index.saturating_sub(3)..d.index;
     for e in &left.events[context] {
         let _ = writeln!(out, "  {BOTH:<SIDE_WIDTH$} {}", event(e));
@@ -489,6 +521,57 @@ mod tests {
             io_divergence(&d),
             "the read and write records first differ at step 120 (record 4, step 121 replayed)"
         );
+    }
+
+    #[test]
+    fn a_trace_that_ran_out_of_events_says_so() {
+        // Two traces that agree on two events, one of which goes on to a
+        // third: the words name the last event of the one that ended and
+        // the next event of the other, whichever side ran out. Traces
+        // that differ at an event both have leave the usual words.
+        use rewind_trace::{Event, EventKind};
+        let mark = |step| Event {
+            step,
+            pid: 1,
+            tid: 1,
+            kind: EventKind::Mark { text: "x".into() },
+        };
+        let short = Trace {
+            events: vec![mark(10), mark(20)],
+        };
+        let long = Trace {
+            events: vec![mark(10), mark(20), mark(90)],
+        };
+        let names = ["recording", "replay"];
+        let d = short.divergence(&long).unwrap();
+        assert_eq!(
+            ran_out(&d, &short, &long, names).as_deref(),
+            Some(
+                "the recording ends at event 1, step 20, and the replay goes on to event 2 at step 90"
+            )
+        );
+        let d = long.divergence(&short).unwrap();
+        assert_eq!(
+            ran_out(&d, &long, &short, names).as_deref(),
+            Some(
+                "the replay ends at event 1, step 20, and the recording goes on to event 2 at step 90"
+            )
+        );
+
+        // A trace with no events at all ends before its first.
+        let empty = Trace { events: vec![] };
+        let d = empty.divergence(&short).unwrap();
+        assert_eq!(
+            ran_out(&d, &empty, &short, names).as_deref(),
+            Some("the recording has no events, and the replay goes on to event 0 at step 10")
+        );
+
+        // Both have an event where they differ.
+        let other = Trace {
+            events: vec![mark(10), mark(21)],
+        };
+        let d = short.divergence(&other).unwrap();
+        assert_eq!(ran_out(&d, &short, &other, names), None);
     }
 
     #[test]
