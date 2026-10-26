@@ -91,9 +91,9 @@ pub fn from_store_paths(paths: &[PathBuf], out: &Path) -> Result<()> {
 
     // tar reads the names from a file, since a closure can hold thousands
     // of them.
-    let list = out.with_extension("list");
+    let list = scratch_beside(out, "list");
     fs::write(&list, names.join("\n") + "\n")?;
-    let tar = out.with_extension("tar");
+    let tar = scratch_beside(out, "tar");
 
     let status = tar_command()
         .args(["--create", "--file"])
@@ -120,6 +120,17 @@ pub fn from_store_paths(paths: &[PathBuf], out: &Path) -> Result<()> {
     let _ = fs::remove_file(&tar);
     let _ = fs::remove_file(&list);
     built
+}
+
+/// A scratch file for building the image at `out`, named after all of
+/// `out`'s name. Replacing the extension instead would drop the writer's
+/// process id and count from a `temp_beside` name, and writers of one image
+/// in two processes would share the file.
+fn scratch_beside(out: &Path, kind: &str) -> PathBuf {
+    let mut name = out.as_os_str().to_owned();
+    name.push(".");
+    name.push(kind);
+    PathBuf::from(name)
 }
 
 /// The BLAKE3 hash of a file, in hex.
@@ -214,6 +225,21 @@ mod tests {
         assert_eq!(first.parent(), image.parent());
         let name = first.file_name().unwrap().to_string_lossy().into_owned();
         assert!(name.contains(&std::process::id().to_string()), "{name}");
+    }
+
+    #[test]
+    fn writers_of_one_image_build_from_their_own_scratch_files() {
+        // Two writers of the same store image, as two rewind check
+        // processes packing one closure are, each get a temporary name;
+        // the tar and name list built from each must differ too, or one
+        // writer deletes the tar the other's mkfs.erofs is reading.
+        let image = Path::new("/home/images/store-abc.erofs");
+        let first = temp_beside(image);
+        let second = temp_beside(image);
+        for kind in ["tar", "list"] {
+            assert_ne!(scratch_beside(&first, kind), scratch_beside(&second, kind));
+            assert!(is_temp_beside(image, &scratch_beside(&first, kind)));
+        }
     }
 
     #[test]
