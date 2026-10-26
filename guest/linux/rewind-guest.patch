@@ -9,7 +9,7 @@ diff -ruN a/arch/x86/include/asm/hypervisor.h b/arch/x86/include/asm/hypervisor.
  };
  
  #ifdef CONFIG_HYPERVISOR_GUEST
-@@ -66,9 +67,21 @@
+@@ -66,9 +67,23 @@
  extern const struct hypervisor_x86 x86_hyper_jailhouse;
  extern const struct hypervisor_x86 x86_hyper_acrn;
  extern const struct hypervisor_x86 x86_hyper_bhyve;
@@ -24,7 +24,9 @@ diff -ruN a/arch/x86/include/asm/hypervisor.h b/arch/x86/include/asm/hypervisor.
 +extern bool rewind_running;
 +u64 rewind_sched_clock(void);
 +struct cpumask;
-+void rewind_report_cpus(struct cpumask *mask);
++struct task_struct;
++void rewind_remember_cpus(struct task_struct *p, const struct cpumask *mask);
++void rewind_report_cpus(const struct task_struct *p, struct cpumask *mask);
 +const struct cpumask *rewind_fold_cpus(const struct cpumask *mask);
 +void rewind_yield(void);
 +#endif
@@ -118,7 +120,7 @@ diff -ruN a/arch/x86/kernel/cpu/Makefile b/arch/x86/kernel/cpu/Makefile
 diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 --- a/arch/x86/kernel/cpu/rewind.c	1969-12-31 16:00:00.000000000 -0800
 +++ b/arch/x86/kernel/cpu/rewind.c	1969-12-31 16:00:00.000000000 -0800
-@@ -0,0 +1,1456 @@
+@@ -0,0 +1,1471 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Rewind VM guest platform.
@@ -784,12 +786,27 @@ diff -ruN a/arch/x86/kernel/cpu/rewind.c b/arch/x86/kernel/cpu/rewind.c
 +}
 +__setup("rewind.cpus=", rewind_parse_cpus);
 +
-+/* sched_getaffinity: every task may run on every CPU user space is told of. */
-+void rewind_report_cpus(struct cpumask *mask)
++/* sched_setaffinity: the CPUs user space is told of that @mask names. */
++void rewind_remember_cpus(struct task_struct *p, const struct cpumask *mask)
 +{
 +	if (rewind_cpus == 1)
 +		return;
-+	cpumask_bits(mask)[0] = GENMASK(rewind_cpus - 1, 0);
++	WRITE_ONCE(p->rewind_pinned,
++		   cpumask_bits(mask)[0] & GENMASK(rewind_cpus - 1, 0));
++}
++
++/*
++ * sched_getaffinity: the CPUs @p was pinned to, or every CPU user space is
++ * told of when it never was.
++ */
++void rewind_report_cpus(const struct task_struct *p, struct cpumask *mask)
++{
++	unsigned long pinned;
++
++	if (rewind_cpus == 1)
++		return;
++	pinned = READ_ONCE(p->rewind_pinned);
++	cpumask_bits(mask)[0] = pinned ? pinned : GENMASK(rewind_cpus - 1, 0);
 +}
 +
 +/*
@@ -1655,6 +1672,23 @@ diff -ruN a/include/linux/random.h b/include/linux/random.h
  void __init add_bootloader_randomness(const void *buf, size_t len);
  void add_input_randomness(unsigned int type, unsigned int code,
  			  unsigned int value) __latent_entropy;
+diff -ruN a/include/linux/sched.h b/include/linux/sched.h
+--- a/include/linux/sched.h	2026-09-25 07:37:14.000000000 -0700
++++ b/include/linux/sched.h	2026-10-26 00:00:00.000000000 -0700
+@@ -932,6 +932,13 @@
+ 	const cpumask_t			*cpus_ptr;
+ 	cpumask_t			*user_cpus_ptr;
+ 	cpumask_t			cpus_mask;
++#ifdef CONFIG_REWIND_GUEST
++	/*
++	 * The CPUs user space pinned the task to, of those a Rewind guest
++	 * tells it of, or 0 for all of them. A child inherits them.
++	 */
++	unsigned long			rewind_pinned;
++#endif
+ 	void				*migration_pending;
+ 	unsigned short			migration_disabled;
+ 	unsigned short			migration_flags;
 diff -ruN a/io_uring/sqpoll.c b/io_uring/sqpoll.c
 --- a/io_uring/sqpoll.c	2026-09-25 07:37:14.000000000 -0700
 +++ b/io_uring/sqpoll.c	2026-10-25 20:25:01.351617323 -0700
@@ -1696,30 +1730,46 @@ diff -ruN a/kernel/sched/syscalls.c b/kernel/sched/syscalls.c
  
  #include "sched.h"
  #include "autogroup.h"
-@@ -1200,6 +1203,11 @@
+@@ -1200,6 +1203,16 @@
  	struct cpumask *user_mask;
  	int retval;
  
 +#ifdef CONFIG_REWIND_GUEST
-+	/* A Rewind guest may tell user space of more CPUs than it has. */
++	/*
++	 * A Rewind guest may tell user space of more CPUs than it has. The
++	 * mask as asked for is what sched_getaffinity reports back.
++	 */
++	const struct cpumask *requested = in_mask;
++
 +	in_mask = rewind_fold_cpus(in_mask);
 +#endif
 +
  	CLASS(find_get_task, p)(pid);
  	if (!p)
  		return -ESRCH;
-@@ -1291,6 +1299,10 @@
+@@ -1236,6 +1249,10 @@
+ 
+ 	retval = __sched_setaffinity(p, &ac);
+ 	kfree(ac.user_mask);
++#ifdef CONFIG_REWIND_GUEST
++	if (!retval)
++		rewind_remember_cpus(p, requested);
++#endif
+ 
+ 	return retval;
+ }
+@@ -1291,6 +1308,10 @@
  
  	guard(raw_spinlock_irqsave)(&p->pi_lock);
  	cpumask_and(mask, &p->cpus_mask, cpu_active_mask);
 +#ifdef CONFIG_REWIND_GUEST
 +	/* A Rewind guest may tell user space of more CPUs than it has. */
-+	rewind_report_cpus(mask);
++	rewind_report_cpus(p, mask);
 +#endif
  
  	return 0;
  }
-@@ -1337,6 +1349,11 @@
+@@ -1337,6 +1358,11 @@
  	struct rq_flags rf;
  	struct rq *rq;
  
