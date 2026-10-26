@@ -2074,6 +2074,93 @@ in
         touch $out
       '';
 
+  # checks.sqpoll: a program with an io_uring whose submissions a kernel
+  # thread polls for (IORING_SETUP_SQPOLL) finishes under every schedule.
+  # The thread polls in a loop with no exit until its idle time passes,
+  # and virtual time moves only at exits, so before each poll made one the
+  # VM ran io_sq_thread forever. The program waits past the idle time
+  # between its two submissions, so the thread also has to go to sleep and
+  # be woken. libuv's io_uring tests set up such rings. Boots the VM, so it
+  # needs /dev/kvm.
+  sqpoll =
+    let
+      source = pkgs.writeText "sqpoll.c" ''
+        #include <liburing.h>
+        #include <stdio.h>
+        #include <string.h>
+        #include <unistd.h>
+
+        /* How long the polling thread polls with nothing to do before it
+           sleeps, in milliseconds, as libuv sets it. */
+        #define IDLE_MS 10
+
+        /* Submits a no-op and waits for its completion. */
+        static int nop(struct io_uring *ring) {
+            struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+            io_uring_prep_nop(sqe);
+            if (io_uring_submit(ring) != 1) {
+                return -1;
+            }
+            struct io_uring_cqe *cqe;
+            if (io_uring_wait_cqe(ring, &cqe) != 0) {
+                return -1;
+            }
+            io_uring_cqe_seen(ring, cqe);
+            return 0;
+        }
+
+        int main(void) {
+            struct io_uring ring;
+            struct io_uring_params params;
+            memset(&params, 0, sizeof(params));
+            params.flags = IORING_SETUP_SQPOLL;
+            params.sq_thread_idle = IDLE_MS;
+            int err = io_uring_queue_init_params(8, &ring, &params);
+            if (err != 0) {
+                printf("io_uring_queue_init_params: %s\n", strerror(-err));
+                return 1;
+            }
+
+            /* One submission while the thread polls, and one after it
+               has gone idle and has to be woken. */
+            if (nop(&ring) != 0) {
+                puts("first nop failed");
+                return 1;
+            }
+            usleep(5 * IDLE_MS * 1000);
+            if (nop(&ring) != 0) {
+                puts("second nop failed");
+                return 1;
+            }
+
+            io_uring_queue_exit(&ring);
+            puts("done");
+            return 0;
+        }
+      '';
+      root = pkgs.pkgsStatic.runCommandCC "rewind-sqpoll-root" { } ''
+        mkdir -p $out/bin
+        $CC -static -O2 -I${pkgs.pkgsStatic.liburing.dev}/include \
+          -o $out/bin/sqpoll ${source} ${pkgs.pkgsStatic.liburing}/lib/liburing.a
+      '';
+    in
+    pkgs.runCommand "rewind-sqpoll"
+      {
+        nativeBuildInputs = [
+          rewind
+          pkgs.coreutils
+        ];
+        requiredSystemFeatures = [ "kvm" ];
+      }
+      ''
+        export REWIND_HOME=$TMPDIR/rewind
+        rewind run --timeout 120 --root ${root} -- /bin/sqpoll | tee out
+        grep -qx done out
+        timeout 600 rewind check -j 4 --schedules 16 --timeout 120 --root ${root} -- /bin/sqpoll | tee found
+        grep -q 'same result under all 17 schedules' found
+        touch $out
+      '';
+
   # checks.pmu-boot: `rewind pmu enable` as the NixOS module's boot service
   # runs it, with no HOME or anything else in its environment. Whether the
   # workaround can be set depends on the machine, so this only checks that
