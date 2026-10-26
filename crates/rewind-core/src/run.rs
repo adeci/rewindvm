@@ -498,6 +498,15 @@ fn replaces(id: &RunId, kept: Option<Kept>, new: &str, this_build: &str) -> Resu
     )
 }
 
+/// Whether a new execution of a run keeps the keyframes of the recording
+/// that ended as `previous`, and so must make the same trace. A recording
+/// stopped at its wall-clock limit does not bind it: where it stopped was
+/// the host's doing, and this execution may go further. Its keyframes are
+/// of the same steps this one makes, and this one's land beside them.
+fn keeps_recording(previous: Option<&RunOutcome>) -> bool {
+    previous.is_some_and(|p| p.stop.timeout().is_none())
+}
+
 /// How long taking a run's executing lock waits out a hold before refusing.
 /// A process spawned while the lock is held keeps a copy of it until it
 /// starts its program, a moment after the holder gave it up; an execution
@@ -746,9 +755,7 @@ impl Run {
         let keep = keyframes == Keyframes::Take
             && own == crate::keyframes::Own::Readable
             && crate::keyframes::taken(&dir)
-            && previous
-                .as_ref()
-                .is_some_and(|p| p.manifest.outcome.is_some());
+            && keeps_recording(previous.as_ref().and_then(|p| p.manifest.outcome.as_ref()));
         if own == crate::keyframes::Own::Unreadable {
             fs::remove_dir_all(dir.join(crate::keyframes::DIR))?;
         }
@@ -2031,6 +2038,33 @@ pub(crate) mod tests {
             other.contains("Remove the run to record it with this build"),
             "{other}"
         );
+    }
+
+    #[test]
+    fn only_a_recording_that_ended_by_itself_binds_the_next_execution() {
+        // A run executed again keeps an earlier recording's keyframes, and
+        // must make the same trace, only when that recording ended by
+        // itself. One that reached its wall-clock limit stopped where this
+        // host's speed left it: the same run with another limit, as
+        // `rewind check` gives schedule 0 after `rewind run --timeout`,
+        // goes on further, and that is no sign the run is not
+        // deterministic.
+        let ended = |stop| RunOutcome {
+            stop,
+            step: 9,
+            virtual_ns: 0,
+            status: None,
+            wall_ms: 0,
+        };
+        let timed_out = rewind_trace::stop::Stop::TimedOut(rewind_trace::stop::Timeout {
+            since_exit_ms: 0,
+            doing: rewind_trace::stop::Doing::MakingExits,
+        });
+        assert!(keeps_recording(Some(&ended(
+            rewind_trace::stop::Stop::PoweredOff
+        ))));
+        assert!(!keeps_recording(Some(&ended(timed_out))));
+        assert!(!keeps_recording(None));
     }
 
     #[test]
