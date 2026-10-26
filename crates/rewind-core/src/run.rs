@@ -963,13 +963,25 @@ impl Run {
             pause_at_exit: false,
         };
         let mut machine = Machine::boot(&self.manifest.spec.config()?)?;
-        machine.run(None, &mut recorder)?;
+        machine.run(self.replay_end(), &mut recorder)?;
         recorder.trace.finish()?;
         let records = rewind_trace::records(tmp.path())?;
         let again = Trace::decode(&records)?;
         Ok(original
             .divergence(&again)
             .or_else(|| rewind_trace::io_records::divergence(self.records().ok()?, &records)))
+    }
+
+    /// The step a replay of the run stops at: the step its recording
+    /// stopped at when the wall-clock limit stopped it, since the guest
+    /// went on only in the replay and the recording has nothing past that
+    /// step to compare. None for a run whose guest stopped by itself.
+    fn replay_end(&self) -> Option<u64> {
+        self.manifest
+            .outcome
+            .as_ref()
+            .filter(|o| o.stop.timeout().is_some())
+            .map(|o| o.step)
     }
 
     /// Where the run's keyframes are, its own and the ones it shares.
@@ -1284,11 +1296,11 @@ impl Run {
     }
 
     /// Runs the same inputs again, from boot or from the keyframe at or
-    /// before `from`, to the end, and compares: the events and read and
-    /// write records with the run's, and at each keyframe of the run after
-    /// the start the whole machine with the keyframe's (see
-    /// [`crate::state`]). The claim every run and every keyframe makes is
-    /// that both come out the same.
+    /// before `from`, to where the recording ended, and compares: the
+    /// events and read and write records with the run's, and at each
+    /// keyframe of the run after the start the whole machine with the
+    /// keyframe's (see [`crate::state`]). The claim every run and every
+    /// keyframe makes is that both come out the same.
     pub fn replay_machine(
         &self,
         home: &Home,
@@ -1346,7 +1358,7 @@ impl Run {
             }
             watch.at_keyframe(&mut machine)?;
         }
-        machine.run(None, &mut recorder)?;
+        machine.run(self.replay_end(), &mut recorder)?;
         recorder.trace.finish()?;
         let records = rewind_trace::records(tmp.path())?;
         let again = Trace::decode(&records)?;

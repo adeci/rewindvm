@@ -523,6 +523,16 @@ in
         cmp $many/trace.bin $TMPDIR/trace.bin
         cmp $many/manifest.json $TMPDIR/manifest.json
 
+        # A run stopped at its time limit replays to the step it stopped
+        # at and no further: the guest went on only in the replay, and
+        # its events after that step were never recorded.
+        rewind run -q --name late --timeout 1 --root ${busyboxRoot} -- \
+          sh -c 'for i in $(seq 1000000); do echo $i; done' > /dev/null || true
+        late=$(dirname "$(grep -l '"name": "late"' $REWIND_HOME/runs/*/manifest.json)")
+        grep -q '"how": "timed_out"' $late/manifest.json
+        rewind replay late | tee replay-late
+        grep -q '^identical' replay-late
+
         # A look inside a run more than 512 steps past its nearest
         # keyframe keeps one at its step. A second look there keeps none,
         # since it restores that keyframe and replays nothing, and the run
