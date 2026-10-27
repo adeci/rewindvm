@@ -16,6 +16,7 @@ use anyhow::{Context, Result, bail};
 use rewind_core::threads::OnTheCpu;
 use rewind_core::{Home, Run};
 use rewind_trace::Trace;
+use rewind_trace::ending::ExitStatus;
 use rewind_trace::located::{Extent, Frame, Located, SourceFile};
 use serde::Deserialize;
 
@@ -108,15 +109,15 @@ pub(crate) fn located(
     let pick = thread_at(run.trace()?, step, pid, tid)?;
 
     // A process at its own exit has no memory left to name its frames
-    // with, so it is looked at the step before, as it was killed or as it
-    // called exit.
+    // with, so it is looked at an earlier step: the one before, as it
+    // called exit, or its last event before a signal killed it.
     let step = match pick {
         Pick::Thread { pid, .. } => {
             let alive = alive_step(run.trace()?, step, pid);
             if alive != step {
                 eprintln!(
                     "{} process {pid} exits at step {step}, its memory gone; \
-                     looking at step {alive}, the last it had it",
+                     looking at step {alive}, while it still had it",
                     crate::color::stderr().prefix()
                 );
             }
@@ -470,18 +471,35 @@ pub(crate) fn thread_at(
 }
 
 /// The step `rewind where` looks at process `pid` at, asked about `step`:
-/// the step itself, or the one before when the step's event is the
-/// process's own exit, since by then the kernel has taken its memory and,
-/// with it, every file that names its frames.
+/// the step itself, unless the step's event is the process's own exit,
+/// since by then the kernel has taken its memory and, with it, every file
+/// that names its frames. A process that called exit is looked at the
+/// step before. A process killed by a signal is looked at its last event
+/// before the exit: the kernel tears it down from the kill on, and can
+/// drop it from /proc steps before its exit is recorded.
 fn alive_step(trace: &Trace, step: u64, pid: u32) -> u64 {
-    let exits = trace.events.iter().any(|e| {
-        e.step == step
-            && e.pid == pid
-            && matches!(e.kind, rewind_trace::EventKind::Exit { thread: false, .. })
+    let status = trace.events.iter().find_map(|e| match e.kind {
+        rewind_trace::EventKind::Exit {
+            status,
+            thread: false,
+            ..
+        } if e.step == step && e.pid == pid => Some(status),
+        _ => None,
     });
-    match exits {
-        true => step.saturating_sub(1),
-        false => step,
+    let Some(status) = status else {
+        return step;
+    };
+
+    // A killed process's last event of its own, else the step before.
+    let before = step.saturating_sub(1);
+    match ExitStatus::from_raw(status) {
+        ExitStatus::Code(_) => before,
+        ExitStatus::Signal { .. } => trace
+            .events
+            .iter()
+            .rev()
+            .find(|e| e.pid == pid && e.step < step)
+            .map_or(before, |e| e.step),
     }
 }
 
@@ -942,6 +960,50 @@ mod tests {
         assert_eq!(alive_step(&trace, 6299, 140), 6299);
         assert_eq!(alive_step(&trace, 6310, 150), 6310);
         assert_eq!(alive_step(&trace, 6300, 141), 6300);
+    }
+
+    /// A process killed by a signal is looked at its last event before the
+    /// kill: the kernel tears it down before its exit is recorded, and in a
+    /// sandbox whose last process exited it is gone from /proc steps
+    /// earlier, as tmux's server was when bash ended a job at step 2098 and
+    /// the server's SIGKILL exit came at 2102. A process that called exit
+    /// is still looked at the step before. Builds the trace by hand.
+    #[test]
+    fn a_killed_process_is_looked_at_its_last_event() {
+        let event = |step, pid, kind| rewind_trace::Event {
+            step,
+            pid,
+            tid: pid,
+            kind,
+        };
+        let exit = |status| rewind_trace::EventKind::Exit {
+            status,
+            comm: "tmux: server".into(),
+            thread: false,
+        };
+        let sigchld = rewind_trace::EventKind::Signal {
+            signo: 17,
+            code: 2,
+            addr: 0,
+        };
+        let killed_by_sigkill = 9;
+        let exited_0 = 0;
+        let trace = Trace {
+            events: vec![
+                event(2056, 40, sigchld.clone()),
+                event(2098, 34, exit(exited_0)),
+                event(2102, 40, exit(killed_by_sigkill)),
+                event(2200, 50, sigchld),
+                event(2300, 50, exit(exited_0)),
+                event(2400, 60, exit(killed_by_sigkill)),
+            ],
+        };
+        assert_eq!(alive_step(&trace, 2102, 40), 2056);
+        assert_eq!(alive_step(&trace, 2098, 34), 2097);
+        assert_eq!(alive_step(&trace, 2300, 50), 2299);
+
+        // Killed with no event of its own before, the step before it is.
+        assert_eq!(alive_step(&trace, 2400, 60), 2399);
     }
 
     #[test]
