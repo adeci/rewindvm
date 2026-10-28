@@ -582,10 +582,8 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         show::outcome_line(&base, judge.base_key(), paint)?,
         verdict_words(&judge, &base_violations, paint)
     ));
-    if !json {
-        print_timeout(home, 0, &base);
-        print_violations(&judge, &base_violations);
-    }
+    print_timeout(home, 0, &base, say);
+    print_violations(&judge, &base_violations, say);
     let base_key = judge.base_key().clone();
     let mut tried_runs = vec![schedule_json(&base, false, &base_violations)?];
 
@@ -1089,9 +1087,7 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
                     "\n{found_name} holds every property where {seed_words} violates {violated}; finding the step that decides it"
                 ));
             }
-            if !json {
-                print_timeout(home, schedule, &worst);
-            }
+            print_timeout(home, schedule, &worst, say);
             let probe_all = |windows: Vec<(u64, u64)>| -> Result<Vec<Judged>> {
                 let lo = windows.iter().map(|w| w.0).min().unwrap_or(0);
                 let hi = windows.iter().map(|w| w.1).max().unwrap_or(0);
@@ -1228,6 +1224,11 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         Vec::new()
     };
     if json {
+        // Where the threads were, for a person reading the log beside the
+        // JSON.
+        for line in where_lines(&threads) {
+            eprintln!("{line}");
+        }
         let (schedule, from, until) = match &decided {
             Some((schedule, lo, until, _)) => (*schedule, Some(*lo), Some(*until)),
             None => (0, None, None),
@@ -1294,14 +1295,8 @@ pub(crate) fn check(home: &Home, args: CheckArgs) -> Result<ExitCode> {
         "{}",
         show::comparison((ft, FAILING), (pt, PASSING), &comparison, paint)
     );
-    if !threads.is_empty() {
-        println!("\nwhere the threads were:");
-    }
-    for (involved, step, answer) in &threads {
-        match answer {
-            Ok(answer) => println!("{}", locate::thread_line(answer, *involved)),
-            Err(e) => println!("  {step:>10}   {e:#}"),
-        }
+    for line in where_lines(&threads) {
+        println!("{line}");
     }
     let open = open_line(
         &failing.manifest.id,
@@ -2236,20 +2231,21 @@ fn violated_names(violations: &[Violation]) -> String {
 }
 
 /// Each violation of an unperturbed run on a line of its own, under its
-/// line, when properties were given.
-fn print_violations(judge: &Judge, violations: &[Violation]) {
+/// line, when properties were given, said through `say`.
+fn print_violations(judge: &Judge, violations: &[Violation], say: impl Fn(String)) {
     if judge.same_outcome_only() {
         return;
     }
     for v in violations {
-        println!("  {}: {v}", v.property);
+        say(format!("  {}: {v}", v.property));
     }
 }
 
-/// For a schedule of `rewind check` that hit its time limit, how and where:
-/// a guest stuck computing without exits is often what the search found.
-/// A user-space address is named by the program's symbols when it can be.
-fn print_timeout(home: &Home, schedule: u64, run: &Run) {
+/// For a schedule of `rewind check` that hit its time limit, how and where,
+/// said through `say`: a guest stuck computing without exits is often what
+/// the search found. A user-space address is named by the program's
+/// symbols when it can be.
+fn print_timeout(home: &Home, schedule: u64, run: &Run, say: impl Fn(String)) {
     let Some(o) = run.manifest.outcome.as_ref() else {
         return;
     };
@@ -2257,7 +2253,24 @@ fn print_timeout(home: &Home, schedule: u64, run: &Run) {
         return;
     }
     let stop = locate::describe_stall(home, run).unwrap_or_else(|| o.stop.to_string());
-    println!("schedule {schedule}: {stop}");
+    say(format!("schedule {schedule}: {stop}"));
+}
+
+/// Where the threads of a failure were, as `rewind check --where` lists
+/// them after its narrowing: a heading, then a line for each thread, or
+/// the reason gdb could not walk it. No lines without a thread.
+fn where_lines(threads: &[(locate::Involved, u64, Result<Located>)]) -> Vec<String> {
+    if threads.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec!["\nwhere the threads were:".to_string()];
+    for (involved, step, answer) in threads {
+        lines.push(match answer {
+            Ok(answer) => locate::thread_line(answer, *involved),
+            Err(e) => format!("  {step:>10}   {e:#}"),
+        });
+    }
+    lines
 }
 
 /// The time limit `--timeout` sets, in seconds, if given.
@@ -2423,6 +2436,43 @@ fn exit_status(run: &Run) -> ExitCode {
 mod tests {
     // How a run echoes, from its flags and where its output goes.
     use super::*;
+
+    /// The lines that say where the threads of a failure were, which check
+    /// prints after the narrowing, to standard error with --json: a heading,
+    /// then a line for each thread, its error when gdb could not walk it.
+    /// None at all when no thread was asked about. Builds the answers by
+    /// hand.
+    #[test]
+    fn the_threads_of_a_failure_are_listed_under_a_heading() {
+        let answer = Located {
+            run: "5c910df9774b38f2".into(),
+            step: 5139,
+            pid: 166,
+            tid: 166,
+            process: "test_pool_shutdown".into(),
+            frames: Vec::new(),
+            chosen: None,
+            files: std::collections::BTreeMap::new(),
+        };
+        let threads = vec![
+            (locate::Involved::AtTheDecidingStep, 5139, Ok(answer)),
+            (
+                locate::Involved::AtTheFirstDifference,
+                5200,
+                Err(anyhow::anyhow!("no process 40 at this step")),
+            ),
+        ];
+        assert_eq!(
+            where_lines(&threads),
+            vec![
+                "\nwhere the threads were:".to_string(),
+                "        5139   166/166   no frame names a function, on the CPU at the deciding step"
+                    .to_string(),
+                "        5200   no process 40 at this step".to_string(),
+            ]
+        );
+        assert!(where_lines(&[]).is_empty());
+    }
 
     #[test]
     fn a_quiet_run_shows_a_status_line_only_when_asked_on_a_terminal() {
