@@ -24,7 +24,11 @@
 //! replaying to the middle of the run. From the origin, blame then
 //! follows what the writers read back: the first file the build made that
 //! differs between the runs, to its writers, and so on, as from a library
-//! to the object it was linked from and the source that was compiled.
+//! to the object it was linked from and the source that was compiled. A
+//! file the two writers read after a different number of writes to it
+//! ends the following there: one run read an older version of it, as the
+//! second of two `git notes add` at once read the notes before the first
+//! had updated them.
 //!
 //! A run recorded before runs had read and write records has none, and
 //! blame finds its writers by forking it: copies by name and content, and
@@ -790,6 +794,9 @@ enum Stop {
     Uncompared(usize),
     /// No process of the run wrote the file that led on.
     NoWriter(String),
+    /// The writers read the file that led on at different points of its
+    /// history, so its writers in the two runs are not one program.
+    OlderVersion(OlderVersion),
     /// [`MAX_HOPS`] writers back, and still going.
     TooFar,
 }
@@ -855,9 +862,15 @@ fn follow_inputs(sides: &[Side; 2], origins: [Writer; 2]) -> Result<(Vec<Hop>, S
             return Ok((hops, stop));
         };
 
-        // That input's writers, in each run.
+        // That input's writers, in each run. Writers that read it after a
+        // different number of writes read it from different processes,
+        // and comparing those as one program would blame their command
+        // lines, so the older version is the answer.
         let (l, r) = hop.pairs[next].clone();
         hops.push(hop);
+        if let Some(older) = older_version([sides[0].trace, sides[1].trace], (&l, &r)) {
+            return Ok((hops, Stop::OlderVersion(older)));
+        }
         let (Some(wl), Some(wr)) = (
             last_writer(sides[0].trace, &l.path, l.step),
             last_writer(sides[1].trace, &r.path, r.step),
@@ -966,11 +979,94 @@ fn print_followed((hops, stop): &(Vec<Hop>, Stop), ids: &[&str; 2]) {
             "Likely cause: not found. No process of the runs wrote {path}, which {name} read, so \
              blame stops there."
         ),
+        Stop::OlderVersion(older) => println!("{}", older_version_cause(&name, older, ids)),
         Stop::TooFar => println!(
             "Likely cause: not found within {MAX_HOPS} writers back. The last one blame reached \
              is {name}."
         ),
     }
+}
+
+/// A file the two runs' writers read at different points of its history:
+/// which run read the older version, and the change that run's reader
+/// read before, which the other run's reader read after.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OlderVersion {
+    path: String,
+    /// The run that read the older version: 0 for the left, 1 for the
+    /// right.
+    older: usize,
+    /// Who made the change the older run's reader read before, and when.
+    changed: Named,
+    step: u64,
+}
+
+/// Whether the two runs read an input at different points of its
+/// history: after a different number of writes to it, each a rename into
+/// its place or an open of it for writing. None when the counts match,
+/// and the input's writers in the two runs are then one program.
+fn older_version(traces: [&Trace; 2], (left, right): (&Input, &Input)) -> Option<OlderVersion> {
+    let writes = [
+        writes_of(traces[0], &left.path),
+        writes_of(traces[1], &right.path),
+    ];
+    let seen = [
+        writes[0]
+            .iter()
+            .filter(|(_, step)| *step <= left.step)
+            .count(),
+        writes[1]
+            .iter()
+            .filter(|(_, step)| *step <= right.step)
+            .count(),
+    ];
+    if seen[0] == seen[1] {
+        return None;
+    }
+
+    // The run that had seen fewer writes read the older version; the next
+    // write after its read is the change the other run had seen.
+    let older = usize::from(seen[1] < seen[0]);
+    let read = [left.step, right.step][older];
+    let &(pid, step) = writes[older].iter().find(|(_, step)| *step > read)?;
+    let program = traces[older]
+        .process_at(pid, step)
+        .map_or_else(|| format!("pid {pid}"), |p| label(&p.as_of(step)));
+    Some(OlderVersion {
+        path: left.path.clone(),
+        older,
+        changed: Named { program, pid },
+        step,
+    })
+}
+
+/// The writes to `path` in `trace`, in order: who and at which step, for
+/// each rename into its place and each open of it for writing.
+fn writes_of(trace: &Trace, path: &str) -> Vec<(u32, u64)> {
+    trace
+        .events
+        .iter()
+        .filter(|e| match &e.kind {
+            EventKind::Rename { to, .. } => to == path,
+            EventKind::Open { path: p, .. } => p == path,
+            _ => false,
+        })
+        .map(|e| (e.pid, e.step))
+        .collect()
+}
+
+/// The likely cause when `reader`, the writer blame followed back to,
+/// read an input at different points of its history in the two runs.
+fn older_version_cause(reader: &str, older: &OlderVersion, ids: &[&str; 2]) -> String {
+    let (old, new) = (ids[older.older], ids[1 - older.older]);
+    format!(
+        "Likely cause: {reader} read {} before {} (pid {}) changed it at step {} in run {old}, \
+         and after that change in run {new}. It read an older version of the file in run {old}.",
+        older.path,
+        older.changed.program,
+        older.changed.pid,
+        grouped(older.step)
+    )
 }
 
 /// A count in both runs: once when the same, else both.
@@ -2014,6 +2110,105 @@ mod tests {
             write: None,
         };
         assert_eq!(label(&at_write(&writer, &unknown).process), "bash");
+    }
+
+    /// The git notes runs' history of the notes ref, by hand: pid 53
+    /// writes it, pid 55 renames its lock over it at `second_write`, and
+    /// pid 56 reads it at step 2,700.
+    fn notes_ref(second_write: u64) -> Trace {
+        let event = |step, pid, kind| Event {
+            step,
+            pid,
+            tid: pid,
+            kind,
+        };
+        let exec = |step, pid, note: &str| {
+            let argv = ["git", "notes", "add", "-m", note];
+            event(
+                step,
+                pid,
+                EventKind::Exec {
+                    filename: "git".into(),
+                    argv: argv.iter().map(|a| a.to_string()).collect(),
+                    old_pid: pid,
+                },
+            )
+        };
+        let replace = |step, pid| {
+            event(
+                step,
+                pid,
+                EventKind::Rename {
+                    from: format!("{NOTES_REF}.lock"),
+                    to: NOTES_REF.into(),
+                },
+            )
+        };
+        let mut events = vec![
+            exec(2_500, 53, "base"),
+            replace(2_568, 53),
+            exec(2_655, 55, "note 1"),
+            exec(2_688, 56, "note 2"),
+            replace(second_write, 55),
+        ];
+        events.sort_by_key(|e| e.step);
+        Trace { events }
+    }
+
+    const NOTES_REF: &str = "/build/r/.git/refs/notes/commits";
+
+    #[test]
+    fn a_reader_of_an_older_version_is_not_followed_to_another_writer() {
+        // pid 56 read the notes ref at step 2,700 in both runs: in the
+        // first run before pid 55 changed it at 2,721, in the second after
+        // it changed it at 2,683. The readers saw different versions, so
+        // the first run read the older one, and pid 55's change is what
+        // it missed. Read after the same writes in both runs, the
+        // versions match and blame follows the writers as before.
+        let failing = notes_ref(2_721);
+        let passing = notes_ref(2_683);
+        let read = Input {
+            path: NOTES_REF.into(),
+            step: 2_700,
+        };
+        let older = older_version([&failing, &passing], (&read, &read));
+        assert_eq!(
+            older,
+            Some(OlderVersion {
+                path: NOTES_REF.into(),
+                older: 0,
+                changed: Named {
+                    program: "git notes".into(),
+                    pid: 55,
+                },
+                step: 2_721,
+            })
+        );
+        let flipped = older_version([&passing, &failing], (&read, &read));
+        assert_eq!(flipped.map(|o| o.older), Some(1));
+        assert_eq!(older_version([&failing, &failing], (&read, &read)), None);
+    }
+
+    #[test]
+    fn an_older_version_is_the_likely_cause_in_words() {
+        // The conclusion names the reader, the change it read before in
+        // one run and after in the other, and which run read the older
+        // version.
+        let older = OlderVersion {
+            path: NOTES_REF.into(),
+            older: 0,
+            changed: Named {
+                program: "git notes".into(),
+                pid: 55,
+            },
+            step: 2_721,
+        };
+        assert_eq!(
+            older_version_cause("git notes (pid 56)", &older, &["94c59fdf", "ad0de5ae"]),
+            "Likely cause: git notes (pid 56) read /build/r/.git/refs/notes/commits before \
+             git notes (pid 55) changed it at step 2,721 in run 94c59fdf, and after that \
+             change in run ad0de5ae. It read an older version of the file in run 94c59fdf."
+        );
     }
 
     #[test]
