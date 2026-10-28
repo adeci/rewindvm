@@ -263,6 +263,16 @@
             ;
           module = self.nixosModules.default;
         }
+
+        # nixbot (nixbot.decio.us) builds `checks` and nothing else, so the
+        # tree's formatting and every package are checks as well: a package
+        # that fails to build, or a file `nix fmt` would change, fails CI.
+        // {
+          formatting = self.formatter.${system}.check self;
+        }
+        // nixpkgs.lib.mapAttrs' (
+          name: drv: nixpkgs.lib.nameValuePair "package-${name}" drv
+        ) self.packages.${system}
       );
 
       devShells = forAllSystems (

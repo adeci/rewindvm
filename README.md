@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/fzakaria/rewindvm/actions/workflows/ci.yml"><img src="https://github.com/fzakaria/rewindvm/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://nixbot.decio.us/repos/github/fzakaria/rewindvm"><img src="https://nixbot.decio.us/badge/a8904f8f-6ea3-4838-87d7-fab31cba44c9.svg" alt="nixbot" /></a>
 </p>
 
 <p align="center">
