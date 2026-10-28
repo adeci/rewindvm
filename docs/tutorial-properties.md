@@ -64,7 +64,7 @@ several properties. Rewind includes these:
 | `no-crash`                   | a process dies of a signal such as SIGSEGV, even if a retry hid it     |
 | `no-orphans`                 | a process the job started is still running when the job exits          |
 | `single-writer=GLOB`         | two processes have a matching file open for writing at once            |
-| `atomic-replace=GLOB`        | a matching file the run wrote is truncated or recreated in place      |
+| `atomic-replace=GLOB`        | a matching file the run wrote is truncated or recreated in place       |
 | `no-read-while-written=GLOB` | a matching file is opened for reading while another process writes it  |
 | `writes-within=DIR:DIR`      | the job writes outside these directories                               |
 | `sdk`                        | an assertion made with the Rewind SDK fails                            |
