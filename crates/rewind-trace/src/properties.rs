@@ -338,48 +338,89 @@ pub fn no_read_while_written(trace: &Trace, glob: &Glob) -> Option<Finding> {
 }
 
 /// No file matching `glob` that the run had already written was opened
-/// with O_TRUNC: each was replaced by writing another file and renaming
-/// it over, so a reader never sees it empty or half written. A file the
-/// run started with is not known to exist, so its first truncation is
-/// not counted, and devices such as /dev/null are not files.
+/// with O_TRUNC, or removed and then written again in place: each was
+/// replaced by writing another file and renaming it over, so a reader
+/// never sees it missing, empty or half written. A file the run started
+/// with is not known to exist, so its first truncation or removal is not
+/// counted, and devices such as /dev/null are not files.
 pub fn atomic_replace(trace: &Trace, glob: &Glob) -> Option<Finding> {
     let job = Job::of(trace)?;
     let pids = job.pids();
 
-    // The files the run has written or renamed into place, with the step.
+    // The files the run has written or renamed into place, with the step,
+    // and the ones it had that were removed since: by whom, when, and when
+    // the run had written them.
     let mut existing: HashMap<&str, u64> = HashMap::new();
+    let mut removed: HashMap<&str, Removal> = HashMap::new();
     for e in trace.events.iter().filter(|e| e.step <= job.exit) {
         match &e.kind {
             EventKind::Open { path, flags } => {
-                if let Some(&since) = existing.get(path.as_str())
-                    && e.step >= job.start
-                    && flags & O_TRUNC != 0
+                let watched = e.step >= job.start
                     && pids.contains(&e.pid)
                     && !under(path, &PSEUDO_DIRS)
-                    && glob.matches(path)
+                    && glob.matches(path);
+                let writer = || format!("process {} ({})", e.pid, job.name(e.pid, e.step));
+
+                // A truncation of a file the run wrote.
+                if let Some(&since) = existing.get(path.as_str())
+                    && watched
+                    && flags & O_TRUNC != 0
                 {
                     return Some(Finding {
                         step: e.step,
                         why: format!(
-                            "process {} ({}) truncated {path} in place, which the run wrote at step {since}; a reader can see it empty or half written",
-                            e.pid,
-                            job.name(e.pid, e.step)
+                            "{} truncated {path} in place, which the run wrote at step {since}; a reader can see it empty or half written",
+                            writer()
                         ),
                     });
                 }
+
+                // A write in place of a file the run wrote and then removed.
+                if let Some(gone) = removed.get(path.as_str())
+                    && watched
+                {
+                    return Some(Finding {
+                        step: e.step,
+                        why: format!(
+                            "{} wrote {path} in place after process {} ({}) removed it at step {}, which the run wrote at step {}; a reader can see it missing or half written",
+                            writer(),
+                            gone.pid,
+                            job.name(gone.pid, gone.step),
+                            gone.step,
+                            gone.written,
+                        ),
+                    });
+                }
+                removed.remove(path.as_str());
                 existing.insert(path.as_str(), e.step);
             }
             EventKind::Rename { from, to } => {
                 existing.remove(from.as_str());
+                removed.remove(to.as_str());
                 existing.insert(to.as_str(), e.step);
             }
             EventKind::Unlink { path } => {
-                existing.remove(path.as_str());
+                if let Some(written) = existing.remove(path.as_str()) {
+                    let removal = Removal {
+                        pid: e.pid,
+                        step: e.step,
+                        written,
+                    };
+                    removed.insert(path.as_str(), removal);
+                }
             }
             _ => {}
         }
     }
     None
+}
+
+/// A file the run had written that a process removed: which process, at
+/// which step, and the step the run had written the file at.
+struct Removal {
+    pid: u32,
+    step: u64,
+    written: u64,
 }
 
 /// The job wrote, renamed and removed files only under `dirs`, and in
@@ -701,6 +742,56 @@ mod tests {
             open(200, JOB, "/dev/null", REWRITE),
         ]);
         assert_eq!(atomic_replace(&device, &Glob::new("**")), None);
+    }
+
+    // Removing a file the run wrote and writing it again in place, as
+    // nix-direnv's cache renewal did with its .rc, is a rewrite in place
+    // too: a reader in between finds the file missing, then half written.
+    // Removing a file and renaming a new one into its place is not, nor is
+    // writing a file the run never had.
+    #[test]
+    fn a_remove_then_rewrite_is_found() {
+        let unlink = |step, pid, path: &str| {
+            event(
+                step,
+                pid,
+                EventKind::Unlink {
+                    path: path.to_string(),
+                },
+            )
+        };
+        let rewritten = job(vec![
+            fork(90, JOB, 41),
+            open(100, JOB, "/p/.direnv/flake-profile.rc", REWRITE),
+            unlink(150, 41, "/p/.direnv/flake-profile.rc"),
+            open(200, 41, "/p/.direnv/flake-profile.rc", REWRITE),
+        ]);
+        let found = atomic_replace(&rewritten, &Glob::new("*.rc")).unwrap();
+        assert_eq!(found.step, 200);
+        assert!(found.why.contains(
+            "wrote /p/.direnv/flake-profile.rc in place after process 41 (sh) removed it at step 150, which the run wrote at step 100; a reader can see it missing or half written"
+        ), "{}", found.why);
+
+        let renamed = job(vec![
+            open(100, JOB, "/build/app.rc", REWRITE),
+            unlink(150, JOB, "/build/app.rc"),
+            open(200, JOB, "/build/app.rc.tmp", REWRITE),
+            event(
+                210,
+                JOB,
+                EventKind::Rename {
+                    from: "/build/app.rc.tmp".into(),
+                    to: "/build/app.rc".into(),
+                },
+            ),
+        ]);
+        assert_eq!(atomic_replace(&renamed, &Glob::new("*.rc")), None);
+
+        let never_written = job(vec![
+            unlink(150, JOB, "/build/app.rc"),
+            open(200, JOB, "/build/app.rc", REWRITE),
+        ]);
+        assert_eq!(atomic_replace(&never_written, &Glob::new("*.rc")), None);
     }
 
     // A read of a file another process is writing is found, naming the

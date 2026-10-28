@@ -180,7 +180,8 @@ pub(crate) struct CheckArgs {
     /// processes had a matching file open for writing at once, from its
     /// open until its close.
     /// atomic-replace=GLOB: no matching file the run had written was
-    /// truncated in place, where a reader can see it half written.
+    /// truncated, or removed and written again, in place, where a reader
+    /// can see it missing or half written.
     /// no-read-while-written=GLOB: no process opened a matching file for
     /// reading while another had it open for writing.
     /// writes-within=DIR:DIR: the job wrote, renamed and removed files
