@@ -1,5 +1,5 @@
-# On every change: formatting first, then `nix flake check`, which runs the
-# checks in nix/checks.nix:
+# On every push to main: `nix flake check`, which runs the checks in
+# nix/checks.nix and flake.nix:
 #
 #   checks.prose: no em dashes and none of the banned vocabulary, in docs,
 #     site copy and code comments alike (tools/check-prose.py)
@@ -7,18 +7,20 @@
 #     sleep replays exactly from boot and from a keyframe, and another seed
 #     makes another run. It boots the guest, so it needs /dev/kvm, which
 #     GitHub's Linux runners have but do not open to the build user.
+#   checks.formatting: `nix fmt` would change no file
+#   checks.package-*: every package builds: the command, the desktop app,
+#     the three release assets, the site and the debuginfod server `rewind
+#     gdb` fetches. The command's and the app's builds run clippy as they
+#     compile and fail on any warning (nix/crane.nix).
 #
-# Then the packages build: the command, the desktop app, the three release
-# assets, the site and the debuginfod server `rewind gdb` fetches. The
-# command's and the app's builds run clippy as they compile and fail on
-# any warning (nix/crane.nix).
-# Everything built is pushed to rewindvm.cachix.org.
+# Everything built is pushed to rewindvm.cachix.org, and main's packages
+# are pinned there. Pull requests are nixbot's (nixbot.decio.us), which
+# builds the same checks and has no Cachix token.
 name: ci
 
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -63,14 +65,8 @@ jobs:
           name: rewindvm
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Formatting
-        run: nix fmt -- --ci
-
       - name: Tests
         run: nix flake check -L
-
-      - name: Packages
-        run: nix build -L .#rewind .#app .#release .#release-debug .#app-release .#site .#debuginfod
 
       # The latest builds of main, pinned so they stay when the cache fills
       # and the dependency builds go: the last five of each, the kernel's
@@ -82,7 +78,7 @@ jobs:
       # pushes only when the job ends, and a pin needs its whole closure
       # in the cache, so each package is pushed before its pin.
       - name: Pin main's packages
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main'
         run: |
           for attr in rewind app kernel kernel-debug; do
             path=$(nix build --no-link --print-out-paths ".#$attr")
