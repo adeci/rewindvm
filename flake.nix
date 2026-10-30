@@ -267,11 +267,17 @@
         # nixbot (nixbot.decio.us) builds `checks` and nothing else, so the
         # tree's formatting and every package are checks as well: a package
         # that fails to build, or a file `nix fmt` would change, fails CI.
+        # The tutorials' examples (nix/examples.nix) have tests that fail
+        # under some interleavings or seeds on purpose, for Rewind to find,
+        # so their checks build them with those tests off.
         // {
           formatting = self.formatter.${system}.check self;
         }
         // nixpkgs.lib.mapAttrs' (
-          name: drv: nixpkgs.lib.nameValuePair "package-${name}" drv
+          name: drv:
+          nixpkgs.lib.nameValuePair "package-${name}" (
+            if p.examples ? ${name} then drv.overrideAttrs { doCheck = false; } else drv
+          )
         ) self.packages.${system}
       );
 
